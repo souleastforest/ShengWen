@@ -84,6 +84,7 @@ class LLMConfig:
     model_id: str = ""
     temperature: float = 0.7
     context_window_size: int = 1000000
+    extra_headers: dict[str, str] | None = None
 
 
 @dataclass
@@ -269,6 +270,7 @@ class JSONConfigManager:
             "model_id": str(payload.get("model_id") or defaults["model_id"]),
             "temperature": float(payload.get("temperature", defaults["temperature"])),
             "context_window_size": int(payload.get("context_window_size", defaults["context_window_size"])),
+            "extra_headers": payload.get("extra_headers") if payload.get("extra_headers") is not None else defaults.get("extra_headers"),
         }
         self.update_section("llm", llm_patch)
 
@@ -390,6 +392,7 @@ class JSONConfigManager:
             model_id=str(raw.get("model_id", defaults["model_id"])),
             temperature=float(raw.get("temperature", defaults["temperature"])),
             context_window_size=int(raw.get("context_window_size", defaults["context_window_size"])),
+            extra_headers=raw.get("extra_headers", defaults.get("extra_headers")),
         )
 
     def get_database_config(self) -> DatabaseConfig:
@@ -507,6 +510,7 @@ def to_llm_config(settings: Settings) -> "LLMConfigDataclass":
         temperature=llm_cfg.temperature,
         context_window_size=llm_cfg.context_window_size,
         provider=llm_cfg.provider,
+        extra_headers=llm_cfg.extra_headers,
     )
 
 

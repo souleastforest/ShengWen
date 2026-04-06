@@ -33,6 +33,7 @@ const emit = defineEmits<{
     api_key?: string
     model_id?: string
     temperature?: number
+    extra_headers?: Record<string, string>
   }]
   testLlm: []
   updateLlmSettingsAndTest: [payload: {
@@ -41,6 +42,7 @@ const emit = defineEmits<{
     api_key?: string
     model_id?: string
     temperature?: number
+    extra_headers?: Record<string, string>
   }]
   updateTranscriptionSettings: [payload: {
     device?: 'cpu' | 'cuda'
@@ -72,6 +74,7 @@ const llmBaseUrl = ref('')
 const llmModelId = ref('')
 const llmTemperature = ref(0.7)
 const llmApiKey = ref('')
+const llmExtraHeaders = ref('')
 
 // 转录设置
 const transcriptionDevice = ref<'cpu' | 'cuda'>('cpu')
@@ -119,6 +122,8 @@ watch(() => props.llmSettings, (settings) => {
     llmModelId.value = settings.model_id || ''
     llmTemperature.value = settings.temperature ?? 0.7
     llmApiKey.value = ''
+    const eh = settings.extra_headers
+    llmExtraHeaders.value = eh && Object.keys(eh).length ? JSON.stringify(eh, null, 2) : ''
   }
 }, { immediate: true })
 
@@ -160,6 +165,7 @@ const handleSaveLlmSettings = () => {
     api_key?: string
     model_id?: string
     temperature?: number
+    extra_headers?: Record<string, string>
   } = {
     provider: llmProvider.value,
     base_url: llmBaseUrl.value.trim(),
@@ -170,6 +176,13 @@ const handleSaveLlmSettings = () => {
   if (llmApiKey.value.trim()) {
     payload.api_key = llmApiKey.value.trim()
   }
+
+  try {
+    const parsed = JSON.parse(llmExtraHeaders.value.trim())
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      payload.extra_headers = parsed
+    }
+  } catch { /* empty or invalid JSON — omit extra_headers */ }
 
   emit('updateLlmSettings', payload)
   llmApiKey.value = ''
@@ -183,6 +196,7 @@ const handleTestLlm = () => {
     api_key?: string
     model_id?: string
     temperature?: number
+    extra_headers?: Record<string, string>
   } = {
     provider: llmProvider.value,
     base_url: llmBaseUrl.value.trim(),
@@ -193,6 +207,13 @@ const handleTestLlm = () => {
   if (llmApiKey.value.trim()) {
     payload.api_key = llmApiKey.value.trim()
   }
+
+  try {
+    const parsed = JSON.parse(llmExtraHeaders.value.trim())
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      payload.extra_headers = parsed
+    }
+  } catch { /* empty or invalid JSON — omit extra_headers */ }
 
   // 触发保存并测试
   emit('updateLlmSettingsAndTest', payload)
@@ -404,6 +425,26 @@ const handleSaveSummarizationSettings = () => {
                   <p v-if="llmSettings?.has_api_key" class="text-xs text-emerald-600 mt-2">
                     ✓ 已配置 API Key ({{ llmSettings.api_key_hint }})
                   </p>
+                </div>
+              </div>
+
+              <!-- Extra Headers (仅 Anthropic 等需要) -->
+              <div v-if="llmProvider === 'anthropic'" class="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
+                <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
+                  <PhKey :size="18" class="text-blue-500" />
+                  <h3 class="text-sm font-semibold text-slate-800">Extra Headers</h3>
+                </div>
+
+                <div>
+                  <label class="block text-xs font-medium text-slate-700 mb-2">自定义请求头 (JSON)</label>
+                  <textarea
+                    v-model="llmExtraHeaders"
+                    placeholder='{"anthropic-version": "2023-06-01"}'
+                    rows="3"
+                    :disabled="isTestingLlm || isUpdatingLlmSettings"
+                    class="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors resize-y"
+                  />
+                  <p class="text-xs text-slate-500 mt-1">留空表示不设置额外请求头，格式为 JSON 对象</p>
                 </div>
               </div>
 

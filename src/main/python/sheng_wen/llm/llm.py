@@ -34,6 +34,7 @@ class LLMConfig:
     temperature: float = 0.7
     context_window_size: int = 1000000
     provider: str = "openai_compatible"
+    extra_headers: dict[str, str] | None = None
 
 # --- 抽象基类 ---
 
@@ -73,31 +74,40 @@ class LLM(ABC):
 
 # --- 工厂函数 ---
 
-def get_llm(config: LLMConfig, llm_type: str = "litellm", **kwargs) -> LLM:
+def get_llm(config: LLMConfig, llm_type: str | None = None, **kwargs) -> LLM:
     """
     LLM 客户端工厂函数。
 
     根据指定的类型和配置返回一个 LLM 客户端实例。
+    当 llm_type 未指定时，根据 config.provider 自动路由。
 
     参数:
         config: LLM 的配置对象。
-        llm_type: 要创建的 LLM 客户端类型 (例如, "litellm", "mock")。
+        llm_type: 要创建的 LLM 客户端类型。若为 None 则根据 provider 自动推断。
         **kwargs: 传递给 LLM 客户端构造函数的其他参数。
 
     返回:
         一个 LLM 类的实例。
-    
+
     异常:
         ValueError: 如果指定的 llm_type 无效。
     """
     # 延迟导入以避免循环依赖
     from .litellm_client import LiteLLMClient
-    # from .mock_llm import MockLLM # 如果需要，可以取消注释
+    from .anthropic_client import AnthropicClient
 
     llm_clients = {
         "litellm": LiteLLMClient,
-        # "mock": MockLLM,
+        "anthropic": AnthropicClient,
     }
+
+    # 自动路由：provider 字段决定使用哪个客户端
+    if llm_type is None:
+        provider = (config.provider or "").strip().lower()
+        provider_to_type = {
+            "anthropic": "anthropic",
+        }
+        llm_type = provider_to_type.get(provider, "litellm")
 
     client_class = llm_clients.get(llm_type)
     if not client_class:

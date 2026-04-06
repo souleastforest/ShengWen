@@ -61,6 +61,7 @@ export interface LLMSettings {
   context_window_size: number;
   has_api_key: boolean;
   api_key_hint: string;
+  extra_headers: Record<string, string>;
 }
 
 export interface UpdateLLMSettingsRequest {
@@ -70,6 +71,7 @@ export interface UpdateLLMSettingsRequest {
   model_id?: string;
   temperature?: number;
   context_window_size?: number;
+  extra_headers?: Record<string, string>;
 }
 
 export interface TranscriptionSettings {

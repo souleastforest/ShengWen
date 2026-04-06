@@ -87,12 +87,22 @@ class LLMProviderManager:
                 default_model_id="deepseek-chat",
                 description="DeepSeek OpenAI 兼容接口",
             ),
+            LLMProvider(
+                id="anthropic",
+                label="Anthropic",
+                default_base_url="https://api.anthropic.com",
+                default_model_id="claude-sonnet-4-20250514",
+                description="Anthropic Claude 原生 SDK",
+            ),
         ]
         return {provider.id: provider for provider in providers}
 
     def _infer_provider_id(self, base_url: str) -> str:
         normalized = _normalize_base_url(base_url)
+        # Skip openai_compatible in exact match — it mirrors initial config and would always win.
         for provider in self._providers.values():
+            if provider.id == "openai_compatible":
+                continue
             if _normalize_base_url(provider.default_base_url) == normalized:
                 return provider.id
 
@@ -104,6 +114,8 @@ class LLMProviderManager:
             return "deepseek"
         if "api.openai.com" in normalized:
             return "openai"
+        if "anthropic.com" in normalized:
+            return "anthropic"
         return "openai_compatible"
 
     def bind_llm_worker(self, llm_worker: Any) -> None:
@@ -143,6 +155,7 @@ class LLMProviderManager:
             "context_window_size": config.context_window_size,
             "has_api_key": bool(config.api_key),
             "api_key_hint": _mask_api_key(config.api_key),
+            "extra_headers": config.extra_headers or {},
         }
 
     def get_runtime_config(self) -> LLMConfig:
@@ -155,6 +168,7 @@ class LLMProviderManager:
                 temperature=config.temperature,
                 context_window_size=config.context_window_size,
                 provider=config.provider,
+                extra_headers=config.extra_headers,
             )
 
     def export_runtime_config(self) -> dict[str, Any]:
@@ -168,6 +182,7 @@ class LLMProviderManager:
                 "model_id": config.model_id,
                 "temperature": config.temperature,
                 "context_window_size": config.context_window_size,
+                "extra_headers": config.extra_headers or {},
             }
 
     def update_settings(
@@ -178,6 +193,7 @@ class LLMProviderManager:
         model_id: str | None = None,
         temperature: float | None = None,
         context_window_size: int | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             provider_config = self._providers.get(provider)
@@ -199,6 +215,11 @@ class LLMProviderManager:
                 if api_key is None or not api_key.strip()
                 else api_key.strip()
             )
+            next_extra_headers = (
+                self._runtime_config.extra_headers
+                if extra_headers is None
+                else extra_headers
+            )
 
             self._runtime_config = LLMConfig(
                 base_url=next_base_url,
@@ -207,6 +228,7 @@ class LLMProviderManager:
                 temperature=next_temperature,
                 context_window_size=next_context_window_size,
                 provider=provider,
+                extra_headers=next_extra_headers,
             )
             self._provider_id = provider
             self._apply_config_to_worker_locked()
