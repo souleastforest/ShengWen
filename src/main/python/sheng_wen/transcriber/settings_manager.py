@@ -353,7 +353,10 @@ class TranscriptionSettingsManager:
         model_size: str,
         model_path: str,
     ) -> dict[str, str]:
-        kwargs: dict[str, str] = {"device": device}
+        kwargs: dict[str, str] = {
+            "device": device,
+            "compute_type": "int8_float16" if device == "cuda" else "int8",
+        }
         if model_source == "manual_path":
             valid, message, resolved_path = _validate_manual_model_dir(model_path)
             if not valid:
