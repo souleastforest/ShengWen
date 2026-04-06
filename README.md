@@ -208,20 +208,19 @@ AI agent 会尝试：
 **前置要求**：Python 3.10+、Node.js 20+、[uv](https://docs.astral.sh/uv/)
 
 ```bash
-# 1. 安装后端依赖（uv 自动创建 .venv）
-uv sync
-
-# 2. 构建前端
-cd frontend
-npm ci --no-audit --fund=false
-npm run build
-cd ..
+chmod +x deploy.sh && ./deploy.sh
 ```
+
+脚本会自动完成：
+1. 检查 Node.js/Python 版本
+2. 安装系统依赖（Linux，仅在需要时调用 sudo）
+3. 安装后端依赖（`uv sync`）
+4. 安装并构建前端
 
 ### 启动服务
 
 ```bash
-uv run python -m sheng_wen.api
+chmod +x run.sh && ./run.sh
 ```
 
 服务默认监听 `http://0.0.0.0:21010`，可在 `config/settings.json` 中修改端口。
