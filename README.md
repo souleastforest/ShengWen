@@ -203,27 +203,23 @@ AI agent 会尝试：
 
 ---
 
-### 快速部署
+### 快速部署 + 启动
 
 **前置要求**：Python 3.10+、Node.js 20+、[uv](https://docs.astral.sh/uv/)
 
 ```bash
-chmod +x deploy.sh && ./deploy.sh
+chmod +x start.sh && ./start.sh
 ```
 
-脚本会自动完成：
-1. 检查 Node.js/Python 版本
-2. 安装系统依赖（Linux，仅在需要时调用 sudo）
-3. 安装后端依赖（`uv sync`）
-4. 安装并构建前端
+首次运行自动完成：
+1. 安装 uv（如未安装）
+2. 安装后端依赖（`uv sync`）
+3. 安装并构建前端
+4. 启动服务
 
-### 启动服务
+后续运行跳过部署步骤，直接启动。
 
-```bash
-chmod +x run.sh && ./run.sh
-```
-
-服务默认监听 `http://0.0.0.0:21010`，可在 `config/settings.json` 中修改端口。
+如需单独部署：`./deploy.sh`，单独启动：`./run.sh`
 
 ### 手动部署（不使用 uv）
 
