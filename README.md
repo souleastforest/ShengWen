@@ -154,21 +154,13 @@
 
 1. **确认硬件**：需要NVIDIA显卡（支持CUDA）
 
-2. **安装CUDA Toolkit**：
-   - 下载地址：https://developer.nvidia.com/cuda-downloads
-   - 推荐版本：CUDA 11.8 或 12.x
+2. **安装 CUDA 运行时依赖**（已包含在 `pyproject.toml`，`uv sync` 自动安装）：
+   - `nvidia-cublas-cu12`
+   - `nvidia-cudnn-cu12`
 
-3. **安装PyTorch（CUDA版本）**：
-   ```bash
-   # CUDA 11.8
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-   # CUDA 12.x
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-   ```
-
-4. **在前端切换到CUDA模式**：
-   - 打开”转录设置”，将”设备”从`cpu`切换为`cuda`，保存配置
+3. **在前端切换到CUDA模式**：
+   - 打开"转录设置"，将"设备"从 `cpu` 切换为 `cuda`，保存配置
+   - 程序会自动使用 `int8_float16` 计算类型以获得最佳性能
 
 **CUDA加速效果**：
 - 相比起 CPU ，转录速度可提升 3-10 倍（取决于显卡性能）
@@ -208,71 +200,43 @@ AI agent 会尝试：
 - 处理可能遇到的问题
 - 启动服务
 
-给 Agent 的提示词：
-```
-如果你是 AI Agent，请按以下步骤帮助用户完成部署：
-
-1. **检测操作系统**：判断是 Linux/macOS 还是 Windows
-2. **运行部署脚本**（不要自己写命令，使用现有脚本）：
-   - Linux/macOS: `chmod +x deploy一键部署.sh && ./deploy一键部署.sh`
-   - Windows: `deploy一键部署.bat`
-3. **等待部署完成**：脚本会自动完成环境检查、依赖安装、前端构建
-4. **运行启动脚本**（不要自己写命令，使用现有脚本）：
-   - Linux/macOS: `chmod +x run一键启动.sh && ./run一键启动.sh`
-   - Windows: `run一键启动.bat`
-5. **确认服务启动**：看到 "🚀 服务启动完成" 提示后，告知用户访问 http://localhost:8000
-
-**重要**：
-- 不要尝试手动执行 `pip install` 或 `npm install`，脚本已包含这些步骤
-- 不要修改脚本内容，除非遇到明确的错误
-- 如果部署脚本报错，先阅读错误信息，再决定是否需要手动干预
-- 配置文件（LLM API Key 等）可以在服务启动后通过前端设置面板配置
-
-**常见问题处理**：
-- 如果提示 Node.js 版本过低：建议用户升级到 Node.js 20+
-- 如果提示 Python 版本过低：建议用户升级到 Python 3.10+，但也不建议使用太新的版本
-- 如果前端构建失败：检查 npm 是否正常，必要时清理 `frontend/node_modules` 后重试
-- 如果启动时提示缺少 `frontend/dist`：重新运行部署脚本
-```
-
 
 ---
 
-### 一键部署脚本
+### 快速部署
 
-**Linux/macOS:**
+**前置要求**：Python 3.10+、Node.js 20+、[uv](https://docs.astral.sh/uv/)
+
 ```bash
-chmod +x deploy一键部署.sh
-./deploy一键部署.sh
+# 1. 安装后端依赖（uv 自动创建 .venv）
+uv sync
+
+# 2. 构建前端
+cd frontend
+npm ci --no-audit --fund=false
+npm run build
+cd ..
 ```
 
-**Windows:**
-```cmd
-deploy一键部署.bat
+### 启动服务
+
+```bash
+uv run python -m sheng_wen.api
 ```
 
-或者双击运行 `deploy一键部署.bat`
+服务默认监听 `http://0.0.0.0:21010`，可在 `config/settings.json` 中修改端口。
 
-脚本会自动完成：
-1. 检查 Node.js/Python 版本（前端构建需要 Node 20+，后端需要 Python 3.10+）
-2. 在 Linux 下尝试补齐系统依赖（`ffmpeg` / `git` / `python3-venv`，仅在需要时调用 sudo）
-3. 创建并复用项目虚拟环境 `.venv`
-4. 安装前端依赖并构建（自动处理 lockfile/代理/前端目录权限异常）
-5. 安装 Python 后端依赖
+### 手动部署（不使用 uv）
 
-**注意**：
-- **不要用 `sudo` 直接运行部署脚本，也不要用 `sudo npm`。**请始终用普通用户运行 `./deploy一键部署.sh`。
-- 部署脚本不会自动启动服务，需要手动运行启动命令
-- 如果项目有更新，执行 `git pull` 后需要重新运行部署脚本以更新依赖和前端构建
+<details>
+<summary>点击展开</summary>
 
-### 你也可手动部署
-
-#### Linux/macOS 手动部署
+#### Linux/macOS
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
+python -m pip install -e .
 
 cd frontend
 npm ci --no-audit --fund=false
@@ -280,15 +244,20 @@ npm run build
 cd ..
 ```
 
-#### Windows 手动部署
+#### Windows
 ```cmd
+python -m venv .venv
+.venv\Scripts\activate
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
+python -m pip install -e .
+
 cd frontend
 npm ci --no-audit --fund=false
 npm run build
 cd ..
 ```
+
+</details>
 
 ### 配置（推荐前端设置）
 

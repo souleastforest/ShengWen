@@ -169,6 +169,7 @@ class LLMSettings(BaseModel):
     context_window_size: int
     has_api_key: bool
     api_key_hint: str
+    extra_headers: dict[str, str] = {}
 
 
 class LLMSettingsUpdate(BaseModel):
@@ -178,6 +179,7 @@ class LLMSettingsUpdate(BaseModel):
     model_id: Optional[str] = None
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     context_window_size: Optional[int] = Field(default=None, ge=1)
+    extra_headers: Optional[dict[str, str]] = None
 
 
 class TranscriptionSettings(BaseModel):
@@ -400,6 +402,7 @@ initial_llm_config = LLMConfig(
     temperature=llm_cfg.temperature,
     context_window_size=llm_cfg.context_window_size,
     provider=llm_cfg.provider,
+    extra_headers=llm_cfg.extra_headers,
 )
 initial_provider_id = llm_cfg.provider.strip() if llm_cfg.provider.strip() else None
 
@@ -1329,6 +1332,7 @@ async def update_llm_settings(payload: LLMSettingsUpdate):
             model_id=payload.model_id,
             temperature=payload.temperature,
             context_window_size=payload.context_window_size,
+            extra_headers=payload.extra_headers,
         )
         config_manager.save_llm_config(llm_provider_manager.export_runtime_config())
         return settings
@@ -1599,5 +1603,5 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=config.app.host, port=config.app.port)
 
