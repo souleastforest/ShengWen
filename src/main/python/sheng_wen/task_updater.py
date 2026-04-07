@@ -6,9 +6,8 @@
 """
 
 from typing import Dict, Any
-import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 async def update_and_notify(task_id: str, updates: Dict[str, Any]) -> dict | None:
@@ -27,7 +26,7 @@ async def update_and_notify(task_id: str, updates: Dict[str, Any]) -> dict | Non
     Returns:
         更新后的任务数据，如果任务不存在或更新失败返回None
     """
-    from .db import db, TaskStatus
+    from .db import db
     from .api import notify_task_update
 
     # 读取旧状态用于日志追踪

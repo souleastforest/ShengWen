@@ -1,7 +1,9 @@
 import asyncio
 from typing import List
+
+from loguru import logger
+
 from .worker import Worker
-from .utils.logger import logger
 
 class WorkerManager:
     """

@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from faster_whisper import WhisperModel
 from faster_whisper.utils import download_model
+from loguru import logger
 
 from .transcriber import (
     Transcriber,
@@ -16,7 +17,6 @@ from .transcriber import (
     TranscriptionError,
     TranscriptionCancelled,
 )
-from ..utils.logger import logger
 
 
 _PROXY_ENV_VAR_NAMES = (

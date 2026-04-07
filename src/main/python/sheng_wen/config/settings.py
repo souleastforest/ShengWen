@@ -13,7 +13,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Literal
 
-from ..utils.logger import logger
+from loguru import logger
+
 from ..utils.project_root import get_project_root
 
 
@@ -512,5 +513,4 @@ def to_llm_config(settings: Settings) -> "LLMConfigDataclass":
         provider=llm_cfg.provider,
         extra_headers=llm_cfg.extra_headers,
     )
-
 

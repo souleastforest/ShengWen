@@ -7,7 +7,8 @@ import subprocess
 from threading import Lock
 from typing import Any, Literal
 
-from ..utils.logger import logger
+from loguru import logger
+
 from .transcriber import get_transcriber
 
 
@@ -543,4 +544,3 @@ class TranscriptionSettingsManager:
                 "enable_bilibili_subtitle_fetch": self._enable_bilibili_subtitle_fetch,
                 "bilibili_sessdata": self._bilibili_sessdata,
             }
-

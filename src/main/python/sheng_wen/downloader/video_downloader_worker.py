@@ -2,14 +2,14 @@ import asyncio
 import json
 import os
 import re
-import uuid
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple
+
 import yt_dlp
+from loguru import logger
 
 from ..worker import Worker, TaskCancelledError
-from ..utils.logger import logger
 from ..utils.ffmpeg_helper import FFmpegHelper
 from .bilibili_author_resolver import resolve_bilibili_author, BilibiliAuthorResolveError
 

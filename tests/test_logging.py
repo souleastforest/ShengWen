@@ -15,7 +15,6 @@ def test_setup_logging_removes_default_handler():
     from loguru import logger
     from src.main.python.sheng_wen.logging import setup_logging
 
-    initial_count = len(logger._core.handlers)
     with patch("sys.stdout"):
         setup_logging(level="INFO")
     assert len(logger._core.handlers) == 1

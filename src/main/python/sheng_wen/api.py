@@ -3,19 +3,22 @@ import asyncio
 import json
 import glob
 import ipaddress
+from datetime import datetime, timezone
+from typing import List, Optional
+from urllib.parse import unquote, urlparse
+import uuid
+
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Request
 from fastapi import Form
+from loguru import logger
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, HttpUrl
-from typing import List, Optional
-import uuid
-from datetime import datetime
-from urllib.parse import unquote, urlparse
+
 from .db import db, TaskStatus
-from .utils.logger import logger
 from .config.settings import config, get_config_manager
+from .logging import setup_logging
 from .version import APP_VERSION
 from .llm.llm import LLMConfig
 from .llm.provider_manager import LLMProviderManager
@@ -29,6 +32,8 @@ from .downloader.bilibili_author_resolver import (
     resolve_bilibili_author,
     BilibiliAuthorResolveError,
 )
+
+setup_logging()
 
 app = FastAPI(title="ShengWen API", description="视频转录与 AI 总结服务", version=APP_VERSION)
 
@@ -725,8 +730,8 @@ async def upload_file(
             "id": task_id,
             "video_url": f"file://{temp_file_path}",
             "status": TaskStatus.UPLOADING,
-            "created_at": datetime.utcnow(),
-            "latest_modified_at": datetime.utcnow(),
+            "created_at": datetime.now(timezone.utc),
+            "latest_modified_at": datetime.now(timezone.utc),
             "progress": 0.0,
             "title": os.path.splitext(file.filename)[0] if file.filename else "Uploaded File",
             "author_name": None,
@@ -870,8 +875,8 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
         "id": task_id,
         "video_url": f"file://{local_path}",
         "status": TaskStatus.TRANSCRIBING,
-        "created_at": datetime.utcnow(),
-        "latest_modified_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
+        "latest_modified_at": datetime.now(timezone.utc),
         "progress": 0.0,
         "title": title,
         "author_name": None,
@@ -973,8 +978,8 @@ async def create_task(task_in: TaskCreate):
                 "id": task_id,
                 "video_url": str(task_in.video_url),
                 "status": TaskStatus.PENDING,
-                "created_at": datetime.utcnow(),
-                "latest_modified_at": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
+                "latest_modified_at": datetime.now(timezone.utc),
                 "progress": 0.0,
                 "title": task_title,
                 "author_name": None,
@@ -1018,8 +1023,8 @@ async def create_task(task_in: TaskCreate):
         "id": task_id,
         "video_url": str(task_in.video_url),
         "status": TaskStatus.PENDING,
-        "created_at": datetime.utcnow(),
-        "latest_modified_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
+        "latest_modified_at": datetime.now(timezone.utc),
         "progress": 0.0,
         "author_name": None,
         "author_url": None,
@@ -1604,4 +1609,3 @@ async def websocket_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=config.app.host, port=config.app.port)
-

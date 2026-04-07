@@ -3,7 +3,8 @@ import inspect
 from abc import ABC
 from collections import deque
 from typing import Any, NamedTuple, Coroutine
-from .utils.logger import logger
+
+from loguru import logger
 
 class TaskCancelledError(Exception):
     """任务被外部取消（例如用户删除任务）。"""

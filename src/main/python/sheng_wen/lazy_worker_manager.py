@@ -4,7 +4,9 @@
 """
 import asyncio
 from typing import Optional
-from .utils.logger import logger
+
+from loguru import logger
+
 from .config.settings import config
 
 

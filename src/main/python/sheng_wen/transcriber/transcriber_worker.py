@@ -1,15 +1,15 @@
 import os
 import re
-import shutil
 import ffmpeg
-import asyncio
 import time
 from threading import Lock, Thread
 from collections import deque
 from typing import Any, Dict, TYPE_CHECKING
+
+from loguru import logger
+
 from ..worker import Worker, TaskCancelledError
 from .transcriber import Transcriber, TranscriptionResult, TranscriptionCancelled
-from ..utils.logger import logger
 from ..api import notify_task_update
 from ..utils.ffmpeg_helper import FFmpegHelper
 
@@ -284,7 +284,6 @@ class TranscriberWorker(Worker):
                 if cancel_check():
                     raise TaskCancelledError("任务已取消，停止转录。")
                 if task_id:
-                    from ..db import db
                     # 将进度转换为百分比整数 (0-100)
                     clamped_progress = max(0.0, min(float(progress), 1.0))
                     progress_percent = int(clamped_progress * 100)
@@ -323,7 +322,7 @@ class TranscriberWorker(Worker):
             self._save_transcription_to_file(result, intermediate_file_path)
 
             if task_id:
-                from ..db import db, TaskStatus
+                from ..db import TaskStatus
                 # 保存转录文本到数据库供前端查看
                 with open(intermediate_file_path, "r", encoding="utf-8") as f:
                     transcript = f.read()
@@ -372,4 +371,3 @@ class TranscriberWorker(Worker):
                         "error_message": _build_actionable_transcription_error(str(e)),
                     },
                 ))
-

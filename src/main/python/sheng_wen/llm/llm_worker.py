@@ -6,11 +6,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..api import notify_task_update
+from loguru import logger
+
 from ..config.settings import config
 from ..summarization.chunked_summarizer import ChunkedSummarizer
 from ..summarization.chunker import count_timestamp_lines, split_transcript_into_chunks
-from ..utils.logger import logger
 from ..worker import TaskCancelledError, Worker
 from .llm import LLM, LLMError, LLMMessage
 
