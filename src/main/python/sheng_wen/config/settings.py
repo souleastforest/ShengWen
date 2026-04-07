@@ -161,6 +161,27 @@ class SummarizationConfig:
         self.chunk_debug_dump_dir = _resolve_project_path(self.chunk_debug_dump_dir)
 
 
+@dataclass
+class StorageConfig:
+    """Storage management configuration."""
+
+    max_total_mb: float = 2048
+    retention_completed_sec: int = 86400  # 24h
+    retention_failed_sec: int = 7200  # 2h
+    cleanup_interval_sec: int = 600  # 10min
+    base_dir: str = "temp"
+
+
+@dataclass
+class ObservabilityConfig:
+    """OTEL observability configuration (optional, no-op if not configured)."""
+
+    enabled: bool = False
+    otlp_endpoint: str = ""  # e.g., "http://localhost:4317"
+    service_name: str = "sheng-wen"
+    trace_sample_rate: float = 1.0
+
+
 def _dataclass_defaults(cls: type[Any]) -> dict[str, Any]:
     defaults: dict[str, Any] = {}
     for field in dataclass_fields(cls):
@@ -182,6 +203,8 @@ def _build_default_settings() -> dict[str, Any]:
         "database": _dataclass_defaults(DatabaseConfig),
         "cors": _dataclass_defaults(CORSConfig),
         "summarization": _dataclass_defaults(SummarizationConfig),
+        "storage": _dataclass_defaults(StorageConfig),
+        "observability": _dataclass_defaults(ObservabilityConfig),
     }
 
 
@@ -447,6 +470,27 @@ class JSONConfigManager:
             ),
         )
 
+    def get_storage_config(self) -> StorageConfig:
+        raw = self.get_raw_config().get("storage", {})
+        defaults = DEFAULT_SETTINGS["storage"]
+        return StorageConfig(
+            max_total_mb=float(raw.get("max_total_mb", defaults["max_total_mb"])),
+            retention_completed_sec=int(raw.get("retention_completed_sec", defaults["retention_completed_sec"])),
+            retention_failed_sec=int(raw.get("retention_failed_sec", defaults["retention_failed_sec"])),
+            cleanup_interval_sec=int(raw.get("cleanup_interval_sec", defaults["cleanup_interval_sec"])),
+            base_dir=str(raw.get("base_dir", defaults["base_dir"])),
+        )
+
+    def get_observability_config(self) -> ObservabilityConfig:
+        raw = self.get_raw_config().get("observability", {})
+        defaults = DEFAULT_SETTINGS["observability"]
+        return ObservabilityConfig(
+            enabled=bool(raw.get("enabled", defaults["enabled"])),
+            otlp_endpoint=str(raw.get("otlp_endpoint", defaults["otlp_endpoint"])),
+            service_name=str(raw.get("service_name", defaults["service_name"])),
+            trace_sample_rate=float(raw.get("trace_sample_rate", defaults["trace_sample_rate"])),
+        )
+
 
 class Settings:
     """统一配置入口（上层仅依赖该对象）。"""
@@ -477,6 +521,14 @@ class Settings:
     @property
     def summarization(self) -> SummarizationConfig:
         return self._manager.get_summarization_config()
+
+    @property
+    def storage(self) -> StorageConfig:
+        return self._manager.get_storage_config()
+
+    @property
+    def observability(self) -> ObservabilityConfig:
+        return self._manager.get_observability_config()
 
 
 _config_manager: JSONConfigManager | None = None
