@@ -7,6 +7,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
+from src.main.python.sheng_wen.application.events.bus import AsyncioEventBus
+from src.main.python.sheng_wen.application.pipeline import Pipeline
 from src.main.python.sheng_wen.config.settings import config, get_config_manager
 from src.main.python.sheng_wen.infra.api.error_handler import register_error_handlers
 from src.main.python.sheng_wen.infra.api.routes.bilibili import (
@@ -69,11 +71,15 @@ llm_provider_manager = LLMProviderManager(
     initial_config=initial_llm_config,
     initial_provider_id=initial_provider_id,
 )
+event_bus = AsyncioEventBus()
+pipeline = Pipeline(event_bus)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await pipeline.start()
     yield
+    await pipeline.stop()
     await stop_all_workers()
 
 
@@ -105,6 +111,8 @@ def _sync_worker_state() -> None:
 app.state.config_manager = config_manager
 app.state.llm_provider_manager = llm_provider_manager
 app.state.transcription_settings_manager = transcription_settings_manager
+app.state.event_bus = event_bus
+app.state.pipeline = pipeline
 
 
 async def get_llm_worker():
@@ -212,6 +220,9 @@ for name, factory in {
     "get_file_upload_worker": get_file_upload_worker,
 }.items():
     setattr(app.state, name, factory)
+
+pipeline.register_worker_factory("get_downloader_worker", get_downloader_worker)
+pipeline.register_worker_factory("get_file_upload_worker", get_file_upload_worker)
 
 
 @app.exception_handler(ModelLoadError)
