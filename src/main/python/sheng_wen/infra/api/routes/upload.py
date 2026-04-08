@@ -7,14 +7,12 @@ from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
+from src.main.python.sheng_wen.application.events.topics import TASK_CREATED
 from src.main.python.sheng_wen.db import TaskStatus, db
 from src.main.python.sheng_wen.infra.api.routes import deps
 from src.main.python.sheng_wen.infra.api.routes.schemas import LocalPathTaskCreate, Task
 from src.main.python.sheng_wen.infra.api.routes.websocket import notify_task_update
-from src.main.python.sheng_wen.utils.media import (
-    SUPPORTED_MEDIA_EXTENSIONS,
-    build_transcriber_payload,
-)
+from src.main.python.sheng_wen.utils.media import SUPPORTED_MEDIA_EXTENSIONS
 
 
 router = APIRouter(prefix="")
@@ -74,15 +72,15 @@ async def upload_file(
         }
         db.save_task(task_id, task_data)
 
-        worker_factory = deps.get_worker_factory(request, "get_file_upload_worker")
-        worker = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
-        await worker.add_task(
+        await request.app.state.event_bus.publish(
+            TASK_CREATED,
             {
                 "task_id": task_id,
+                "video_url": f"file://{temp_file_path}",
                 "file_path": temp_file_path,
                 "filename": file.filename or "uploaded_file",
                 "summary_mode": resolved_summary_mode,
-            }
+            },
         )
 
         await notify_task_update(task_id)
@@ -198,15 +196,15 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
     }
     db.save_task(task_id, task_data)
 
-    payload_data = build_transcriber_payload(
-        task_id=task_id,
-        media_path=local_path,
-        output_dir="temp",
-        summary_mode=resolved_summary_mode,
+    await request.app.state.event_bus.publish(
+        TASK_CREATED,
+        {
+            "task_id": task_id,
+            "video_url": f"file://{local_path}",
+            "file_path": local_path,
+            "filename": os.path.basename(local_path) or "uploaded_file",
+            "summary_mode": resolved_summary_mode,
+        },
     )
-
-    worker_factory = deps.get_worker_factory(request, "get_transcriber_worker")
-    worker = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
-    await worker.add_task(payload_data)
     await notify_task_update(task_id)
     return task_data
