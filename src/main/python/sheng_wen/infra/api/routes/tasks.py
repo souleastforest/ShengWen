@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
 from src.main.python.sheng_wen.db import TaskStatus, db
+from src.main.python.sheng_wen.application.events.topics import TASK_CREATED
 from src.main.python.sheng_wen.infra.api.routes import deps
 from src.main.python.sheng_wen.infra.api.routes.schemas import (
     ReSummarizeRequest,
@@ -109,10 +110,6 @@ async def create_task(task_in: TaskCreate, request: Request):
             }
             db.save_task(task_id, task_data)
 
-            worker_factory = deps.get_worker_factory(request, "get_downloader_worker")
-            worker = await deps._resolve_worker_or_raise(
-                worker_factory, task_id=task_id
-            )
             task_payload = {
                 "task_id": task_id,
                 "video_url": str(task_in.video_url),
@@ -127,7 +124,7 @@ async def create_task(task_in: TaskCreate, request: Request):
             if task_cookie:
                 task_payload["bilibili_sessdata"] = task_cookie
 
-            await worker.add_task(task_payload)
+            await request.app.state.event_bus.publish(TASK_CREATED, task_payload)
             await notify_task_update(task_id)
 
             if first_task_data is None:
@@ -153,8 +150,6 @@ async def create_task(task_in: TaskCreate, request: Request):
     }
     db.save_task(task_id, task_data)
 
-    worker_factory = deps.get_worker_factory(request, "get_downloader_worker")
-    worker = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
     task_payload = {
         "task_id": task_id,
         "video_url": str(task_in.video_url),
@@ -171,7 +166,7 @@ async def create_task(task_in: TaskCreate, request: Request):
             "indices": task_in.bilibili_parts.indices,
         }
 
-    await worker.add_task(task_payload)
+    await request.app.state.event_bus.publish(TASK_CREATED, task_payload)
     await notify_task_update(task_id)
     return task_data
 
