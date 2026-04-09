@@ -15,8 +15,8 @@ from zeroconf import ServiceInfo, Zeroconf
 path = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, path)
 
-from src.main.python.sheng_wen.utils.logger import logger
-from src.main.python.sheng_wen.db import TaskStatus
+from loguru import logger
+from src.main.python.sheng_wen.db import TaskStatus, db as task_db
 from src.main.python.sheng_wen.version import APP_VERSION
 import src.main.python.sheng_wen.api as api_module
 from src.main.python.sheng_wen.config.settings import config
@@ -193,16 +193,19 @@ async def run_sidebar_progress_test():
 async def lifespan(app: FastAPI):
     """
     管理应用的生命周期：
-    - 启动时恢复中断任务
+    - 启动时恢复中断任务、启动事件总线 Pipeline
     - Workers 在首次使用时才初始化（真正的懒加载）
-    - 关闭时停止所有 Workers
+    - 关闭时停止 Pipeline、Workers
     """
     # 启动恢复：把上次异常中断遗留在中间态的任务回收为 FAILED，避免前端永远卡在"处理中"。
-    recovered_count = api_module.db.recover_interrupted_tasks()
+    recovered_count = task_db.recover_interrupted_tasks()
     if recovered_count > 0:
         logger.warning(
             f"--- [Lifespan] 检测到 {recovered_count} 个中断任务，已自动标记为 FAILED（可手动重试） ---"
         )
+
+    # 启动事件总线 Pipeline（订阅 TASK_CREATED 等事件）
+    await api_module.pipeline.start()
 
     logger.info("--- [Lifespan] 服务启动完成，前端已可访问 ---")
     logger.info("--- [Lifespan] Workers 将在首次使用时自动初始化 ---")
@@ -215,6 +218,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown logic
+    await api_module.pipeline.stop()
     await api_module.stop_all_workers()
 
     # 注销 mDNS 服务
@@ -240,6 +244,10 @@ app.add_middleware(
 
 # 将原始 api.py 中定义的路由挂载到新实例上
 app.include_router(api_module.app.router)
+
+# 复制 api_module.app.state 上的共享状态（event_bus, pipeline, worker factories 等）
+for attr, value in api_module.app.state._state.items():
+    setattr(app.state, attr, value)
 
 # 重新挂载静态文件目录 (这部分不会被 include_router 包含)
 dist_dir = config.app.frontend_dist_dir
