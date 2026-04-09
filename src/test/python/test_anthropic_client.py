@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 import unittest
 import asyncio
 import os

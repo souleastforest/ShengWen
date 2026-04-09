@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 
 from src.main.python.sheng_wen.domain.storage.type import (
-    CleanupTrigger,
     FileRecord,
     FileType,
     StoragePolicy,

@@ -3,7 +3,6 @@
 TDD RED phase — these tests should FAIL until the integration is wired.
 """
 import pytest
-from unittest.mock import AsyncMock
 
 from src.main.python.sheng_wen.application.events.bus import AsyncioEventBus
 from src.main.python.sheng_wen.application.pipeline import Pipeline

@@ -516,12 +516,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ffmpeg"
-version = "1.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f0/cc/3b7408b8ecf7c1d20ad480c3eaed7619857bf1054b690226e906fdf14258/ffmpeg-1.4.tar.gz", hash = "sha256:6931692c890ff21d39938433c2189747815dca0c60ddc7f9bb97f199dba0b5b9", size = 5055, upload-time = "2018-10-08T07:50:05.748Z" }
-
-[[package]]
 name = "ffmpeg-python"
 version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1989,7 +1983,6 @@ dependencies = [
     { name = "browser-cookie3" },
     { name = "fastapi" },
     { name = "faster-whisper" },
-    { name = "ffmpeg" },
     { name = "ffmpeg-python" },
     { name = "imageio-ffmpeg" },
     { name = "litellm" },
@@ -2021,7 +2014,6 @@ requires-dist = [
     { name = "browser-cookie3", specifier = "==0.19.1" },
     { name = "fastapi", specifier = "==0.115.6" },
     { name = "faster-whisper", specifier = "==1.2.1" },
-    { name = "ffmpeg", specifier = ">=1.4" },
     { name = "ffmpeg-python", specifier = "==0.2.0" },
     { name = "imageio-ffmpeg", specifier = "==0.5.1" },
     { name = "litellm", specifier = "==1.81.0" },

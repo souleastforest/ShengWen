@@ -25,7 +25,6 @@ dependencies = [
     "browser-cookie3==0.19.1",
     "anthropic>=0.39.0",
     "loguru>=0.7.0",
-    "ffmpeg>=1.4",
 ]
 
 [tool.uv]

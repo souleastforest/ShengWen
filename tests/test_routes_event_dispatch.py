@@ -3,10 +3,9 @@
 TDD RED phase — these tests should FAIL until routes are refactored
 to publish TASK_CREATED events instead of calling worker.add_task() directly.
 """
-import os
 import pytest
 import httpx
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 

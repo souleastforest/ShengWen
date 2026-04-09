@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 import os
 import sys
 import tempfile
@@ -129,4 +131,3 @@ class TestTranscriptionSettingsManager(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

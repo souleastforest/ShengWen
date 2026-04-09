@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 import os
 import sys
 import unittest
@@ -45,4 +47,3 @@ class TestBilibiliSubtitleHelpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

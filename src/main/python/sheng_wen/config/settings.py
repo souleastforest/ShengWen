@@ -11,11 +11,14 @@ import json
 from dataclasses import MISSING, dataclass, fields as dataclass_fields
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
 
 from ..utils.project_root import get_project_root
+
+if TYPE_CHECKING:
+    from src.main.python.sheng_wen.llm.llm import LLMConfig as LLMConfigDataclass
 
 
 def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -552,7 +555,7 @@ def get_config() -> Settings:
 config = get_config()
 
 
-def to_llm_config(settings: Settings) -> "LLMConfigDataclass":
+def to_llm_config(settings: Settings) -> LLMConfigDataclass:
     from src.main.python.sheng_wen.llm.llm import LLMConfig as LLMConfigDataclass
 
     llm_cfg = settings.llm
@@ -565,4 +568,3 @@ def to_llm_config(settings: Settings) -> "LLMConfigDataclass":
         provider=llm_cfg.provider,
         extra_headers=llm_cfg.extra_headers,
     )
-
