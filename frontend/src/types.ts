@@ -96,6 +96,12 @@ export interface TranscriptionSettings {
   has_bilibili_sessdata: boolean;
   bilibili_cookie_source: string;
   bilibili_sessdata_masked: string;
+  transcriber_type: "fast_whisper" | "vibe_voice_asr";
+  vibevoice_language_model: string;
+  vibevoice_max_new_tokens: number;
+  vibevoice_dtype: "bfloat16" | "float16";
+  vibevoice_inference_mode: "local" | "api";
+  vibevoice_api_url: string;
 }
 
 export interface UpdateTranscriptionSettingsRequest {
@@ -106,6 +112,38 @@ export interface UpdateTranscriptionSettingsRequest {
   enable_bilibili_subtitle_fetch?: boolean;
   bilibili_sessdata?: string;
   clear_bilibili_sessdata?: boolean;
+  transcriber_type?: "fast_whisper" | "vibe_voice_asr";
+  vibevoice_language_model?: string;
+  vibevoice_max_new_tokens?: number;
+  vibevoice_dtype?: "bfloat16" | "float16";
+  vibevoice_inference_mode?: "local" | "api";
+  vibevoice_api_url?: string;
+}
+
+export interface ModelPathValidationRequest {
+  path: string;
+  transcriber_type: "fast_whisper" | "vibe_voice_asr";
+}
+
+export interface ModelPathValidationResult {
+  valid: boolean;
+  message: string;
+  resolved_path: string;
+  missing_files: string[];
+  has_processor_config: boolean;
+  details: Record<string, unknown>;
+}
+
+export interface VibeVoiceServiceScanResult {
+  url: string;
+  status: "available" | "unreachable";
+}
+
+export interface VibeVoiceServiceStatus {
+  running: boolean;
+  pid: number | null;
+  api_url: string;
+  api_healthy: boolean;
 }
 
 export interface SummarizationSettings {

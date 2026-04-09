@@ -18,6 +18,9 @@ from .transcriber import (
     TranscriptionError,
     TranscriptionResult,
 )
+from .vibevoice_model_validator import (
+    perform_lightweight_load_test,
+)
 
 
 class VibeVoiceAsrTranscriber(Transcriber):
@@ -49,6 +52,17 @@ class VibeVoiceAsrTranscriber(Transcriber):
 
         if not str(self.device).startswith("cuda"):
             raise ModelLoadError("VibeVoice-ASR requires CUDA and bfloat16 inference.")
+
+        # Validate model path before attempting full load
+        validation = perform_lightweight_load_test(self.model_path)
+        if not validation.valid:
+            logger.error(
+                f"[VibeVoiceAsrTranscriber] Model validation failed: {validation.message}"
+            )
+            raise ModelLoadError(
+                f"模型路径验证失败: {validation.message}\n"
+                f"路径: {validation.resolved_path}"
+            )
 
         start_time = time.time()
         try:

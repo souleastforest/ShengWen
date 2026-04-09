@@ -49,6 +49,12 @@ const {
   summarizationSettings,
   isUpdatingSummarizationSettings,
   isReadingBilibiliCookieFromBrowser,
+  modelPathValidationResult,
+  isValidatingModelPath,
+  vibevoiceServiceStatus,
+  isScanningVibeVoice,
+  isStartingVibeVoice,
+  isStoppingVibeVoice,
   submitTask,
   cancelSubmitting,
   selectTask,
@@ -61,6 +67,12 @@ const {
   updateTaskTopic,
   updateLlmSettings,
   updateTranscriptionSettings,
+  validateModelPath,
+  scanVibeVoiceServices,
+  startVibeVoiceService,
+  stopVibeVoiceService,
+  fetchVibeVoiceServiceStatus,
+  clearModelPathValidation,
   updateSummarizationSettings,
   testLlm,
   readBilibiliCookieFromBrowser,
@@ -428,9 +440,15 @@ const handleUpdateLlmSettingsAndTest = async (payload: {
 
 const handleUpdateTranscriptionSettings = async (payload: {
   device?: 'cpu' | 'cuda'
+  transcriber_type?: 'fast_whisper' | 'vibe_voice_asr'
   model_source?: 'auto_download' | 'manual_path'
   model_size?: 'tiny' | 'base' | 'small' | 'medium' | 'large'
   model_path?: string
+  vibevoice_language_model?: string
+  vibevoice_max_new_tokens?: number
+  vibevoice_dtype?: 'bfloat16' | 'float16'
+  vibevoice_inference_mode?: 'local' | 'api'
+  vibevoice_api_url?: string
   enable_bilibili_subtitle_fetch?: boolean
   bilibili_sessdata?: string
   clear_bilibili_sessdata?: boolean
@@ -453,6 +471,66 @@ const handleReadBilibiliCookieFromBrowser = async () => {
     }
   } catch (_e) {
     // 错误信息由 useTaskViewModel + Toast 统一处理
+  }
+}
+
+const handleValidateModelPath = async (request: {
+  path: string
+  transcriber_type: 'fast_whisper' | 'vibe_voice_asr'
+}) => {
+  try {
+    await validateModelPath(request)
+  } catch (_e) {
+    // error state is set in the composable
+  }
+}
+
+const handleScanVibeVoiceServices = async () => {
+  try {
+    const results = await scanVibeVoiceServices()
+    const available = results.find((item) => item.status === 'available')
+    if (available) {
+      success(`发现可用服务：${available.url}`)
+    } else if (results.length > 0) {
+      info('已扫描本地服务，但未发现可用实例')
+    } else {
+      info('未发现本地 VibeVoice 服务')
+    }
+    await fetchVibeVoiceServiceStatus()
+  } catch (_e) {
+    // 错误已在 composable 中处理
+  }
+}
+
+const handleStartVibeVoiceService = async (payload: {
+  model_path: string
+  port: number
+  dtype: string
+}) => {
+  try {
+    await startVibeVoiceService(payload.model_path, payload.port, payload.dtype)
+    await fetchVibeVoiceServiceStatus()
+    success('VibeVoice 服务已启动')
+  } catch (_e) {
+    // 错误信息由调用方或后续状态查询处理
+  }
+}
+
+const handleStopVibeVoiceService = async () => {
+  try {
+    await stopVibeVoiceService()
+    await fetchVibeVoiceServiceStatus()
+    success('VibeVoice 服务已停止')
+  } catch (_e) {
+    // 错误信息由调用方或后续状态查询处理
+  }
+}
+
+const handleFetchVibeVoiceServiceStatus = async () => {
+  try {
+    await fetchVibeVoiceServiceStatus()
+  } catch (_e) {
+    // 保持静默，避免打开设置时产生多余提示
   }
 }
 
@@ -741,12 +819,24 @@ watch(
       :summarizationSettings="summarizationSettings"
       :isUpdatingSummarizationSettings="isUpdatingSummarizationSettings"
       :isReadingBilibiliCookieFromBrowser="isReadingBilibiliCookieFromBrowser"
+      :modelPathValidationResult="modelPathValidationResult"
+      :isValidatingModelPath="isValidatingModelPath"
+      :vibevoiceServiceStatus="vibevoiceServiceStatus"
+      :isScanningVibeVoice="isScanningVibeVoice"
+      :isStartingVibeVoice="isStartingVibeVoice"
+      :isStoppingVibeVoice="isStoppingVibeVoice"
+      :clearModelPathValidation="clearModelPathValidation"
       @close="isSettingsModalOpen = false"
       @updateLlmSettings="handleUpdateLlmSettings"
       @updateLlmSettingsAndTest="handleUpdateLlmSettingsAndTest"
       @testLlm="handleTestLlm"
       @updateTranscriptionSettings="handleUpdateTranscriptionSettings"
       @readBilibiliCookieFromBrowser="handleReadBilibiliCookieFromBrowser"
+      @validateModelPath="handleValidateModelPath"
+      @scanVibeVoiceServices="handleScanVibeVoiceServices"
+      @startVibeVoiceService="handleStartVibeVoiceService"
+      @stopVibeVoiceService="handleStopVibeVoiceService"
+      @fetchVibeVoiceServiceStatus="handleFetchVibeVoiceServiceStatus"
       @updateSummarizationSettings="handleUpdateSummarizationSettings"
     />
 
@@ -918,4 +1008,3 @@ watch(
 /* 移动端点击高亮优化 */
 html, body { -webkit-tap-highlight-color: transparent; }
 </style>
-

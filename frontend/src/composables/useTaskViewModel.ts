@@ -1,4 +1,4 @@
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import type {
   Task,
@@ -15,7 +15,11 @@ import type {
   BilibiliVideoInfo,
   BilibiliPartsConfig,
   LocalPathCheckResult,
-  LocalFolderScanResult
+  LocalFolderScanResult,
+  ModelPathValidationRequest,
+  ModelPathValidationResult,
+  VibeVoiceServiceScanResult,
+  VibeVoiceServiceStatus,
 } from '../types'
 
 // 传统复制方法（兼容非安全上下文，如局域网 HTTP）
@@ -152,6 +156,28 @@ export function useTaskViewModel() {
   const summarizationSettings = ref<SummarizationSettings | null>(null)
   const isUpdatingSummarizationSettings = ref(false)
   const isReadingBilibiliCookieFromBrowser = ref(false)
+  const modelPathValidationResult = ref<ModelPathValidationResult | null>(null)
+  const isValidatingModelPath = ref(false)
+  const vibevoiceInferenceMode = ref<'local' | 'api'>(
+    transcriptionSettings.value?.vibevoice_inference_mode || 'local'
+  )
+  const vibevoiceApiUrl = ref(
+    transcriptionSettings.value?.vibevoice_api_url || ''
+  )
+  const vibevoiceServiceStatus = ref<VibeVoiceServiceStatus | null>(null)
+  const isScanningVibeVoice = ref(false)
+  const isStartingVibeVoice = ref(false)
+  const isStoppingVibeVoice = ref(false)
+
+  const clearModelPathValidation = () => {
+    modelPathValidationResult.value = null
+  }
+
+  watch(transcriptionSettings, (settings) => {
+    if (!settings) return
+    vibevoiceInferenceMode.value = settings.vibevoice_inference_mode || 'local'
+    vibevoiceApiUrl.value = settings.vibevoice_api_url || ''
+  })
 
   let ws: WebSocket | null = null
   let submitAbortController: AbortController | null = null
@@ -459,6 +485,73 @@ export function useTaskViewModel() {
     }
   }
 
+  const validateModelPath = async (request: ModelPathValidationRequest): Promise<ModelPathValidationResult> => {
+    isValidatingModelPath.value = true
+    modelPathValidationResult.value = null
+    try {
+      const response = await axios.post(`${apiBaseUrl}/transcription/settings/validate-model-path`, request)
+      modelPathValidationResult.value = response.data
+      return response.data as ModelPathValidationResult
+    } catch (err) {
+      console.error('Failed to validate model path:', err)
+      const result: ModelPathValidationResult = {
+        valid: false,
+        message: axios.isAxiosError(err) && err.response?.data?.detail
+          ? String(err.response.data.detail)
+          : '验证请求失败',
+        resolved_path: request.path,
+        missing_files: [],
+        has_processor_config: false,
+        details: {},
+      }
+      modelPathValidationResult.value = result
+      throw err
+    } finally {
+      isValidatingModelPath.value = false
+    }
+  }
+
+  const scanVibeVoiceServices = async (): Promise<VibeVoiceServiceScanResult[]> => {
+    isScanningVibeVoice.value = true
+    try {
+      const response = await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-scan`)
+      return response.data as VibeVoiceServiceScanResult[]
+    } catch (err) {
+      console.error('Failed to scan VibeVoice services:', err)
+      return []
+    } finally {
+      isScanningVibeVoice.value = false
+    }
+  }
+
+  const startVibeVoiceService = async (modelPath: string, port: number, dtype: string): Promise<void> => {
+    isStartingVibeVoice.value = true
+    try {
+      await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-service/start`, {
+        model_path: modelPath,
+        port,
+        dtype,
+      })
+    } finally {
+      isStartingVibeVoice.value = false
+    }
+  }
+
+  const stopVibeVoiceService = async (): Promise<void> => {
+    isStoppingVibeVoice.value = true
+    try {
+      await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-service/stop`)
+    } finally {
+      isStoppingVibeVoice.value = false
+    }
+  }
+
+  const fetchVibeVoiceServiceStatus = async (): Promise<VibeVoiceServiceStatus> => {
+    const response = await axios.get(`${apiBaseUrl}/transcription/settings/vibevoice-service/status`)
+    vibevoiceServiceStatus.value = response.data
+    return response.data as VibeVoiceServiceStatus
+  }
+
   const testLlm = async () => {
     try {
       const response = await axios.post(`${apiBaseUrl}/llm/test`)
@@ -675,6 +768,14 @@ export function useTaskViewModel() {
     summarizationSettings,
     isUpdatingSummarizationSettings,
     isReadingBilibiliCookieFromBrowser,
+    modelPathValidationResult,
+    isValidatingModelPath,
+    vibevoiceInferenceMode,
+    vibevoiceApiUrl,
+    vibevoiceServiceStatus,
+    isScanningVibeVoice,
+    isStartingVibeVoice,
+    isStoppingVibeVoice,
 
     // Actions
     submitTask,
@@ -688,6 +789,12 @@ export function useTaskViewModel() {
     updateLlmSettings,
     fetchTranscriptionSettings,
     updateTranscriptionSettings,
+    validateModelPath,
+    scanVibeVoiceServices,
+    startVibeVoiceService,
+    stopVibeVoiceService,
+    fetchVibeVoiceServiceStatus,
+    clearModelPathValidation,
     fetchSummarizationSettings,
     updateSummarizationSettings,
     testLlm,
