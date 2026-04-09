@@ -24,6 +24,7 @@ dependencies = [
     "zeroconf==0.131.0",
     "browser-cookie3==0.19.1",
     "anthropic>=0.39.0",
+    "httpx",
     "loguru>=0.7.0",
 ]
 
