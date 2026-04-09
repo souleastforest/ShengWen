@@ -53,5 +53,18 @@
     "chunk_debug_dump_dir": "temp/chunk_debug",
     "enable_agent_pipeline": false,
     "transcript_chunk_emit_duration_sec": 600
+  },
+  "storage": {
+    "max_total_mb": 2048,
+    "retention_completed_sec": 86400,
+    "retention_failed_sec": 7200,
+    "cleanup_interval_sec": 600,
+    "base_dir": "temp"
+  },
+  "observability": {
+    "enabled": false,
+    "otlp_endpoint": "",
+    "service_name": "sheng-wen",
+    "trace_sample_rate": 1.0
   }
 }
