@@ -70,6 +70,8 @@ transcription_settings_manager = TranscriptionSettingsManager(
     vibevoice_language_model=whisper_cfg.vibevoice_language_model,
     vibevoice_max_new_tokens=whisper_cfg.vibevoice_max_new_tokens,
     vibevoice_dtype=whisper_cfg.vibevoice_dtype,
+    vibevoice_inference_mode=whisper_cfg.vibevoice_inference_mode,
+    vibevoice_api_url=whisper_cfg.vibevoice_api_url,
 )
 llm_provider_manager = LLMProviderManager(
     initial_config=initial_llm_config,

@@ -295,6 +295,8 @@ class TranscriptionSettingsManager:
         vibevoice_language_model: str = "Qwen/Qwen2.5-7B",
         vibevoice_max_new_tokens: int = 8192,
         vibevoice_dtype: str = "bfloat16",
+        vibevoice_inference_mode: str = "local",
+        vibevoice_api_url: str = "",
     ):
         self._lock = Lock()
         self._device = initial_device
@@ -315,6 +317,12 @@ class TranscriptionSettingsManager:
         self._vibevoice_max_new_tokens = max(1, int(vibevoice_max_new_tokens))
         dtype = str(vibevoice_dtype or "bfloat16").lower()
         self._vibevoice_dtype = dtype if dtype in VALID_VIBEVOICE_DTYPES else "bfloat16"
+        self._vibevoice_inference_mode = (
+            vibevoice_inference_mode
+            if vibevoice_inference_mode in {"local", "api"}
+            else "local"
+        )
+        self._vibevoice_api_url = str(vibevoice_api_url or "")
 
     def bind_transcriber_worker(self, worker: Any) -> None:
         with self._lock:
@@ -349,6 +357,8 @@ class TranscriptionSettingsManager:
             vibevoice_language_model = self._vibevoice_language_model
             vibevoice_max_new_tokens = self._vibevoice_max_new_tokens
             vibevoice_dtype = self._vibevoice_dtype
+            vibevoice_inference_mode = self._vibevoice_inference_mode
+            vibevoice_api_url = self._vibevoice_api_url
 
         sessdata, source = self.resolve_bilibili_sessdata()
         cuda_diag = _detect_cuda_support()
@@ -397,6 +407,8 @@ class TranscriptionSettingsManager:
             "vibevoice_language_model": vibevoice_language_model,
             "vibevoice_max_new_tokens": vibevoice_max_new_tokens,
             "vibevoice_dtype": vibevoice_dtype,
+            "vibevoice_inference_mode": vibevoice_inference_mode,
+            "vibevoice_api_url": vibevoice_api_url,
         }
 
     def _build_transcriber_kwargs(
@@ -443,6 +455,8 @@ class TranscriptionSettingsManager:
         vibevoice_language_model: str | None = None,
         vibevoice_max_new_tokens: int | None = None,
         vibevoice_dtype: str | None = None,
+        vibevoice_inference_mode: str | None = None,
+        vibevoice_api_url: str | None = None,
     ) -> dict[str, Any]:
         if (
             device is None
@@ -456,6 +470,8 @@ class TranscriptionSettingsManager:
             and vibevoice_language_model is None
             and vibevoice_max_new_tokens is None
             and vibevoice_dtype is None
+            and vibevoice_inference_mode is None
+            and vibevoice_api_url is None
         ):
             raise ValueError("至少需要更新一个配置项")
 
@@ -609,6 +625,21 @@ class TranscriptionSettingsManager:
                     f"[TranscriptionSettingsManager] 已更新 VibeVoice 数据类型: {self._vibevoice_dtype}"
                 )
 
+            if vibevoice_inference_mode is not None:
+                mode = str(vibevoice_inference_mode or "local").strip().lower()
+                self._vibevoice_inference_mode = (
+                    mode if mode in {"local", "api"} else "local"
+                )
+                logger.info(
+                    f"[TranscriptionSettingsManager] 已更新 VibeVoice 推理模式: {self._vibevoice_inference_mode}"
+                )
+
+            if vibevoice_api_url is not None:
+                self._vibevoice_api_url = str(vibevoice_api_url or "").strip()
+                logger.info(
+                    f"[TranscriptionSettingsManager] 已更新 VibeVoice API URL: {self._vibevoice_api_url}"
+                )
+
         return self.get_settings()
 
     def read_cookie_from_browser(self) -> dict[str, Any]:
@@ -652,4 +683,6 @@ class TranscriptionSettingsManager:
                 "vibevoice_language_model": self._vibevoice_language_model,
                 "vibevoice_max_new_tokens": self._vibevoice_max_new_tokens,
                 "vibevoice_dtype": self._vibevoice_dtype,
+                "vibevoice_inference_mode": self._vibevoice_inference_mode,
+                "vibevoice_api_url": self._vibevoice_api_url,
             }

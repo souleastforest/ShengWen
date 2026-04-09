@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -112,6 +112,8 @@ class TranscriptionSettings(BaseModel):
     vibevoice_language_model: str = "Qwen/Qwen2.5-7B"
     vibevoice_max_new_tokens: int = 8192
     vibevoice_dtype: str = "bfloat16"
+    vibevoice_inference_mode: str = "local"
+    vibevoice_api_url: str = ""
 
 
 class TranscriptionSettingsUpdate(BaseModel):
@@ -147,6 +149,12 @@ class TranscriptionSettingsUpdate(BaseModel):
     )
     vibevoice_dtype: Optional[str] = Field(
         default=None, description="VibeVoice 数据类型: bfloat16 或 float16"
+    )
+    vibevoice_inference_mode: Optional[str] = Field(
+        default=None, description="VibeVoice 推理模式: local 或 api"
+    )
+    vibevoice_api_url: Optional[str] = Field(
+        default=None, description="VibeVoice 推理服务地址"
     )
 
 
@@ -241,5 +249,38 @@ class LLMTestResult(BaseModel):
     response: Optional[str] = None
 
 
+class VibeVoiceServiceScanResult(BaseModel):
+    url: str
+    status: str  # "available" | "unreachable"
+
+
+class VibeVoiceServiceStatus(BaseModel):
+    running: bool
+    pid: Optional[int] = None
+    api_url: str = ""
+    api_healthy: bool = False
+
+
 class VersionInfo(BaseModel):
     version: str
+
+
+class ModelPathValidationRequest(BaseModel):
+    path: str = Field(..., description="模型目录路径")
+    transcriber_type: str = Field(
+        default="vibe_voice_asr",
+        description="转录器类型: fast_whisper 或 vibe_voice_asr",
+    )
+
+
+class ModelPathValidationResult(BaseModel):
+    valid: bool = Field(description="路径是否有效")
+    message: str = Field(description="验证结果消息")
+    resolved_path: str = Field(description="解析后的绝对路径")
+    missing_files: list[str] = Field(
+        default_factory=list, description="缺失的必要文件列表"
+    )
+    has_processor_config: bool = Field(
+        default=False, description="是否包含处理器配置文件"
+    )
+    details: dict[str, Any] = Field(default_factory=dict, description="额外的验证详情")

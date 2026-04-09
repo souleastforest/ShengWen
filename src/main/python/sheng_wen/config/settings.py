@@ -66,6 +66,8 @@ class WhisperConfig:
     vibevoice_language_model: str = "Qwen/Qwen2.5-7B"
     vibevoice_max_new_tokens: int = 8192
     vibevoice_dtype: Literal["bfloat16", "float16"] = "bfloat16"
+    vibevoice_inference_mode: Literal["local", "api"] = "local"
+    vibevoice_api_url: str = ""
 
     def __post_init__(self):
         # Validate vibevoice_max_new_tokens is positive
@@ -74,6 +76,8 @@ class WhisperConfig:
         # Validate vibevoice_dtype
         if self.vibevoice_dtype not in ("bfloat16", "float16"):
             self.vibevoice_dtype = "bfloat16"
+        if self.vibevoice_inference_mode not in ("local", "api"):
+            self.vibevoice_inference_mode = "local"
 
     @property
     def configured_model_path(self) -> str | None:
@@ -394,6 +398,15 @@ class JSONConfigManager:
             whisper_patch["vibevoice_dtype"] = (
                 dtype if dtype in {"bfloat16", "float16"} else "bfloat16"
             )
+        if "vibevoice_inference_mode" in payload:
+            mode = str(payload.get("vibevoice_inference_mode") or "local").strip().lower()
+            whisper_patch["vibevoice_inference_mode"] = (
+                mode if mode in {"local", "api"} else "local"
+            )
+        if "vibevoice_api_url" in payload:
+            whisper_patch["vibevoice_api_url"] = str(
+                payload.get("vibevoice_api_url") or ""
+            )
         if whisper_patch:
             self.update_section("whisper", whisper_patch)
 
@@ -504,6 +517,17 @@ class JSONConfigManager:
         ).lower()
         if vibevoice_dtype not in {"bfloat16", "float16"}:
             vibevoice_dtype = "bfloat16"
+        vibevoice_inference_mode = str(
+            raw.get(
+                "vibevoice_inference_mode",
+                defaults.get("vibevoice_inference_mode", "local"),
+            )
+        ).strip().lower()
+        if vibevoice_inference_mode not in {"local", "api"}:
+            vibevoice_inference_mode = "local"
+        vibevoice_api_url = str(
+            raw.get("vibevoice_api_url", defaults.get("vibevoice_api_url", ""))
+        )
 
         return WhisperConfig(
             transcriber_type=transcriber_type,  # type: ignore[arg-type]
@@ -524,6 +548,8 @@ class JSONConfigManager:
             vibevoice_language_model=vibevoice_language_model,
             vibevoice_max_new_tokens=vibevoice_max_new_tokens,
             vibevoice_dtype=vibevoice_dtype,  # type: ignore[arg-type]
+            vibevoice_inference_mode=vibevoice_inference_mode,  # type: ignore[arg-type]
+            vibevoice_api_url=vibevoice_api_url,
         )
 
     def get_llm_config(self) -> LLMConfig:

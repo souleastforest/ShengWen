@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
@@ -12,10 +13,16 @@ from src.main.python.sheng_wen.infra.api.routes.schemas import (
     LLMSettings,
     LLMSettingsUpdate,
     LLMTestResult,
+    ModelPathValidationRequest,
+    ModelPathValidationResult,
     SummarizationSettings,
     SummarizationSettingsUpdate,
     TranscriptionSettings,
     TranscriptionSettingsUpdate,
+)
+
+from src.main.python.sheng_wen.transcriber.vibevoice_model_validator import (
+    perform_lightweight_load_test,
 )
 
 
@@ -164,6 +171,8 @@ async def update_transcription_settings(
             vibevoice_language_model=payload.vibevoice_language_model,
             vibevoice_max_new_tokens=payload.vibevoice_max_new_tokens,
             vibevoice_dtype=payload.vibevoice_dtype,
+            vibevoice_inference_mode=payload.vibevoice_inference_mode,
+            vibevoice_api_url=payload.vibevoice_api_url,
         )
         request.app.state.config_manager.save_transcription_config(
             request.app.state.transcription_settings_manager.get_runtime_state()
@@ -184,6 +193,35 @@ async def read_bilibili_cookie_from_browser(request: Request):
             request.app.state.transcription_settings_manager.get_runtime_state()
         )
     return result
+
+
+@router.post(
+    "/transcription/settings/validate-model-path",
+    response_model=ModelPathValidationResult,
+)
+async def validate_model_path(payload: ModelPathValidationRequest):
+    if payload.transcriber_type == "vibe_voice_asr":
+        result = perform_lightweight_load_test(payload.path)
+        return ModelPathValidationResult(**result.to_dict())
+    else:
+        path = os.path.abspath(os.path.expanduser(payload.path))
+        if os.path.isdir(path):
+            return ModelPathValidationResult(
+                valid=True,
+                message="路径有效。",
+                resolved_path=path,
+                missing_files=[],
+                has_processor_config=False,
+                details={},
+            )
+        return ModelPathValidationResult(
+            valid=False,
+            message=f"路径不存在或不是目录: {path}",
+            resolved_path=path,
+            missing_files=[],
+            has_processor_config=False,
+            details={"error": "path_not_found"},
+        )
 
 
 @router.get("/summarization/settings", response_model=SummarizationSettings)
