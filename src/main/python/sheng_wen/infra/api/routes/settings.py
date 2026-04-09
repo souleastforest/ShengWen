@@ -160,6 +160,7 @@ async def update_transcription_settings(
             enable_bilibili_subtitle_fetch=payload.enable_bilibili_subtitle_fetch,
             bilibili_sessdata=payload.bilibili_sessdata,
             clear_bilibili_sessdata=payload.clear_bilibili_sessdata,
+            transcriber_type=payload.transcriber_type,
         )
         request.app.state.config_manager.save_transcription_config(
             request.app.state.transcription_settings_manager.get_runtime_state()

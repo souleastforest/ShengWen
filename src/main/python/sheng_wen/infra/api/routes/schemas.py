@@ -87,6 +87,7 @@ class LLMSettingsUpdate(BaseModel):
 
 class TranscriptionSettings(BaseModel):
     device: str
+    transcriber_type: str = "fast_whisper"
     model_source: str
     model_size: str
     model_path: str
@@ -111,6 +112,9 @@ class TranscriptionSettings(BaseModel):
 
 class TranscriptionSettingsUpdate(BaseModel):
     device: Optional[str] = Field(default=None, description="cpu 或 cuda")
+    transcriber_type: Optional[str] = Field(
+        default=None, description="fast_whisper 或 vibe_voice_asr"
+    )
     model_source: Optional[str] = Field(
         default=None, description="auto_download 或 manual_path"
     )

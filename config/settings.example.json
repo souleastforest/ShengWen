@@ -8,6 +8,7 @@
     "prompt_file": "src/main/python/sheng_wen/prompt.md"
   },
   "whisper": {
+    "transcriber_type": "fast_whisper",
     "model_source": "auto_download",
     "model_path": null,
     "model_size": "tiny",

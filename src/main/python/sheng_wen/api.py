@@ -66,6 +66,7 @@ transcription_settings_manager = TranscriptionSettingsManager(
     model_path=whisper_cfg.configured_model_path,
     initial_enable_bilibili_subtitle_fetch=initial_enable_bilibili_subtitle_fetch,
     initial_bilibili_sessdata=initial_bilibili_sessdata,
+    transcriber_type=whisper_cfg.transcriber_type,
 )
 llm_provider_manager = LLMProviderManager(
     initial_config=initial_llm_config,
@@ -141,10 +142,17 @@ async def get_transcriber_worker():
 
     runtime_transcription_state = transcription_settings_manager.get_runtime_state()
     transcriber_config = transcription_settings_manager.build_transcriber_kwargs()
+    transcriber_type = str(
+        runtime_transcription_state.get("transcriber_type") or "fast_whisper"
+    )
     model_source = str(
         runtime_transcription_state.get("model_source") or "auto_download"
     )
-    if model_source == "manual_path":
+    if transcriber_type == "vibe_voice_asr":
+        logger.info(
+            f"[Transcriber] VibeVoice-ASR 模型路径: {transcriber_config.get('model_path')}"
+        )
+    elif model_source == "manual_path":
         logger.info(
             f"[Transcriber] 使用本地模型路径: {transcriber_config.get('model_size_or_path')}"
         )
@@ -152,7 +160,7 @@ async def get_transcriber_worker():
         logger.info(
             f"[Transcriber] 使用模型大小: {transcriber_config.get('model_size')}"
         )
-    transcriber = get_transcriber("fast_whisper", **transcriber_config)
+    transcriber = get_transcriber(transcriber_type, **transcriber_config)
     llm_w = await get_llm_worker()
     transcriber_worker = TranscriberWorker(
         name="TranscriberWorker", transcriber=transcriber, next_worker=llm_w
