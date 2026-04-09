@@ -58,3 +58,6 @@ frontend/dist/
 # Codex agent artifacts
 .codex/
 
+# Local model weights
+models/
+

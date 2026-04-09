@@ -247,7 +247,12 @@ def _validate_manual_model_dir(model_path: str) -> tuple[bool, str, str]:
     if not os.path.isdir(abs_path):
         return (False, f"模型路径不是目录: {abs_path}", abs_path)
 
-    missing = [name for name in REQUIRED_MANUAL_MODEL_FILES if not os.path.isfile(os.path.join(abs_path, name))]
+    missing = [
+        name for name in REQUIRED_MANUAL_MODEL_FILES
+        if not os.path.isfile(os.path.join(abs_path, name))
+        # vocabulary.json is an acceptable alternative to vocabulary.txt
+        and not (name == "vocabulary.txt" and os.path.isfile(os.path.join(abs_path, "vocabulary.json")))
+    ]
     if missing:
         return (
             False,
