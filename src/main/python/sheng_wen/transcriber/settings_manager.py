@@ -31,7 +31,9 @@ def _read_bilibili_cookie_from_browser() -> tuple[str, str]:
     try:
         import browser_cookie3  # type: ignore
     except ImportError:
-        logger.warning("[TranscriptionSettingsManager] browser_cookie3 未安装，无法从浏览器读取 Cookie")
+        logger.warning(
+            "[TranscriptionSettingsManager] browser_cookie3 未安装，无法从浏览器读取 Cookie"
+        )
         return "", ""
 
     for browser_key, browser_name in browsers_to_try:
@@ -45,17 +47,24 @@ def _read_bilibili_cookie_from_browser() -> tuple[str, str]:
                 if cookie.name == "SESSDATA" and cookie.value:
                     sessdata = _sanitize_cookie_value(cookie.value)
                     if sessdata:
-                        logger.info(f"[TranscriptionSettingsManager] 成功从 {browser_name} 读取 B 站 Cookie")
+                        logger.info(
+                            f"[TranscriptionSettingsManager] 成功从 {browser_name} 读取 B 站 Cookie"
+                        )
                         return sessdata, browser_name
         except PermissionError:
             # 浏览器正在运行时会触发此错误，跳过该浏览器
-            logger.debug(f"[TranscriptionSettingsManager] {browser_name} 正在运行，跳过读取")
+            logger.debug(
+                f"[TranscriptionSettingsManager] {browser_name} 正在运行，跳过读取"
+            )
             continue
         except Exception as e:
-            logger.debug(f"[TranscriptionSettingsManager] 从 {browser_name} 读取失败: {e}")
+            logger.debug(
+                f"[TranscriptionSettingsManager] 从 {browser_name} 读取失败: {e}"
+            )
             continue
 
     return "", ""
+
 
 _CUDA_DLL_PATTERN = re.compile(
     r"(cublas(?:Lt)?64_(\d+)\.dll|cudart64_(\d+)\.dll|cudnn64(?:_\d+)?\.dll)",
@@ -120,66 +129,68 @@ def _detect_cuda_support() -> dict[str, Any]:
     reason = "unknown"
     message = "CUDA 状态未知。"
 
+    # ctranslate2 is the authoritative CUDA source for faster-whisper
+    try:
+        import ctranslate2  # type: ignore
+
+        ctranslate2_installed = True
+        ctranslate2_cuda_device_count = int(ctranslate2.get_cuda_device_count())
+        if ctranslate2_cuda_device_count > 0:
+            cuda_available = True
+            reason = "ok"
+            message = f"CUDA 可用（CTranslate2 检测到 {ctranslate2_cuda_device_count} 张 GPU），可使用 GPU 转录。"
+        elif not has_nvidia_gpu:
+            reason = "no_gpu"
+            message = "未检测到 NVIDIA 显卡（或驱动未正确安装）。"
+        else:
+            reason = "ct2_no_cuda_device"
+            message = "检测到 NVIDIA 显卡，但 CTranslate2 未检测到可用 CUDA 设备。建议更新显卡驱动，或先切回 CPU。"
+    except Exception as e:
+        error_text = str(e)
+        if isinstance(e, ModuleNotFoundError):
+            if has_nvidia_gpu:
+                reason = "ct2_missing"
+                message = (
+                    "检测到 NVIDIA 显卡，但缺少 CTranslate2（fast-whisper 依赖）。"
+                    "\n可处理步骤：执行 `pip install ctranslate2` 后重启应用。"
+                )
+            else:
+                reason = "no_gpu"
+                message = "未检测到 NVIDIA 显卡（或驱动未正确安装）。"
+        else:
+            missing_dll, cuda_major = _extract_missing_cuda_runtime_dll(error_text)
+            reason = "ct2_cuda_runtime_unavailable"
+            if missing_dll:
+                message = (
+                    "检测到 CUDA 环境，但 fast-whisper CUDA 运行时不可用。"
+                    f"\n缺少运行库：{missing_dll}"
+                    f"\n{_build_cuda_fix_message(missing_dll, cuda_major)}"
+                )
+            else:
+                message = (
+                    "检测到 CUDA 环境，但 fast-whisper CUDA 运行时不可用。"
+                    f"\n原始错误：{error_text}"
+                    "\n可处理步骤：先切换到 CPU；随后检查 CUDA Runtime 与驱动版本，并重启后重试。"
+                )
+
+    # torch is supplementary — only enriches diagnostics when available
     try:
         import torch  # type: ignore
 
         torch_installed = True
         torch_cuda_built = bool(getattr(torch.version, "cuda", None))
-        cuda_available = bool(torch.cuda.is_available())
-
-        if cuda_available:
-            try:
-                import ctranslate2  # type: ignore
-
-                ctranslate2_installed = True
-                ctranslate2_cuda_device_count = int(ctranslate2.get_cuda_device_count())
-                if ctranslate2_cuda_device_count > 0:
-                    reason = "ok"
-                    message = f"CUDA 可用（CTranslate2 检测到 {ctranslate2_cuda_device_count} 张 GPU），可使用 GPU 转录。"
-                else:
-                    cuda_available = False
-                    reason = "ct2_no_cuda_device"
-                    message = "检测到 PyTorch CUDA 可用，但 CTranslate2 未检测到可用 CUDA 设备。建议更新显卡驱动，或先切回 CPU。"
-            except Exception as e:
-                cuda_available = False
-                error_text = str(e)
-                if isinstance(e, ModuleNotFoundError):
-                    reason = "ct2_missing"
-                    message = (
-                        "检测到 CUDA 环境，但缺少 CTranslate2（fast-whisper 依赖）。"
-                        "\n可处理步骤：执行 `pip install ctranslate2` 后重启应用。"
-                    )
-                else:
-                    missing_dll, cuda_major = _extract_missing_cuda_runtime_dll(error_text)
-                    reason = "ct2_cuda_runtime_unavailable"
-                    if missing_dll:
-                        message = (
-                            "检测到 CUDA 环境，但 fast-whisper CUDA 运行时不可用。"
-                            f"\n缺少运行库：{missing_dll}"
-                            f"\n{_build_cuda_fix_message(missing_dll, cuda_major)}"
-                        )
-                    else:
-                        message = (
-                            "检测到 CUDA 环境，但 fast-whisper CUDA 运行时不可用。"
-                            f"\n原始错误：{error_text}"
-                            "\n可处理步骤：先切换到 CPU；随后检查 CUDA Runtime 与驱动版本，并重启后重试。"
-                        )
-        elif not has_nvidia_gpu:
-            reason = "no_gpu"
-            message = "未检测到 NVIDIA 显卡（或驱动未正确安装）。"
-        elif not torch_cuda_built:
-            reason = "torch_cpu_only"
-            message = "检测到 NVIDIA 显卡，但当前 PyTorch 为 CPU 版本（未启用 CUDA）。"
-        else:
-            reason = "cuda_runtime_unavailable"
-            message = "检测到 NVIDIA 显卡，且 PyTorch 支持 CUDA，但当前 CUDA 运行时不可用（可能是驱动/运行库问题）。"
+        if not cuda_available and has_nvidia_gpu:
+            if not torch_cuda_built:
+                reason = "torch_cpu_only"
+                message = "检测到 NVIDIA 显卡，CTranslate2 未检测到可用 CUDA 设备，且当前 PyTorch 为 CPU 版本（未启用 CUDA）。"
+            elif bool(torch.cuda.is_available()):
+                reason = "ct2_no_cuda_device"
+                message = "检测到 PyTorch CUDA 可用，但 CTranslate2 未检测到可用 CUDA 设备。建议更新显卡驱动，或先切回 CPU。"
+            else:
+                reason = "cuda_runtime_unavailable"
+                message = "检测到 NVIDIA 显卡，且 PyTorch 支持 CUDA，但当前 CUDA 运行时不可用（可能是驱动/运行库问题）。"
     except Exception:
-        if has_nvidia_gpu:
-            reason = "torch_missing"
-            message = "检测到 NVIDIA 显卡，但未安装 PyTorch（或环境中不可导入）。"
-        else:
-            reason = "no_gpu"
-            message = "未检测到 NVIDIA 显卡（或驱动未正确安装）。"
+        pass
 
     return {
         "cuda_available": cuda_available,
@@ -198,7 +209,9 @@ def _sanitize_cookie_value(value: str | None) -> str:
 
 
 def _read_env_bilibili_sessdata() -> str:
-    return _sanitize_cookie_value(os.getenv("BILIBILI_SESSDATA") or os.getenv("SESSDATA"))
+    return _sanitize_cookie_value(
+        os.getenv("BILIBILI_SESSDATA") or os.getenv("SESSDATA")
+    )
 
 
 def _mask_cookie_value(value: str) -> str:
@@ -248,10 +261,14 @@ def _validate_manual_model_dir(model_path: str) -> tuple[bool, str, str]:
         return (False, f"模型路径不是目录: {abs_path}", abs_path)
 
     missing = [
-        name for name in REQUIRED_MANUAL_MODEL_FILES
+        name
+        for name in REQUIRED_MANUAL_MODEL_FILES
         if not os.path.isfile(os.path.join(abs_path, name))
         # vocabulary.json is an acceptable alternative to vocabulary.txt
-        and not (name == "vocabulary.txt" and os.path.isfile(os.path.join(abs_path, "vocabulary.json")))
+        and not (
+            name == "vocabulary.txt"
+            and os.path.isfile(os.path.join(abs_path, "vocabulary.json"))
+        )
     ]
     if missing:
         return (
@@ -277,7 +294,9 @@ class TranscriptionSettingsManager:
         self._lock = Lock()
         self._device = initial_device
         self._model_size = _normalize_model_size(model_size, fallback="tiny")
-        self._model_source = _normalize_model_source(model_source, fallback="auto_download")
+        self._model_source = _normalize_model_source(
+            model_source, fallback="auto_download"
+        )
         self._model_path = _sanitize_model_path(model_path)
         if self._model_source == "auto_download" and self._model_path:
             # 兼容旧配置：曾填写过 model_path 时默认沿用手动模式。
@@ -290,7 +309,9 @@ class TranscriptionSettingsManager:
         with self._lock:
             self._transcriber_worker = worker
 
-    def resolve_bilibili_sessdata(self, task_override_sessdata: str | None = None) -> tuple[str, str]:
+    def resolve_bilibili_sessdata(
+        self, task_override_sessdata: str | None = None
+    ) -> tuple[str, str]:
         task_override = _sanitize_cookie_value(task_override_sessdata)
         if task_override:
             return task_override, "task"
@@ -320,7 +341,9 @@ class TranscriptionSettingsManager:
         devices = ["cpu"]
         if cuda_available:
             devices.append("cuda")
-        manual_valid, manual_message, manual_resolved_path = _validate_manual_model_dir(model_path)
+        manual_valid, manual_message, manual_resolved_path = _validate_manual_model_dir(
+            model_path
+        )
         model_path_valid = manual_valid if model_source == "manual_path" else True
         model_path_message = (
             manual_message
@@ -335,7 +358,9 @@ class TranscriptionSettingsManager:
             "model_path": model_path,
             "model_path_valid": model_path_valid,
             "model_path_message": model_path_message,
-            "model_path_resolved": manual_resolved_path if model_source == "manual_path" else "",
+            "model_path_resolved": manual_resolved_path
+            if model_source == "manual_path"
+            else "",
             "required_model_files": list(REQUIRED_MANUAL_MODEL_FILES),
             "cuda_available": cuda_available,
             "available_devices": devices,
@@ -343,7 +368,9 @@ class TranscriptionSettingsManager:
             "torch_installed": bool(cuda_diag["torch_installed"]),
             "torch_cuda_built": bool(cuda_diag["torch_cuda_built"]),
             "ctranslate2_installed": bool(cuda_diag["ctranslate2_installed"]),
-            "ctranslate2_cuda_device_count": int(cuda_diag["ctranslate2_cuda_device_count"]),
+            "ctranslate2_cuda_device_count": int(
+                cuda_diag["ctranslate2_cuda_device_count"]
+            ),
             "cuda_reason": str(cuda_diag["cuda_reason"]),
             "cuda_message": str(cuda_diag["cuda_message"]),
             "enable_bilibili_subtitle_fetch": enable_bilibili_subtitle_fetch,
@@ -385,7 +412,9 @@ class TranscriptionSettingsManager:
         self,
         device: str | None = None,
         model_source: Literal["auto_download", "manual_path"] | str | None = None,
-        model_size: Literal["tiny", "base", "small", "medium", "large"] | str | None = None,
+        model_size: Literal["tiny", "base", "small", "medium", "large"]
+        | str
+        | None = None,
         model_path: str | None = None,
         enable_bilibili_subtitle_fetch: bool | None = None,
         bilibili_sessdata: str | None = None,
@@ -484,16 +513,20 @@ class TranscriptionSettingsManager:
                     f"device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
                 )
             elif (
-                (device_changed or model_source_changed or model_size_changed or model_path_changed)
-                and self._transcriber_worker is None
-            ):
+                device_changed
+                or model_source_changed
+                or model_size_changed
+                or model_path_changed
+            ) and self._transcriber_worker is None:
                 logger.info(
                     "[TranscriptionSettingsManager] 已保存转录配置（worker 尚未初始化，将在首次任务时生效）: "
                     f"device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
                 )
 
             if enable_bilibili_subtitle_fetch is not None:
-                self._enable_bilibili_subtitle_fetch = bool(enable_bilibili_subtitle_fetch)
+                self._enable_bilibili_subtitle_fetch = bool(
+                    enable_bilibili_subtitle_fetch
+                )
                 logger.info(
                     "[TranscriptionSettingsManager] 已更新字幕直取开关: "
                     f"enable_bilibili_subtitle_fetch={self._enable_bilibili_subtitle_fetch}"
