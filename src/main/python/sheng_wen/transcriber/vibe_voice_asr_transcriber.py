@@ -6,7 +6,9 @@ from typing import Any
 import torch
 from loguru import logger
 
-from vibevoice.modular.modeling_vibevoice_asr import VibeVoiceASRForConditionalGeneration
+from vibevoice.modular.modeling_vibevoice_asr import (
+    VibeVoiceASRForConditionalGeneration,
+)
 from vibevoice.processor.vibevoice_asr_processor import VibeVoiceASRProcessor
 
 from .transcriber import (
@@ -65,28 +67,29 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 f"[VibeVoiceAsrTranscriber] Model loaded in {self.model_load_time:.2f}s"
             )
         except Exception as e:
-            raise ModelLoadError(
-                f"加载 VibeVoice-ASR 模型失败: {e}"
-            ) from e
+            raise ModelLoadError(f"加载 VibeVoice-ASR 模型失败: {e}") from e
 
     @staticmethod
     def _parse_timestamp(timestamp_str: str) -> float:
         if not timestamp_str:
             return 0.0
 
-        parts = timestamp_str.strip().split(":")
-        if len(parts) == 3:
-            hours = float(parts[0])
-            minutes = float(parts[1])
-            seconds = float(parts[2])
-            return hours * 3600.0 + minutes * 60.0 + seconds
+        try:
+            parts = timestamp_str.strip().split(":")
+            if len(parts) == 3:
+                hours = float(parts[0])
+                minutes = float(parts[1])
+                seconds = float(parts[2])
+                return hours * 3600.0 + minutes * 60.0 + seconds
 
-        if len(parts) == 2:
-            minutes = float(parts[0])
-            seconds = float(parts[1])
-            return minutes * 60.0 + seconds
+            if len(parts) == 2:
+                minutes = float(parts[0])
+                seconds = float(parts[1])
+                return minutes * 60.0 + seconds
 
-        return 0.0
+            return 0.0
+        except (ValueError, TypeError):
+            return 0.0
 
     @staticmethod
     def _move_inputs_to_device(inputs: Any, device: str):

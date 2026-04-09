@@ -164,9 +164,13 @@ class TestVibeVoiceAsrTranscriberTimestampParsing(unittest.TestCase):
         result = VibeVoiceAsrTranscriber._parse_timestamp("invalid")
         self.assertEqual(result, 0.0)
 
-        # Test that invalid format with colon raises ValueError (actual implementation behavior)
-        with self.assertRaises(ValueError):
-            VibeVoiceAsrTranscriber._parse_timestamp("abc:def")
+        # Test that invalid format with colon returns 0.0 (graceful error handling)
+        result = VibeVoiceAsrTranscriber._parse_timestamp("abc:def")
+        self.assertEqual(result, 0.0)
+
+        # Test other invalid numeric formats
+        result = VibeVoiceAsrTranscriber._parse_timestamp("abc:def:ghi")
+        self.assertEqual(result, 0.0)
 
 
 class TestVibeVoiceAsrTranscriberInputMovement(unittest.TestCase):
