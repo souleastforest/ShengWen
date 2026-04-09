@@ -3,7 +3,7 @@ from src.main.python.sheng_wen.shared.types.exceptions import (
     DatabaseError,
     DomainError,
     ExternalServiceError,
-    FileNotFoundError as ShengWenFileNotFoundError,
+    StorageFileNotFoundError,
     InfrastructureError,
     LLMConnectionError,
     LLMError,
@@ -37,4 +37,11 @@ def test_exception_message():
     err = TaskNotFoundError("task-123")
     assert str(err) == "Task not found: task-123"
     assert err.business_code == "TASK_NOT_FOUND"
+    assert err.http_status == 404
+
+
+def test_storage_file_not_found_error():
+    err = StorageFileNotFoundError("/some/path.wav")
+    assert isinstance(err, StorageError)
+    assert err.business_code == "FILE_NOT_FOUND"
     assert err.http_status == 404

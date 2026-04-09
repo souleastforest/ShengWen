@@ -115,7 +115,7 @@ class StorageQuotaExceededError(StorageError):
         )
 
 
-class FileNotFoundError(StorageError):
+class StorageFileNotFoundError(StorageError):
     def __init__(self, path: str = "") -> None:
         super().__init__(
             f"File not found: {path}",
