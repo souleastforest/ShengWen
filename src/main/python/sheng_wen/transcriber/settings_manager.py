@@ -346,6 +346,9 @@ class TranscriptionSettingsManager:
             model_size = self._model_size
             model_path = self._model_path
             transcriber_type = self._transcriber_type
+            vibevoice_language_model = self._vibevoice_language_model
+            vibevoice_max_new_tokens = self._vibevoice_max_new_tokens
+            vibevoice_dtype = self._vibevoice_dtype
 
         sessdata, source = self.resolve_bilibili_sessdata()
         cuda_diag = _detect_cuda_support()
@@ -391,9 +394,9 @@ class TranscriptionSettingsManager:
             "bilibili_cookie_source": source,
             "bilibili_sessdata_masked": _mask_cookie_value(sessdata),
             # VibeVoice-specific settings
-            "vibevoice_language_model": self._vibevoice_language_model,
-            "vibevoice_max_new_tokens": self._vibevoice_max_new_tokens,
-            "vibevoice_dtype": self._vibevoice_dtype,
+            "vibevoice_language_model": vibevoice_language_model,
+            "vibevoice_max_new_tokens": vibevoice_max_new_tokens,
+            "vibevoice_dtype": vibevoice_dtype,
         }
 
     def _build_transcriber_kwargs(
@@ -578,7 +581,9 @@ class TranscriptionSettingsManager:
 
             # Update VibeVoice-specific settings
             if vibevoice_language_model is not None:
-                self._vibevoice_language_model = str(vibevoice_language_model) or "Qwen/Qwen2.5-7B"
+                self._vibevoice_language_model = (
+                    str(vibevoice_language_model) or "Qwen/Qwen2.5-7B"
+                )
                 logger.info(
                     f"[TranscriptionSettingsManager] 已更新 VibeVoice 语言模型: {self._vibevoice_language_model}"
                 )
@@ -586,7 +591,9 @@ class TranscriptionSettingsManager:
             if vibevoice_max_new_tokens is not None:
                 try:
                     max_tokens = int(vibevoice_max_new_tokens)
-                    self._vibevoice_max_new_tokens = max_tokens if max_tokens > 0 else 8192
+                    self._vibevoice_max_new_tokens = (
+                        max_tokens if max_tokens > 0 else 8192
+                    )
                 except (ValueError, TypeError):
                     self._vibevoice_max_new_tokens = 8192
                 logger.info(
@@ -595,7 +602,9 @@ class TranscriptionSettingsManager:
 
             if vibevoice_dtype is not None:
                 dtype = str(vibevoice_dtype or "bfloat16").lower()
-                self._vibevoice_dtype = dtype if dtype in VALID_VIBEVOICE_DTYPES else "bfloat16"
+                self._vibevoice_dtype = (
+                    dtype if dtype in VALID_VIBEVOICE_DTYPES else "bfloat16"
+                )
                 logger.info(
                     f"[TranscriptionSettingsManager] 已更新 VibeVoice 数据类型: {self._vibevoice_dtype}"
                 )

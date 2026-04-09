@@ -54,7 +54,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
         try:
             logger.info(
                 f"[VibeVoiceAsrTranscriber] Loading model from {self.model_path} "
-                f"(device={self.device}, dtype=bfloat16)"
+                f"(device={self.device}, dtype={self.dtype})"
             )
             self.processor = VibeVoiceASRProcessor.from_pretrained(
                 self.model_path,
