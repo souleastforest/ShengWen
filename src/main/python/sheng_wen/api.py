@@ -35,11 +35,15 @@ from src.main.python.sheng_wen.transcriber.settings_manager import (
     TranscriptionSettingsManager,
 )
 from src.main.python.sheng_wen.transcriber.transcriber import ModelLoadError
+from src.main.python.sheng_wen.transcriber.vibevoice_service_manager import (
+    VibeVoiceServiceManager,
+)
 from src.main.python.sheng_wen.version import APP_VERSION
 
 setup_logging()
 downloader_worker = file_upload_worker = llm_worker = transcriber_worker = None
 config_manager = get_config_manager()
+vibevoice_service_manager = VibeVoiceServiceManager()
 llm_cfg = config.llm
 initial_llm_config = LLMConfig(
     base_url=llm_cfg.base_url,
@@ -87,6 +91,7 @@ async def lifespan(app: FastAPI):
     yield
     await pipeline.stop()
     await stop_all_workers()
+    await vibevoice_service_manager.shutdown()
 
 
 app = FastAPI(
@@ -117,6 +122,7 @@ def _sync_worker_state() -> None:
 app.state.config_manager = config_manager
 app.state.llm_provider_manager = llm_provider_manager
 app.state.transcription_settings_manager = transcription_settings_manager
+app.state.vibevoice_service_manager = vibevoice_service_manager
 app.state.event_bus = event_bus
 app.state.pipeline = pipeline
 
@@ -146,37 +152,61 @@ async def get_transcriber_worker():
     from .transcriber.transcriber_worker import TranscriberWorker
 
     runtime_transcription_state = transcription_settings_manager.get_runtime_state()
-    transcriber_config = transcription_settings_manager.build_transcriber_kwargs()
     transcriber_type = str(
         runtime_transcription_state.get("transcriber_type") or "fast_whisper"
     )
-    model_source = str(
-        runtime_transcription_state.get("model_source") or "auto_download"
-    )
+
     if transcriber_type == "vibe_voice_asr":
-        logger.info(
-            f"[Transcriber] VibeVoice-ASR 模型路径: {transcriber_config.get('model_path')}"
+        inference_mode = str(
+            runtime_transcription_state.get("vibevoice_inference_mode", "local")
         )
-        # Add VibeVoice-specific config
-        import torch
-        dtype_str = runtime_transcription_state.get("vibevoice_dtype", "bfloat16")
-        dtype = torch.bfloat16 if dtype_str == "bfloat16" else torch.float16
-        transcriber_config["language_model_pretrained_name"] = runtime_transcription_state.get(
-            "vibevoice_language_model", "Qwen/Qwen2.5-7B"
-        )
-        transcriber_config["max_new_tokens"] = runtime_transcription_state.get(
-            "vibevoice_max_new_tokens", 8192
-        )
-        transcriber_config["dtype"] = dtype
-    elif model_source == "manual_path":
-        logger.info(
-            f"[Transcriber] 使用本地模型路径: {transcriber_config.get('model_size_or_path')}"
-        )
+        if inference_mode == "api":
+            api_url = str(runtime_transcription_state.get("vibevoice_api_url", "")).strip()
+            if not api_url:
+                raise ValueError("API 推理模式需要填写推理服务地址")
+            logger.info(f"[Transcriber] VibeVoice API 模式, URL: {api_url}")
+            transcriber_config = {
+                "api_url": api_url,
+                "max_new_tokens": runtime_transcription_state.get(
+                    "vibevoice_max_new_tokens", 8192
+                ),
+            }
+            from .transcriber.vibe_voice_api_transcriber import VibeVoiceApiTranscriber
+
+            transcriber = VibeVoiceApiTranscriber(**transcriber_config)
+        else:
+            model_path = str(runtime_transcription_state.get("model_path") or "")
+            import torch
+
+            dtype_str = runtime_transcription_state.get("vibevoice_dtype", "bfloat16")
+            dtype = torch.bfloat16 if dtype_str == "bfloat16" else torch.float16
+            transcriber_config = {
+                "model_path": model_path,
+                "device": runtime_transcription_state.get("device", "cuda"),
+                "language_model_pretrained_name": runtime_transcription_state.get(
+                    "vibevoice_language_model", "Qwen/Qwen2.5-7B"
+                ),
+                "max_new_tokens": runtime_transcription_state.get(
+                    "vibevoice_max_new_tokens", 8192
+                ),
+                "dtype": dtype,
+            }
+            logger.info(f"[Transcriber] VibeVoice-ASR 本地模式, 路径: {model_path}")
+            transcriber = get_transcriber("vibe_voice_asr", **transcriber_config)
     else:
-        logger.info(
-            f"[Transcriber] 使用模型大小: {transcriber_config.get('model_size')}"
+        transcriber_config = transcription_settings_manager.build_transcriber_kwargs()
+        model_source = str(
+            runtime_transcription_state.get("model_source") or "auto_download"
         )
-    transcriber = get_transcriber(transcriber_type, **transcriber_config)
+        if model_source == "manual_path":
+            logger.info(
+                f"[Transcriber] 使用本地模型路径: {transcriber_config.get('model_size_or_path')}"
+            )
+        else:
+            logger.info(
+                f"[Transcriber] 使用模型大小: {transcriber_config.get('model_size')}"
+            )
+        transcriber = get_transcriber(transcriber_type, **transcriber_config)
     llm_w = await get_llm_worker()
     transcriber_worker = TranscriberWorker(
         name="TranscriberWorker", transcriber=transcriber, next_worker=llm_w

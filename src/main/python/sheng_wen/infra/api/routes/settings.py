@@ -19,6 +19,8 @@ from src.main.python.sheng_wen.infra.api.routes.schemas import (
     SummarizationSettingsUpdate,
     TranscriptionSettings,
     TranscriptionSettingsUpdate,
+    VibeVoiceServiceScanResult,
+    VibeVoiceServiceStatus,
 )
 
 from src.main.python.sheng_wen.transcriber.vibevoice_model_validator import (
@@ -222,6 +224,59 @@ async def validate_model_path(payload: ModelPathValidationRequest):
             has_processor_config=False,
             details={"error": "path_not_found"},
         )
+
+
+@router.post(
+    "/transcription/settings/vibevoice-scan",
+    response_model=list[VibeVoiceServiceScanResult],
+)
+async def vibevoice_scan_services(request: Request):
+    """Scan localhost ports 8000-8010 for VibeVoice vLLM services."""
+    mgr = request.app.state.vibevoice_service_manager
+    results = await mgr.scan_local_ports()
+    return [VibeVoiceServiceScanResult(**r) for r in results]
+
+
+@router.post("/transcription/settings/vibevoice-service/start")
+async def vibevoice_service_start(request: Request):
+    """Start a local vLLM subprocess for VibeVoice inference."""
+    body = await request.json()
+    model_path = str(body.get("model_path", "")).strip()
+    port = int(body.get("port", 8000))
+    dtype = str(body.get("dtype", "bfloat16"))
+
+    if not model_path:
+        raise HTTPException(status_code=400, detail="请填写模型目录")
+
+    mgr = request.app.state.vibevoice_service_manager
+    result = mgr.start_service(model_path=model_path, port=port, dtype=dtype)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "启动失败"))
+    return result
+
+
+@router.post("/transcription/settings/vibevoice-service/stop")
+async def vibevoice_service_stop(request: Request):
+    """Stop the managed vLLM subprocess."""
+    mgr = request.app.state.vibevoice_service_manager
+    result = mgr.stop_service()
+    return result
+
+
+@router.get(
+    "/transcription/settings/vibevoice-service/status",
+    response_model=VibeVoiceServiceStatus,
+)
+async def vibevoice_service_status(request: Request):
+    """Get the status of the managed vLLM subprocess and its API health."""
+    mgr = request.app.state.vibevoice_service_manager
+    health = await mgr.health_check()
+    return VibeVoiceServiceStatus(
+        running=mgr.is_running,
+        pid=mgr.pid,
+        api_url=mgr.api_url,
+        api_healthy=health.get("healthy", False),
+    )
 
 
 @router.get("/summarization/settings", response_model=SummarizationSettings)
