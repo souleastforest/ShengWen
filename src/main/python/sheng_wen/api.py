@@ -67,6 +67,9 @@ transcription_settings_manager = TranscriptionSettingsManager(
     initial_enable_bilibili_subtitle_fetch=initial_enable_bilibili_subtitle_fetch,
     initial_bilibili_sessdata=initial_bilibili_sessdata,
     transcriber_type=whisper_cfg.transcriber_type,
+    vibevoice_language_model=whisper_cfg.vibevoice_language_model,
+    vibevoice_max_new_tokens=whisper_cfg.vibevoice_max_new_tokens,
+    vibevoice_dtype=whisper_cfg.vibevoice_dtype,
 )
 llm_provider_manager = LLMProviderManager(
     initial_config=initial_llm_config,
@@ -152,6 +155,17 @@ async def get_transcriber_worker():
         logger.info(
             f"[Transcriber] VibeVoice-ASR 模型路径: {transcriber_config.get('model_path')}"
         )
+        # Add VibeVoice-specific config
+        import torch
+        dtype_str = runtime_transcription_state.get("vibevoice_dtype", "bfloat16")
+        dtype = torch.bfloat16 if dtype_str == "bfloat16" else torch.float16
+        transcriber_config["language_model_pretrained_name"] = runtime_transcription_state.get(
+            "vibevoice_language_model", "Qwen/Qwen2.5-7B"
+        )
+        transcriber_config["max_new_tokens"] = runtime_transcription_state.get(
+            "vibevoice_max_new_tokens", 8192
+        )
+        transcriber_config["dtype"] = dtype
     elif model_source == "manual_path":
         logger.info(
             f"[Transcriber] 使用本地模型路径: {transcriber_config.get('model_size_or_path')}"

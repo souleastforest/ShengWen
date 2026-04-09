@@ -230,6 +230,7 @@ REQUIRED_MANUAL_MODEL_FILES = (
     "tokenizer.json",
     "vocabulary.txt",
 )
+VALID_VIBEVOICE_DTYPES = {"bfloat16", "float16"}
 
 
 def _sanitize_model_path(value: str | None) -> str:
@@ -290,6 +291,10 @@ class TranscriptionSettingsManager:
         model_path: str | None = None,
         initial_enable_bilibili_subtitle_fetch: bool = True,
         initial_bilibili_sessdata: str = "",
+        transcriber_type: str = "fast_whisper",
+        vibevoice_language_model: str = "Qwen/Qwen2.5-7B",
+        vibevoice_max_new_tokens: int = 8192,
+        vibevoice_dtype: str = "bfloat16",
     ):
         self._lock = Lock()
         self._device = initial_device
@@ -303,7 +308,13 @@ class TranscriptionSettingsManager:
             self._model_source = "manual_path"
         self._enable_bilibili_subtitle_fetch = initial_enable_bilibili_subtitle_fetch
         self._bilibili_sessdata = _sanitize_cookie_value(initial_bilibili_sessdata)
+        self._transcriber_type = transcriber_type
         self._transcriber_worker: Any = None
+        # VibeVoice-specific settings
+        self._vibevoice_language_model = vibevoice_language_model or "Qwen/Qwen2.5-7B"
+        self._vibevoice_max_new_tokens = max(1, int(vibevoice_max_new_tokens))
+        dtype = str(vibevoice_dtype or "bfloat16").lower()
+        self._vibevoice_dtype = dtype if dtype in VALID_VIBEVOICE_DTYPES else "bfloat16"
 
     def bind_transcriber_worker(self, worker: Any) -> None:
         with self._lock:
@@ -334,6 +345,7 @@ class TranscriptionSettingsManager:
             model_source = self._model_source
             model_size = self._model_size
             model_path = self._model_path
+            transcriber_type = self._transcriber_type
 
         sessdata, source = self.resolve_bilibili_sessdata()
         cuda_diag = _detect_cuda_support()
@@ -353,6 +365,7 @@ class TranscriptionSettingsManager:
 
         return {
             "device": current_device,
+            "transcriber_type": transcriber_type,
             "model_source": model_source,
             "model_size": model_size,
             "model_path": model_path,
@@ -377,6 +390,10 @@ class TranscriptionSettingsManager:
             "has_bilibili_sessdata": bool(sessdata),
             "bilibili_cookie_source": source,
             "bilibili_sessdata_masked": _mask_cookie_value(sessdata),
+            # VibeVoice-specific settings
+            "vibevoice_language_model": self._vibevoice_language_model,
+            "vibevoice_max_new_tokens": self._vibevoice_max_new_tokens,
+            "vibevoice_dtype": self._vibevoice_dtype,
         }
 
     def _build_transcriber_kwargs(
@@ -419,6 +436,10 @@ class TranscriptionSettingsManager:
         enable_bilibili_subtitle_fetch: bool | None = None,
         bilibili_sessdata: str | None = None,
         clear_bilibili_sessdata: bool | None = None,
+        transcriber_type: str | None = None,
+        vibevoice_language_model: str | None = None,
+        vibevoice_max_new_tokens: int | None = None,
+        vibevoice_dtype: str | None = None,
     ) -> dict[str, Any]:
         if (
             device is None
@@ -428,6 +449,10 @@ class TranscriptionSettingsManager:
             and enable_bilibili_subtitle_fetch is None
             and bilibili_sessdata is None
             and clear_bilibili_sessdata is None
+            and transcriber_type is None
+            and vibevoice_language_model is None
+            and vibevoice_max_new_tokens is None
+            and vibevoice_dtype is None
         ):
             raise ValueError("至少需要更新一个配置项")
 
@@ -542,6 +567,39 @@ class TranscriptionSettingsManager:
                     f" has_value={bool(self._bilibili_sessdata)}"
                 )
 
+            # Update transcriber_type
+            if transcriber_type is not None:
+                t_type = str(transcriber_type or "fast_whisper").strip().lower()
+                if t_type in {"fast_whisper", "vibe_voice_asr"}:
+                    self._transcriber_type = t_type
+                    logger.info(
+                        f"[TranscriptionSettingsManager] 已更新转录器类型: {self._transcriber_type}"
+                    )
+
+            # Update VibeVoice-specific settings
+            if vibevoice_language_model is not None:
+                self._vibevoice_language_model = str(vibevoice_language_model) or "Qwen/Qwen2.5-7B"
+                logger.info(
+                    f"[TranscriptionSettingsManager] 已更新 VibeVoice 语言模型: {self._vibevoice_language_model}"
+                )
+
+            if vibevoice_max_new_tokens is not None:
+                try:
+                    max_tokens = int(vibevoice_max_new_tokens)
+                    self._vibevoice_max_new_tokens = max_tokens if max_tokens > 0 else 8192
+                except (ValueError, TypeError):
+                    self._vibevoice_max_new_tokens = 8192
+                logger.info(
+                    f"[TranscriptionSettingsManager] 已更新 VibeVoice 最大生成 token 数: {self._vibevoice_max_new_tokens}"
+                )
+
+            if vibevoice_dtype is not None:
+                dtype = str(vibevoice_dtype or "bfloat16").lower()
+                self._vibevoice_dtype = dtype if dtype in VALID_VIBEVOICE_DTYPES else "bfloat16"
+                logger.info(
+                    f"[TranscriptionSettingsManager] 已更新 VibeVoice 数据类型: {self._vibevoice_dtype}"
+                )
+
         return self.get_settings()
 
     def read_cookie_from_browser(self) -> dict[str, Any]:
@@ -581,4 +639,8 @@ class TranscriptionSettingsManager:
                 "model_path": self._model_path,
                 "enable_bilibili_subtitle_fetch": self._enable_bilibili_subtitle_fetch,
                 "bilibili_sessdata": self._bilibili_sessdata,
+                "transcriber_type": self._transcriber_type,
+                "vibevoice_language_model": self._vibevoice_language_model,
+                "vibevoice_max_new_tokens": self._vibevoice_max_new_tokens,
+                "vibevoice_dtype": self._vibevoice_dtype,
             }

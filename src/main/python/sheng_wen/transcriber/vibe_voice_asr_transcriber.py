@@ -28,12 +28,16 @@ class VibeVoiceAsrTranscriber(Transcriber):
         model_path: str,
         device: str = "cuda",
         max_new_tokens: int = 8192,
+        language_model_pretrained_name: str = "Qwen/Qwen2.5-7B",
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.model_path = model_path
         self.device = device
         self.max_new_tokens = max_new_tokens
+        self.language_model_pretrained_name = language_model_pretrained_name
+        self.dtype = dtype
 
         self.processor: VibeVoiceASRProcessor | None = None
         self.model: VibeVoiceASRForConditionalGeneration | None = None
@@ -54,11 +58,11 @@ class VibeVoiceAsrTranscriber(Transcriber):
             )
             self.processor = VibeVoiceASRProcessor.from_pretrained(
                 self.model_path,
-                language_model_pretrained_name="Qwen/Qwen2.5-7B",
+                language_model_pretrained_name=self.language_model_pretrained_name,
             )
             self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
                 self.model_path,
-                dtype=torch.bfloat16,
+                dtype=self.dtype,
                 device=self.device,
                 trust_remote_code=True,
             )

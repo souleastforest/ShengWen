@@ -108,6 +108,10 @@ class TranscriptionSettings(BaseModel):
     has_bilibili_sessdata: bool
     bilibili_cookie_source: str
     bilibili_sessdata_masked: str
+    # VibeVoice-specific settings
+    vibevoice_language_model: str = "Qwen/Qwen2.5-7B"
+    vibevoice_max_new_tokens: int = 8192
+    vibevoice_dtype: str = "bfloat16"
 
 
 class TranscriptionSettingsUpdate(BaseModel):
@@ -133,6 +137,16 @@ class TranscriptionSettingsUpdate(BaseModel):
     clear_bilibili_sessdata: Optional[bool] = Field(
         default=None,
         description="是否清空当前保存的全局 B 站 SESSDATA",
+    )
+    # VibeVoice-specific settings
+    vibevoice_language_model: Optional[str] = Field(
+        default=None, description="VibeVoice 语言模型名称，例如 Qwen/Qwen2.5-7B"
+    )
+    vibevoice_max_new_tokens: Optional[int] = Field(
+        default=None, ge=1, description="VibeVoice 最大生成 token 数"
+    )
+    vibevoice_dtype: Optional[str] = Field(
+        default=None, description="VibeVoice 数据类型: bfloat16 或 float16"
     )
 
 
