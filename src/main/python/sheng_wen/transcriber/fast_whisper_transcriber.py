@@ -34,6 +34,64 @@ class FastWhisperTranscriber(Transcriber):
     一个使用 fast-whisper 库的转录器实现。
     """
 
+    transcriber_name = "fast_whisper"
+
+    REQUIRED_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
+
+    @classmethod
+    def validate_model_path(cls, path: str):
+        from .transcriber import ModelPathValidationResult
+
+        resolved = str(path or "").strip().strip('"')
+        if not resolved:
+            return ModelPathValidationResult(False, "请填写本地模型目录路径。", "", [])
+        abs_path = os.path.abspath(os.path.expanduser(os.path.expandvars(resolved)))
+        if not os.path.exists(abs_path):
+            return ModelPathValidationResult(
+                False, f"模型目录不存在: {abs_path}", abs_path, []
+            )
+        if not os.path.isdir(abs_path):
+            return ModelPathValidationResult(
+                False, f"模型路径不是目录: {abs_path}", abs_path, []
+            )
+        missing = [
+            name
+            for name in cls.REQUIRED_FILES
+            if not os.path.isfile(os.path.join(abs_path, name))
+            and not (
+                name == "vocabulary.txt"
+                and os.path.isfile(os.path.join(abs_path, "vocabulary.json"))
+            )
+        ]
+        if missing:
+            return ModelPathValidationResult(
+                False,
+                "模型目录缺少必要文件: " + ", ".join(missing),
+                abs_path,
+                missing,
+            )
+        return ModelPathValidationResult(True, "模型目录校验通过。", abs_path, [])
+
+    @classmethod
+    def required_model_files(cls) -> list[str]:
+        return list(cls.REQUIRED_FILES)
+
+    @classmethod
+    def build_runtime_kwargs(cls, runtime_state: dict) -> dict:
+        device = runtime_state.get("device", "cpu")
+        kwargs: dict[str, str] = {
+            "device": device,
+            "compute_type": "int8_float16" if device == "cuda" else "int8",
+        }
+        if runtime_state.get("model_source") == "manual_path":
+            validation = cls.validate_model_path(runtime_state.get("model_path", ""))
+            if not validation.valid:
+                raise ValueError(validation.message)
+            kwargs["model_size_or_path"] = validation.resolved_path
+        else:
+            kwargs["model_size"] = runtime_state.get("model_size", "tiny")
+        return kwargs
+
     @staticmethod
     def _emit_model_loading_heartbeat(model_identifier: str, stop_event: Event, start_time: float):
         """在模型加载期间周期性输出日志，避免用户误认为程序卡死。"""

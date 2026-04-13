@@ -129,6 +129,15 @@ def _parse_transcription_text(raw_text: str) -> list[dict[str, Any]]:
 class VibeVoiceApiTranscriber(Transcriber):
     """Transcriber that calls VibeVoice via vLLM OpenAI-compatible API."""
 
+    transcriber_name = "vibe_voice_api"
+
+    @classmethod
+    def build_runtime_kwargs(cls, runtime_state: dict) -> dict:
+        return {
+            "api_url": runtime_state.get("vibevoice_api_url", ""),
+            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 8192),
+        }
+
     def __init__(
         self,
         api_url: str,

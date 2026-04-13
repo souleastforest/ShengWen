@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
-import torch
-from loguru import logger
-
-from vibevoice.modular.modeling_vibevoice_asr import (
-    VibeVoiceASRForConditionalGeneration,
-)
-from vibevoice.processor.vibevoice_asr_processor import VibeVoiceASRProcessor
+try:
+    from loguru import logger
+except ImportError:
+    logger = logging.getLogger(__name__)
 
 from .transcriber import (
     ModelLoadError,
@@ -22,9 +20,46 @@ from .vibevoice_model_validator import (
     perform_lightweight_load_test,
 )
 
+if TYPE_CHECKING:
+    import torch
+    from vibevoice.modular.modeling_vibevoice_asr import (
+        VibeVoiceASRForConditionalGeneration,
+    )
+    from vibevoice.processor.vibevoice_asr_processor import VibeVoiceASRProcessor
+
 
 class VibeVoiceAsrTranscriber(Transcriber):
     """基于 VibeVoice-ASR 的转录器实现。"""
+
+    transcriber_name = "vibe_voice_asr"
+
+    @classmethod
+    def validate_model_path(cls, path: str):
+        from .transcriber import ModelPathValidationResult
+
+        result = perform_lightweight_load_test(path)
+        return ModelPathValidationResult(
+            valid=result.valid,
+            message=result.message,
+            resolved_path=result.resolved_path,
+            missing_files=result.missing_files,
+        )
+
+    @classmethod
+    def required_model_files(cls) -> list[str]:
+        return ["config.json"]
+
+    @classmethod
+    def build_runtime_kwargs(cls, runtime_state: dict) -> dict:
+        return {
+            "model_path": runtime_state.get("model_path", ""),
+            "device": runtime_state.get("device", "cuda"),
+            "language_model_pretrained_name": runtime_state.get(
+                "vibevoice_language_model", "Qwen/Qwen2.5-7B"
+            ),
+            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 8192),
+            "dtype": runtime_state.get("vibevoice_dtype", "bfloat16"),
+        }
 
     def __init__(
         self,
@@ -32,7 +67,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
         device: str = "cuda",
         max_new_tokens: int = 8192,
         language_model_pretrained_name: str = "Qwen/Qwen2.5-7B",
-        dtype: torch.dtype = torch.bfloat16,
+        dtype: Any = "bfloat16",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -44,14 +79,32 @@ class VibeVoiceAsrTranscriber(Transcriber):
 
         self.processor: VibeVoiceASRProcessor | None = None
         self.model: VibeVoiceASRForConditionalGeneration | None = None
+        self._torch: Any | None = None
         self.model_load_time = 0.0
 
     def _ensure_loaded(self):
         if self.processor is not None and self.model is not None:
             return
 
+        try:
+            import torch
+            from vibevoice.modular.modeling_vibevoice_asr import (
+                VibeVoiceASRForConditionalGeneration,
+            )
+            from vibevoice.processor.vibevoice_asr_processor import (
+                VibeVoiceASRProcessor,
+            )
+        except ImportError as e:
+            raise ModelLoadError(
+                "加载 VibeVoice-ASR 依赖失败，请确认已安装 `torch` 和 `vibevoice`。"
+                f" 原始错误: {e}"
+            ) from e
+
         if not str(self.device).startswith("cuda"):
             raise ModelLoadError("VibeVoice-ASR requires CUDA and bfloat16 inference.")
+
+        self._torch = torch
+        resolved_dtype = self._resolve_dtype(torch)
 
         # Validate model path before attempting full load
         validation = perform_lightweight_load_test(self.model_path)
@@ -76,7 +129,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
             )
             self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
                 self.model_path,
-                dtype=self.dtype,
+                dtype=resolved_dtype,
                 device=self.device,
                 trust_remote_code=True,
             )
@@ -108,6 +161,21 @@ class VibeVoiceAsrTranscriber(Transcriber):
             return 0.0
         except (ValueError, TypeError):
             return 0.0
+
+    def _resolve_dtype(self, torch_module: Any):
+        if not isinstance(self.dtype, str):
+            return self.dtype
+
+        requested_name = self.dtype.strip().lower()
+        if not requested_name:
+            requested_name = "bfloat16"
+
+        if hasattr(torch_module, requested_name):
+            return getattr(torch_module, requested_name)
+
+        raise ModelLoadError(
+            f"不支持的 VibeVoice dtype: {self.dtype}. 可选值取决于当前 torch 安装。"
+        )
 
     @staticmethod
     def _move_inputs_to_device(inputs: Any, device: str):
@@ -171,7 +239,10 @@ class VibeVoiceAsrTranscriber(Transcriber):
             if cancel_check and cancel_check():
                 raise TranscriptionCancelled("任务已取消，停止转录。")
 
-            with torch.inference_mode():
+            if self._torch is None:
+                raise ModelLoadError("VibeVoice-ASR 运行时依赖尚未初始化。")
+
+            with self._torch.inference_mode():
                 output_ids = self.model.generate(
                     **inputs,
                     max_new_tokens=self.max_new_tokens,
