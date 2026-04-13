@@ -1,5 +1,5 @@
 import os
-from contextlib import asynccontextmanager
+
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,20 +85,11 @@ event_bus = AsyncioEventBus()
 pipeline = Pipeline(event_bus)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await pipeline.start()
-    yield
-    await pipeline.stop()
-    await stop_all_workers()
-    await vibevoice_service_manager.shutdown()
-
 
 app = FastAPI(
     title="ShengWen API",
     description="视频转录与 AI 总结服务",
     version=APP_VERSION,
-    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -148,6 +139,7 @@ async def get_transcriber_worker():
     global transcriber_worker
     if transcriber_worker is not None:
         return transcriber_worker
+    from .transcriber.transcriber import Transcriber as TranscriberABC
     from .transcriber.transcriber import get_transcriber
     from .transcriber.transcriber_worker import TranscriberWorker
 
@@ -156,57 +148,30 @@ async def get_transcriber_worker():
         runtime_transcription_state.get("transcriber_type") or "fast_whisper"
     )
 
+    # Resolve effective transcriber type (vibe_voice_asr + api inference mode → vibe_voice_api)
+    effective_type = transcriber_type
     if transcriber_type == "vibe_voice_asr":
         inference_mode = str(
             runtime_transcription_state.get("vibevoice_inference_mode", "local")
         )
         if inference_mode == "api":
-            api_url = str(runtime_transcription_state.get("vibevoice_api_url", "")).strip()
+            api_url = str(
+                runtime_transcription_state.get("vibevoice_api_url", "")
+            ).strip()
             if not api_url:
                 raise ValueError("API 推理模式需要填写推理服务地址")
+            effective_type = "vibe_voice_api"
             logger.info(f"[Transcriber] VibeVoice API 模式, URL: {api_url}")
-            transcriber_config = {
-                "api_url": api_url,
-                "max_new_tokens": runtime_transcription_state.get(
-                    "vibevoice_max_new_tokens", 8192
-                ),
-            }
-            from .transcriber.vibe_voice_api_transcriber import VibeVoiceApiTranscriber
-
-            transcriber = VibeVoiceApiTranscriber(**transcriber_config)
         else:
             model_path = str(runtime_transcription_state.get("model_path") or "")
-            import torch
-
-            dtype_str = runtime_transcription_state.get("vibevoice_dtype", "bfloat16")
-            dtype = torch.bfloat16 if dtype_str == "bfloat16" else torch.float16
-            transcriber_config = {
-                "model_path": model_path,
-                "device": runtime_transcription_state.get("device", "cuda"),
-                "language_model_pretrained_name": runtime_transcription_state.get(
-                    "vibevoice_language_model", "Qwen/Qwen2.5-7B"
-                ),
-                "max_new_tokens": runtime_transcription_state.get(
-                    "vibevoice_max_new_tokens", 8192
-                ),
-                "dtype": dtype,
-            }
             logger.info(f"[Transcriber] VibeVoice-ASR 本地模式, 路径: {model_path}")
-            transcriber = get_transcriber("vibe_voice_asr", **transcriber_config)
-    else:
-        transcriber_config = transcription_settings_manager.build_transcriber_kwargs()
-        model_source = str(
-            runtime_transcription_state.get("model_source") or "auto_download"
-        )
-        if model_source == "manual_path":
-            logger.info(
-                f"[Transcriber] 使用本地模型路径: {transcriber_config.get('model_size_or_path')}"
-            )
-        else:
-            logger.info(
-                f"[Transcriber] 使用模型大小: {transcriber_config.get('model_size')}"
-            )
-        transcriber = get_transcriber(transcriber_type, **transcriber_config)
+
+    # Build kwargs via transcriber classmethod and create instance
+    transcriber_cls = TranscriberABC.get_class(effective_type)
+    transcriber_config = transcriber_cls.build_runtime_kwargs(
+        runtime_transcription_state
+    )
+    transcriber = get_transcriber(effective_type, **transcriber_config)
     llm_w = await get_llm_worker()
     transcriber_worker = TranscriberWorker(
         name="TranscriberWorker", transcriber=transcriber, next_worker=llm_w
