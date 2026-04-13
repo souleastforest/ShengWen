@@ -1,7 +1,11 @@
-from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Callable, Optional
-from dataclasses import dataclass
+from __future__ import annotations
+
+import os
 import importlib
+import re
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 
 # --- 自定义异常 ---
 
@@ -28,7 +32,7 @@ class TranscriptionResult:
     """
     一个用于保存转录结果的数据类，包含性能指标。
     """
-    segments: List[Dict[str, Any]]  # 转录出的文本片段列表
+    segments: list[dict[str, Any]]  # 转录出的文本片段列表
     transcription_time: float       # 转录耗时（秒）
     real_time_factor: float         # 实时率 (RTF)，即处理时间 / 音频时长
     total_time: float               # 总耗时（秒），包括转录和其他开销
@@ -37,20 +41,73 @@ class TranscriptionResult:
     language: str                   # 检测到的语言代码 (例如, "zh")
     language_probability: float     # 语言检测的置信度 (0-1)
 
+# --- 注册表 ---
+
+_TRANSCRIBER_REGISTRY: dict[str, type[Transcriber]] = {}
+
+
+@dataclass
+class ModelPathValidationResult:
+    """模型路径验证结果。"""
+
+    valid: bool
+    message: str
+    resolved_path: str
+    missing_files: list[str]
+
 # --- 抽象基类 ---
 
 class Transcriber(ABC):
     """
     语音转文本转录器的抽象基类。
     """
+    transcriber_name: str = ""
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        name = getattr(cls, "transcriber_name", "")
+        if not name and cls is not Transcriber:
+            base_name = cls.__name__.removesuffix("Transcriber")
+            name = re.sub(r"(?<!^)(?=[A-Z])", "_", base_name).lower()
+            cls.transcriber_name = name
+        if name:
+            _TRANSCRIBER_REGISTRY[name] = cls
+
     def __init__(self, **kwargs):
-        """
-        初始化转录器。
-        
-        参数:
-            **kwargs: 实现类可能需要的任意关键字参数。
-        """
         pass
+
+    @staticmethod
+    def get_class(name: str) -> type[Transcriber]:
+        """获取已注册的转录器类。如果模块未加载，尝试延迟导入。"""
+        if name not in _TRANSCRIBER_REGISTRY:
+            module_name = f"src.main.python.sheng_wen.transcriber.{name}_transcriber"
+            try:
+                importlib.import_module(module_name)
+            except (ImportError, ModuleNotFoundError):
+                raise ValueError(f"未注册的转录器类型: {name}") from None
+        if name not in _TRANSCRIBER_REGISTRY:
+            raise ValueError(f"转录器模块已加载但未注册: {name}")
+        return _TRANSCRIBER_REGISTRY[name]
+
+    @classmethod
+    def validate_model_path(cls, path: str) -> ModelPathValidationResult:
+        """验证模型路径。默认实现只检查路径是否为存在的目录。"""
+        abs_path = os.path.abspath(os.path.expanduser(path))
+        if os.path.isdir(abs_path):
+            return ModelPathValidationResult(True, "路径有效。", abs_path, [])
+        return ModelPathValidationResult(
+            False, f"路径不存在或不是目录: {abs_path}", abs_path, []
+        )
+
+    @classmethod
+    def required_model_files(cls) -> list[str]:
+        """返回该转录器要求的模型文件列表。"""
+        return []
+
+    @classmethod
+    def build_runtime_kwargs(cls, runtime_state: dict) -> dict:
+        """根据运行时状态构建实例化参数。"""
+        return {}
 
     @abstractmethod
     def transcribe(
@@ -92,19 +149,9 @@ def get_transcriber(name: str, **kwargs) -> Transcriber:
         ModelLoadError: 如果在初始化模型时发生错误。
     """
     try:
-        # 将 "fast_whisper" 转换为 "FastWhisperTranscriber"
-        class_name = "".join(word.capitalize() for word in name.split('_')) + "Transcriber"
-        # 动态构建模块路径
-        module_name = f"src.main.python.sheng_wen.transcriber.{name}_transcriber"
-        
-        module = importlib.import_module(module_name)
-        transcriber_class = getattr(module, class_name)
-        
+        transcriber_class = Transcriber.get_class(name)
+
         # 在工厂函数中捕获模型加载错误
         return transcriber_class(**kwargs)
-        
-    except (ImportError, AttributeError) as e:
-        raise ValueError(f"找不到名为 '{name}' 的转录器。请确保模块 '{module_name}' 和类 '{class_name}' 正确。") from e
     except TranscriberError: # 重新抛出我们自定义的异常
         raise
-
