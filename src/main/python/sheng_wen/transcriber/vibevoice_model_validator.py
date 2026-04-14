@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
 
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    logger = logging.getLogger(__name__)
 
 
 # Required files for VibeVoice models

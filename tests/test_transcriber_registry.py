@@ -1,7 +1,5 @@
 """Tests for transcriber registry and classmethod protocol."""
 
-import os
-
 import pytest
 
 from src.main.python.sheng_wen.transcriber.transcriber import (
@@ -99,9 +97,7 @@ class TestFastWhisperClassmethods:
             FastWhisperTranscriber,
         )
 
-        result = FastWhisperTranscriber.validate_model_path(
-            str(ctranslate2_model_dir)
-        )
+        result = FastWhisperTranscriber.validate_model_path(str(ctranslate2_model_dir))
         assert result.valid is True
         assert result.missing_files == []
 
@@ -195,9 +191,7 @@ class TestVibeVoiceAsrClassmethods:
             VibeVoiceAsrTranscriber,
         )
 
-        result = VibeVoiceAsrTranscriber.validate_model_path(
-            str(vibevoice_model_dir)
-        )
+        result = VibeVoiceAsrTranscriber.validate_model_path(str(vibevoice_model_dir))
         assert result.valid is True
 
     def test_validate_rejects_missing_config(self, tmp_path):

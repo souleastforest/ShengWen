@@ -1,5 +1,5 @@
 import os
-
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,11 +85,20 @@ event_bus = AsyncioEventBus()
 pipeline = Pipeline(event_bus)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await pipeline.start()
+    yield
+    await pipeline.stop()
+    await stop_all_workers()
+    await vibevoice_service_manager.shutdown()
+
 
 app = FastAPI(
     title="ShengWen API",
     description="视频转录与 AI 总结服务",
     version=APP_VERSION,
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,

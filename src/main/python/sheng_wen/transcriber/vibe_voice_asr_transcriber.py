@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 import logging
 from typing import TYPE_CHECKING, Any
@@ -21,7 +22,6 @@ from .vibevoice_model_validator import (
 )
 
 if TYPE_CHECKING:
-    import torch
     from vibevoice.modular.modeling_vibevoice_asr import (
         VibeVoiceASRForConditionalGeneration,
     )
@@ -123,14 +123,38 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 f"[VibeVoiceAsrTranscriber] Loading model from {self.model_path} "
                 f"(device={self.device}, dtype={self.dtype})"
             )
-            self.processor = VibeVoiceASRProcessor.from_pretrained(
-                self.model_path,
-                language_model_pretrained_name=self.language_model_pretrained_name,
-            )
+            # Force offline mode for HuggingFace Hub to avoid spurious 404 errors
+            # (e.g. Qwen2.5-7B missing `additional_chat_templates` in remote repo).
+            # Must patch both huggingface_hub.constants and transformers.utils.hub
+            # since both cache the offline flag at import time.
+            import huggingface_hub.constants as _hf_const
+            import transformers.utils.hub as _tf_hub
+
+            prev_env = os.environ.get("HF_HUB_OFFLINE")
+            prev_hf_const = getattr(_hf_const, "HF_HUB_OFFLINE", None)
+            prev_tf_offline = getattr(_tf_hub, "_is_offline_mode", None)
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            _hf_const.HF_HUB_OFFLINE = True
+            _tf_hub._is_offline_mode = True
+            try:
+                self.processor = VibeVoiceASRProcessor.from_pretrained(
+                    self.model_path,
+                    language_model_pretrained_name=self.language_model_pretrained_name,
+                )
+            finally:
+                if prev_env is None:
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = prev_env
+                if prev_hf_const is not None:
+                    _hf_const.HF_HUB_OFFLINE = prev_hf_const
+                if prev_tf_offline is not None:
+                    _tf_hub._is_offline_mode = prev_tf_offline
+
             self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
                 self.model_path,
-                dtype=resolved_dtype,
-                device=self.device,
+                torch_dtype=resolved_dtype,
+                device_map=self.device,
                 trust_remote_code=True,
             )
             self.model_load_time = time.time() - start_time
@@ -146,7 +170,10 @@ class VibeVoiceAsrTranscriber(Transcriber):
             return 0.0
 
         try:
-            parts = timestamp_str.strip().split(":")
+            # Model may output numeric timestamps instead of strings
+            if isinstance(timestamp_str, (int, float)):
+                return float(timestamp_str)
+            parts = str(timestamp_str).strip().split(":")
             if len(parts) == 3:
                 hours = float(parts[0])
                 minutes = float(parts[1])
@@ -199,7 +226,10 @@ class VibeVoiceAsrTranscriber(Transcriber):
     @staticmethod
     def _extract_generated_ids(output_ids: Any):
         if hasattr(output_ids, "sequences"):
-            return output_ids.sequences
+            output_ids = output_ids.sequences
+        # model.generate() returns shape (batch_size, seq_len); take first batch
+        if hasattr(output_ids, "shape") and len(output_ids.shape) == 2:
+            output_ids = output_ids[0]
         return output_ids
 
     def transcribe(

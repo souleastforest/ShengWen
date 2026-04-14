@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import re
+import threading
+from queue import Empty, Queue
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from typing import Any, Dict, List, Tuple
@@ -17,6 +19,8 @@ class VideoDownloaderWorker(Worker):
     """
     一个工作单元，用于从给定的 URL 下载视频。
     """
+    BILIBILI_SUBTITLE_TIMEOUT_SEC = 20.0
+
     def __init__(
         self,
         name: str,
@@ -382,7 +386,37 @@ class VideoDownloaderWorker(Worker):
         return "".join(merged_lines), total_duration
 
     def _try_extract_bilibili_subtitle(self, video_url: str, sessdata: str) -> Dict[str, Any] | None:
-        return asyncio.run(self._extract_bilibili_subtitle_via_api(video_url, sessdata, 0))
+        result_queue: Queue[tuple[str, Any]] = Queue(maxsize=1)
+
+        def runner() -> None:
+            try:
+                result = asyncio.run(
+                    asyncio.wait_for(
+                        self._extract_bilibili_subtitle_via_api(video_url, sessdata, 0),
+                        timeout=self.BILIBILI_SUBTITLE_TIMEOUT_SEC,
+                    )
+                )
+                result_queue.put(("result", result))
+            except Exception as exc:
+                result_queue.put(("error", exc))
+
+        thread = threading.Thread(
+            target=runner,
+            name="bilibili-subtitle-fetch",
+            daemon=True,
+        )
+        thread.start()
+
+        try:
+            kind, payload = result_queue.get(timeout=self.BILIBILI_SUBTITLE_TIMEOUT_SEC)
+        except Empty as exc:
+            raise TimeoutError(
+                f"B 站字幕获取超时（>{self.BILIBILI_SUBTITLE_TIMEOUT_SEC:.0f}s）"
+            ) from exc
+
+        if kind == "error":
+            raise payload
+        return payload
 
     def _try_process_with_bilibili_subtitle(self, payload: Dict[str, Any]) -> bool:
         video_url = str(payload.get("video_url") or "")
@@ -494,7 +528,12 @@ class VideoDownloaderWorker(Worker):
         try:
             # 获取视频信息和所有分P字幕
             subtitle_results = asyncio.run(
-                self._extract_bilibili_multi_part_subtitles(video_url, sessdata, part_indices)
+                asyncio.wait_for(
+                    self._extract_bilibili_multi_part_subtitles(
+                        video_url, sessdata, part_indices
+                    ),
+                    timeout=self.BILIBILI_SUBTITLE_TIMEOUT_SEC,
+                )
             )
 
             if not subtitle_results:
@@ -506,7 +545,12 @@ class VideoDownloaderWorker(Worker):
             bvid = self._extract_bvid_from_url(video_url)
             credential = Credential(sessdata=sessdata or None) if sessdata else None
             video_obj = video.Video(bvid=bvid, credential=credential)
-            video_info = asyncio.run(video_obj.get_info())
+            video_info = asyncio.run(
+                asyncio.wait_for(
+                    video_obj.get_info(),
+                    timeout=self.BILIBILI_SUBTITLE_TIMEOUT_SEC,
+                )
+            )
 
             # 合并字幕
             merged_transcript, total_duration = self._merge_transcripts_with_offset(
