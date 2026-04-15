@@ -32,6 +32,8 @@ class VibeVoiceAsrTranscriber(Transcriber):
     """基于 VibeVoice-ASR 的转录器实现。"""
 
     transcriber_name = "vibe_voice_asr"
+    _CHUNK_DURATION_SEC: float = 180.0
+    _CHUNK_THRESHOLD_SEC: float = 300.0
 
     @classmethod
     def validate_model_path(cls, path: str):
@@ -57,7 +59,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
             "language_model_pretrained_name": runtime_state.get(
                 "vibevoice_language_model", "Qwen/Qwen2.5-7B"
             ),
-            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 8192),
+            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 2048),
             "dtype": runtime_state.get("vibevoice_dtype", "bfloat16"),
         }
 
@@ -65,7 +67,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
         self,
         model_path: str,
         device: str = "cuda",
-        max_new_tokens: int = 8192,
+        max_new_tokens: int = 2048,
         language_model_pretrained_name: str = "Qwen/Qwen2.5-7B",
         dtype: Any = "bfloat16",
         **kwargs,
@@ -151,11 +153,46 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 if prev_tf_offline is not None:
                     _tf_hub._is_offline_mode = prev_tf_offline
 
+            # Detect INT4 quantized model and configure accordingly
+            model_config_path = os.path.join(self.model_path, "config.json")
+            model_kwargs: dict[str, Any] = {
+                "torch_dtype": resolved_dtype,
+                "device_map": self.device,
+                "trust_remote_code": True,
+                "attn_implementation": "sdpa",
+            }
+            if os.path.exists(model_config_path):
+                import json as _json
+
+                with open(model_config_path) as _f:
+                    _cfg = _json.load(_f)
+                if _cfg.get("quantization_config", {}).get("load_in_4bit"):
+                    from transformers import BitsAndBytesConfig
+
+                    quant_cfg = _cfg["quantization_config"]
+                    model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type=quant_cfg.get("bnb_4bit_quant_type", "nf4"),
+                        bnb_4bit_compute_dtype=getattr(
+                            torch,
+                            quant_cfg.get("bnb_4bit_compute_dtype", "bfloat16"),
+                            torch.bfloat16,
+                        ),
+                        bnb_4bit_use_double_quant=quant_cfg.get(
+                            "bnb_4bit_use_double_quant", True
+                        ),
+                        llm_int8_enable_fp32_cpu_offload=True,
+                    )
+                    # Quantized models require device_map="auto"
+                    model_kwargs["device_map"] = "auto"
+                    model_kwargs.pop("torch_dtype", None)
+                    logger.info(
+                        "[VibeVoiceAsrTranscriber] Detected INT4 quantized model, loading with BitsAndBytesConfig"
+                    )
+
             self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
                 self.model_path,
-                torch_dtype=resolved_dtype,
-                device_map=self.device,
-                trust_remote_code=True,
+                **model_kwargs,
             )
             self.model_load_time = time.time() - start_time
             logger.info(
@@ -232,14 +269,221 @@ class VibeVoiceAsrTranscriber(Transcriber):
             output_ids = output_ids[0]
         return output_ids
 
+    @classmethod
+    def _needs_chunking(cls, audio_duration: float) -> bool:
+        return audio_duration > cls._CHUNK_THRESHOLD_SEC
+
+    @staticmethod
+    def _merge_chunk_results(
+        chunk_results: list[tuple[TranscriptionResult, float]],
+        model_load_time: float,
+    ) -> TranscriptionResult:
+        merged_segments: list[dict[str, Any]] = []
+        transcription_time = 0.0
+        max_end = 0.0
+
+        for chunk_result, offset in chunk_results:
+            transcription_time += chunk_result.transcription_time
+            max_end = max(max_end, chunk_result.audio_duration + offset)
+            for segment in chunk_result.segments:
+                start = float(segment.get("start", 0.0)) + offset
+                end = float(segment.get("end", 0.0)) + offset
+                max_end = max(max_end, end)
+                merged_segments.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "text": segment.get("text", ""),
+                        "speaker_id": segment.get("speaker_id", ""),
+                    }
+                )
+
+        real_time_factor = transcription_time / max_end if max_end > 0 else 0.0
+        return TranscriptionResult(
+            segments=merged_segments,
+            transcription_time=transcription_time,
+            real_time_factor=real_time_factor,
+            total_time=transcription_time + model_load_time,
+            model_load_time=model_load_time,
+            audio_duration=max_end,
+            language="unknown",
+            language_probability=0.0,
+        )
+
+    def _transcribe_single_chunk(
+        self,
+        file_path: str,
+        progress_callback: Any = None,
+        cancel_check: Any = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0,
+    ) -> TranscriptionResult:
+        def report_progress(progress: float):
+            if progress_callback is None:
+                return
+            bounded_progress = min(max(progress, 0.0), 1.0)
+            mapped_progress = progress_start + (
+                (progress_end - progress_start) * bounded_progress
+            )
+            progress_callback(mapped_progress)
+
+        if cancel_check and cancel_check():
+            raise TranscriptionCancelled("任务已取消，停止转录。")
+
+        self._ensure_loaded()
+
+        if cancel_check and cancel_check():
+            raise TranscriptionCancelled("任务已取消，停止转录。")
+
+        transcribe_start_time = time.time()
+        logger.info(f"[VibeVoiceAsrTranscriber] Start transcribing: {file_path}")
+
+        inputs = self.processor(
+            audio=file_path,
+            return_tensors="pt",
+            padding=True,
+            add_generation_prompt=True,
+        )
+        inputs = self._move_inputs_to_device(inputs, self.device)
+
+        report_progress(0.3)
+
+        if cancel_check and cancel_check():
+            raise TranscriptionCancelled("任务已取消，停止转录。")
+
+        if self._torch is None:
+            raise ModelLoadError("VibeVoice-ASR 运行时依赖尚未初始化。")
+
+        with self._torch.inference_mode():
+            output_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=self.max_new_tokens,
+                temperature=0.0,
+            )
+
+        report_progress(0.7)
+
+        if cancel_check and cancel_check():
+            raise TranscriptionCancelled("任务已取消，停止转录。")
+
+        generated_ids = self._extract_generated_ids(output_ids)
+        text = self.processor.decode(generated_ids, skip_special_tokens=True)
+        raw_segments = self.processor.post_process_transcription(text)
+
+        result_segments = []
+        audio_duration = 0.0
+
+        for segment in raw_segments:
+            start = self._parse_timestamp(segment.get("start_time", "0:00.000"))
+            end = self._parse_timestamp(segment.get("end_time", "0:00.000"))
+            audio_duration = max(audio_duration, end)
+
+            result_segments.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": segment.get("text", "").strip(),
+                    "speaker_id": segment.get("speaker_id", ""),
+                }
+            )
+
+        report_progress(1.0)
+
+        transcription_time = time.time() - transcribe_start_time
+        real_time_factor = (
+            transcription_time / audio_duration if audio_duration > 0 else 0.0
+        )
+
+        return TranscriptionResult(
+            segments=result_segments,
+            transcription_time=transcription_time,
+            real_time_factor=real_time_factor,
+            total_time=transcription_time,
+            model_load_time=0.0,
+            audio_duration=audio_duration,
+            language="unknown",
+            language_probability=0.0,
+        )
+
+    def _transcribe_chunked(
+        self,
+        file_path: str,
+        progress_callback: Any = None,
+        cancel_check: Any = None,
+    ) -> TranscriptionResult:
+        from .audio_chunker import (
+            cleanup_chunks,
+            get_audio_duration,
+            split_audio_into_chunks,
+        )
+
+        total_start_time = time.time()
+        duration = get_audio_duration(file_path)
+        if duration <= 0:
+            result = self._transcribe_single_chunk(
+                file_path,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                progress_start=0.05,
+                progress_end=1.0,
+            )
+            result.model_load_time = self.model_load_time
+            result.total_time = result.transcription_time + self.model_load_time
+            return result
+
+        chunks = split_audio_into_chunks(file_path, self._CHUNK_DURATION_SEC)
+        if len(chunks) == 1 and chunks[0][0] == file_path:
+            result = self._transcribe_single_chunk(
+                file_path,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                progress_start=0.05,
+                progress_end=1.0,
+            )
+            result.model_load_time = self.model_load_time
+            result.total_time = result.transcription_time + self.model_load_time
+            return result
+
+        chunk_results: list[tuple[TranscriptionResult, float]] = []
+
+        try:
+            chunk_count = len(chunks)
+            for index, (chunk_path, chunk_offset) in enumerate(chunks):
+                if cancel_check and cancel_check():
+                    raise TranscriptionCancelled("任务已取消，停止转录。")
+
+                progress_start = 0.05 + (index / chunk_count) * 0.90
+                progress_end = 0.05 + ((index + 1) / chunk_count) * 0.90
+                chunk_result = self._transcribe_single_chunk(
+                    chunk_path,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    progress_start=progress_start,
+                    progress_end=progress_end,
+                )
+                chunk_results.append((chunk_result, chunk_offset))
+
+                if (
+                    self._torch is not None
+                    and hasattr(self._torch, "cuda")
+                    and hasattr(self._torch.cuda, "empty_cache")
+                ):
+                    self._torch.cuda.empty_cache()
+        finally:
+            cleanup_chunks(chunks)
+
+        merged_result = self._merge_chunk_results(chunk_results, self.model_load_time)
+        merged_result.total_time = time.time() - total_start_time
+        if progress_callback:
+            progress_callback(1.0)
+        return merged_result
+
     def transcribe(
         self,
         file_path: str,
         progress_callback: Any = None,
         cancel_check: Any = None,
     ) -> TranscriptionResult:
-        total_start_time = time.time()
-
         try:
             if cancel_check and cancel_check():
                 raise TranscriptionCancelled("任务已取消，停止转录。")
@@ -249,82 +493,24 @@ class VibeVoiceAsrTranscriber(Transcriber):
             if progress_callback:
                 progress_callback(0.1)
 
-            if cancel_check and cancel_check():
-                raise TranscriptionCancelled("任务已取消，停止转录。")
+            from .audio_chunker import get_audio_duration
 
-            transcribe_start_time = time.time()
-            logger.info(f"[VibeVoiceAsrTranscriber] Start transcribing: {file_path}")
-
-            inputs = self.processor(
-                audio=file_path,
-                return_tensors="pt",
-                padding=True,
-                add_generation_prompt=True,
-            )
-            inputs = self._move_inputs_to_device(inputs, self.device)
-
-            if progress_callback:
-                progress_callback(0.3)
-
-            if cancel_check and cancel_check():
-                raise TranscriptionCancelled("任务已取消，停止转录。")
-
-            if self._torch is None:
-                raise ModelLoadError("VibeVoice-ASR 运行时依赖尚未初始化。")
-
-            with self._torch.inference_mode():
-                output_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    temperature=0.0,
+            duration = get_audio_duration(file_path)
+            if self._needs_chunking(duration):
+                return self._transcribe_chunked(
+                    file_path, progress_callback, cancel_check
                 )
 
-            if progress_callback:
-                progress_callback(0.7)
-
-            if cancel_check and cancel_check():
-                raise TranscriptionCancelled("任务已取消，停止转录。")
-
-            generated_ids = self._extract_generated_ids(output_ids)
-            text = self.processor.decode(generated_ids, skip_special_tokens=True)
-            raw_segments = self.processor.post_process_transcription(text)
-
-            result_segments = []
-            audio_duration = 0.0
-
-            for segment in raw_segments:
-                start = self._parse_timestamp(segment.get("start_time", "0:00.000"))
-                end = self._parse_timestamp(segment.get("end_time", "0:00.000"))
-                audio_duration = max(audio_duration, end)
-
-                result_segments.append(
-                    {
-                        "start": start,
-                        "end": end,
-                        "text": segment.get("text", "").strip(),
-                        "speaker_id": segment.get("speaker_id", ""),
-                    }
-                )
-
-            if progress_callback:
-                progress_callback(1.0)
-
-            transcription_time = time.time() - transcribe_start_time
-            total_time = time.time() - total_start_time
-            real_time_factor = (
-                transcription_time / audio_duration if audio_duration > 0 else 0.0
+            result = self._transcribe_single_chunk(
+                file_path,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                progress_start=0.1,
+                progress_end=1.0,
             )
-
-            return TranscriptionResult(
-                segments=result_segments,
-                transcription_time=transcription_time,
-                real_time_factor=real_time_factor,
-                total_time=total_time,
-                model_load_time=self.model_load_time,
-                audio_duration=audio_duration,
-                language="unknown",
-                language_probability=0.0,
-            )
+            result.model_load_time = self.model_load_time
+            result.total_time = result.transcription_time + self.model_load_time
+            return result
         except TranscriptionCancelled:
             raise
         except Exception as e:
