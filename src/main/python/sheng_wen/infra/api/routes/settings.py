@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
@@ -19,12 +18,6 @@ from src.main.python.sheng_wen.infra.api.routes.schemas import (
     SummarizationSettingsUpdate,
     TranscriptionSettings,
     TranscriptionSettingsUpdate,
-    VibeVoiceServiceScanResult,
-    VibeVoiceServiceStatus,
-)
-
-from src.main.python.sheng_wen.transcriber.vibevoice_model_validator import (
-    perform_lightweight_load_test,
 )
 
 
@@ -170,11 +163,6 @@ async def update_transcription_settings(
             bilibili_sessdata=payload.bilibili_sessdata,
             clear_bilibili_sessdata=payload.clear_bilibili_sessdata,
             transcriber_type=payload.transcriber_type,
-            vibevoice_language_model=payload.vibevoice_language_model,
-            vibevoice_max_new_tokens=payload.vibevoice_max_new_tokens,
-            vibevoice_dtype=payload.vibevoice_dtype,
-            vibevoice_inference_mode=payload.vibevoice_inference_mode,
-            vibevoice_api_url=payload.vibevoice_api_url,
         )
         request.app.state.config_manager.save_transcription_config(
             request.app.state.transcription_settings_manager.get_runtime_state()
@@ -202,80 +190,49 @@ async def read_bilibili_cookie_from_browser(request: Request):
     response_model=ModelPathValidationResult,
 )
 async def validate_model_path(payload: ModelPathValidationRequest):
-    if payload.transcriber_type == "vibe_voice_asr":
-        result = perform_lightweight_load_test(payload.path)
+    import os
+
+    transcriber_type = (payload.transcriber_type or "").strip().lower()
+
+    if transcriber_type == "vibe_voice_asr":
+        from src.main.python.sheng_wen.transcriber.vibevoice_model_validator import (
+            validate_vibevoice_model_path,
+        )
+
+        result = validate_vibevoice_model_path(payload.path)
         return ModelPathValidationResult(**result.to_dict())
-    else:
-        path = os.path.abspath(os.path.expanduser(payload.path))
-        if os.path.isdir(path):
-            return ModelPathValidationResult(
-                valid=True,
-                message="路径有效。",
-                resolved_path=path,
-                missing_files=[],
-                has_processor_config=False,
-                details={},
-            )
+
+    # fast_whisper 及其他类型：基础目录检查
+    raw_path = (payload.path or "").strip().strip('"')
+    if not raw_path:
         return ModelPathValidationResult(
             valid=False,
-            message=f"路径不存在或不是目录: {path}",
-            resolved_path=path,
-            missing_files=[],
-            has_processor_config=False,
+            message="请填写本地模型目录路径。",
+            details={"error": "empty_path"},
+        )
+
+    abs_path = os.path.abspath(os.path.expanduser(os.path.expandvars(raw_path)))
+
+    if not os.path.exists(abs_path):
+        return ModelPathValidationResult(
+            valid=False,
+            message=f"路径不存在: {abs_path}",
+            resolved_path=abs_path,
             details={"error": "path_not_found"},
         )
 
+    if not os.path.isdir(abs_path):
+        return ModelPathValidationResult(
+            valid=False,
+            message=f"路径不是目录: {abs_path}",
+            resolved_path=abs_path,
+            details={"error": "not_a_directory"},
+        )
 
-@router.post(
-    "/transcription/settings/vibevoice-scan",
-    response_model=list[VibeVoiceServiceScanResult],
-)
-async def vibevoice_scan_services(request: Request):
-    """Scan localhost ports 8000-8010 for VibeVoice vLLM services."""
-    mgr = request.app.state.vibevoice_service_manager
-    results = await mgr.scan_local_ports()
-    return [VibeVoiceServiceScanResult(**r) for r in results]
-
-
-@router.post("/transcription/settings/vibevoice-service/start")
-async def vibevoice_service_start(request: Request):
-    """Start a local vLLM subprocess for VibeVoice inference."""
-    body = await request.json()
-    model_path = str(body.get("model_path", "")).strip()
-    port = int(body.get("port", 8000))
-    dtype = str(body.get("dtype", "bfloat16"))
-
-    if not model_path:
-        raise HTTPException(status_code=400, detail="请填写模型目录")
-
-    mgr = request.app.state.vibevoice_service_manager
-    result = mgr.start_service(model_path=model_path, port=port, dtype=dtype)
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("message", "启动失败"))
-    return result
-
-
-@router.post("/transcription/settings/vibevoice-service/stop")
-async def vibevoice_service_stop(request: Request):
-    """Stop the managed vLLM subprocess."""
-    mgr = request.app.state.vibevoice_service_manager
-    result = mgr.stop_service()
-    return result
-
-
-@router.get(
-    "/transcription/settings/vibevoice-service/status",
-    response_model=VibeVoiceServiceStatus,
-)
-async def vibevoice_service_status(request: Request):
-    """Get the status of the managed vLLM subprocess and its API health."""
-    mgr = request.app.state.vibevoice_service_manager
-    health = await mgr.health_check()
-    return VibeVoiceServiceStatus(
-        running=mgr.is_running,
-        pid=mgr.pid,
-        api_url=mgr.api_url,
-        api_healthy=health.get("healthy", False),
+    return ModelPathValidationResult(
+        valid=True,
+        message="路径有效。",
+        resolved_path=abs_path,
     )
 
 
