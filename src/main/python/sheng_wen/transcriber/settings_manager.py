@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from loguru import logger
 
-from .transcriber import Transcriber, get_transcriber
+from .transcriber import get_transcriber
 
 
 def _read_bilibili_cookie_from_browser() -> tuple[str, str]:
@@ -224,7 +224,13 @@ def _mask_cookie_value(value: str) -> str:
 
 VALID_MODEL_SIZES = {"tiny", "base", "small", "medium", "large"}
 VALID_MODEL_SOURCES = {"auto_download", "manual_path"}
-VALID_VIBEVOICE_DTYPES = {"bfloat16", "float16"}
+VALID_TRANSCRIBER_TYPES = {"fast_whisper", "vibe_voice_asr"}
+REQUIRED_MANUAL_MODEL_FILES = (
+    "config.json",
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.txt",
+)
 
 
 def _sanitize_model_path(value: str | None) -> str:
@@ -245,6 +251,44 @@ def _normalize_model_source(value: str | None, fallback: str = "auto_download") 
     return fallback
 
 
+def _normalize_transcriber_type(
+    value: str | None, fallback: str = "fast_whisper"
+) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in VALID_TRANSCRIBER_TYPES:
+        return normalized
+    return fallback
+
+
+def _validate_manual_model_dir(model_path: str) -> tuple[bool, str, str]:
+    resolved = _sanitize_model_path(model_path)
+    if not resolved:
+        return (False, "请填写本地模型目录路径。", "")
+    abs_path = os.path.abspath(os.path.expanduser(os.path.expandvars(resolved)))
+    if not os.path.exists(abs_path):
+        return (False, f"模型目录不存在: {abs_path}", abs_path)
+    if not os.path.isdir(abs_path):
+        return (False, f"模型路径不是目录: {abs_path}", abs_path)
+
+    missing = [
+        name
+        for name in REQUIRED_MANUAL_MODEL_FILES
+        if not os.path.isfile(os.path.join(abs_path, name))
+        # vocabulary.json is an acceptable alternative to vocabulary.txt
+        and not (
+            name == "vocabulary.txt"
+            and os.path.isfile(os.path.join(abs_path, "vocabulary.json"))
+        )
+    ]
+    if missing:
+        return (
+            False,
+            "模型目录缺少必要文件: " + ", ".join(missing),
+            abs_path,
+        )
+    return (True, "模型目录校验通过。", abs_path)
+
+
 class TranscriptionSettingsManager:
     """运行时转录设置管理器。"""
 
@@ -257,11 +301,6 @@ class TranscriptionSettingsManager:
         initial_enable_bilibili_subtitle_fetch: bool = True,
         initial_bilibili_sessdata: str = "",
         transcriber_type: str = "fast_whisper",
-        vibevoice_language_model: str = "Qwen/Qwen2.5-7B",
-        vibevoice_max_new_tokens: int = 8192,
-        vibevoice_dtype: str = "bfloat16",
-        vibevoice_inference_mode: str = "local",
-        vibevoice_api_url: str = "",
     ):
         self._lock = Lock()
         self._device = initial_device
@@ -269,25 +308,16 @@ class TranscriptionSettingsManager:
         self._model_source = _normalize_model_source(
             model_source, fallback="auto_download"
         )
+        self._transcriber_type = _normalize_transcriber_type(
+            transcriber_type, fallback="fast_whisper"
+        )
         self._model_path = _sanitize_model_path(model_path)
         if self._model_source == "auto_download" and self._model_path:
             # 兼容旧配置：曾填写过 model_path 时默认沿用手动模式。
             self._model_source = "manual_path"
         self._enable_bilibili_subtitle_fetch = initial_enable_bilibili_subtitle_fetch
         self._bilibili_sessdata = _sanitize_cookie_value(initial_bilibili_sessdata)
-        self._transcriber_type = transcriber_type
         self._transcriber_worker: Any = None
-        # VibeVoice-specific settings
-        self._vibevoice_language_model = vibevoice_language_model or "Qwen/Qwen2.5-7B"
-        self._vibevoice_max_new_tokens = max(1, int(vibevoice_max_new_tokens))
-        dtype = str(vibevoice_dtype or "bfloat16").lower()
-        self._vibevoice_dtype = dtype if dtype in VALID_VIBEVOICE_DTYPES else "bfloat16"
-        self._vibevoice_inference_mode = (
-            vibevoice_inference_mode
-            if vibevoice_inference_mode in {"local", "api"}
-            else "local"
-        )
-        self._vibevoice_api_url = str(vibevoice_api_url or "")
 
     def bind_transcriber_worker(self, worker: Any) -> None:
         with self._lock:
@@ -319,11 +349,6 @@ class TranscriptionSettingsManager:
             model_size = self._model_size
             model_path = self._model_path
             transcriber_type = self._transcriber_type
-            vibevoice_language_model = self._vibevoice_language_model
-            vibevoice_max_new_tokens = self._vibevoice_max_new_tokens
-            vibevoice_dtype = self._vibevoice_dtype
-            vibevoice_inference_mode = self._vibevoice_inference_mode
-            vibevoice_api_url = self._vibevoice_api_url
 
         sessdata, source = self.resolve_bilibili_sessdata()
         cuda_diag = _detect_cuda_support()
@@ -331,27 +356,28 @@ class TranscriptionSettingsManager:
         devices = ["cpu"]
         if cuda_available:
             devices.append("cuda")
-        transcriber_cls = Transcriber.get_class(transcriber_type)
-        if model_source == "manual_path":
-            validation = transcriber_cls.validate_model_path(model_path)
-            model_path_valid = validation.valid
-            model_path_message = validation.message
-            model_path_resolved = validation.resolved_path
-        else:
-            model_path_valid = True
-            model_path_message = "自动下载模式：首次使用会自动下载/加载所选模型。"
-            model_path_resolved = ""
+        manual_valid, manual_message, manual_resolved_path = _validate_manual_model_dir(
+            model_path
+        )
+        model_path_valid = manual_valid if model_source == "manual_path" else True
+        model_path_message = (
+            manual_message
+            if model_source == "manual_path"
+            else "自动下载模式：首次使用会自动下载/加载所选模型。"
+        )
 
         return {
-            "device": current_device,
             "transcriber_type": transcriber_type,
+            "device": current_device,
             "model_source": model_source,
             "model_size": model_size,
             "model_path": model_path,
             "model_path_valid": model_path_valid,
             "model_path_message": model_path_message,
-            "model_path_resolved": model_path_resolved,
-            "required_model_files": transcriber_cls.required_model_files(),
+            "model_path_resolved": manual_resolved_path
+            if model_source == "manual_path"
+            else "",
+            "required_model_files": list(REQUIRED_MANUAL_MODEL_FILES),
             "cuda_available": cuda_available,
             "available_devices": devices,
             "has_nvidia_gpu": bool(cuda_diag["has_nvidia_gpu"]),
@@ -367,13 +393,47 @@ class TranscriptionSettingsManager:
             "has_bilibili_sessdata": bool(sessdata),
             "bilibili_cookie_source": source,
             "bilibili_sessdata_masked": _mask_cookie_value(sessdata),
-            # VibeVoice-specific settings
-            "vibevoice_language_model": vibevoice_language_model,
-            "vibevoice_max_new_tokens": vibevoice_max_new_tokens,
-            "vibevoice_dtype": vibevoice_dtype,
-            "vibevoice_inference_mode": vibevoice_inference_mode,
-            "vibevoice_api_url": vibevoice_api_url,
         }
+
+    def _build_transcriber_kwargs(
+        self,
+        device: str,
+        model_source: str,
+        model_size: str,
+        model_path: str,
+        transcriber_type: str = "fast_whisper",
+    ) -> dict[str, str]:
+        if transcriber_type == "vibe_voice_asr":
+            resolved = _sanitize_model_path(model_path)
+            if not resolved:
+                raise ValueError("VibeVoice-ASR 需要指定本地模型目录路径。")
+            return {
+                "model_path": resolved,
+                "device": device,
+            }
+
+        kwargs: dict[str, str] = {
+            "device": device,
+            "compute_type": "int8_float16" if device == "cuda" else "int8",
+        }
+        if model_source == "manual_path":
+            valid, message, resolved_path = _validate_manual_model_dir(model_path)
+            if not valid:
+                raise ValueError(message)
+            kwargs["model_size_or_path"] = resolved_path
+        else:
+            kwargs["model_size"] = model_size
+        return kwargs
+
+    def build_transcriber_kwargs(self) -> dict[str, str]:
+        with self._lock:
+            return self._build_transcriber_kwargs(
+                device=self._device,
+                model_source=self._model_source,
+                model_size=self._model_size,
+                model_path=self._model_path,
+                transcriber_type=self._transcriber_type,
+            )
 
     def update_settings(
         self,
@@ -387,11 +447,6 @@ class TranscriptionSettingsManager:
         bilibili_sessdata: str | None = None,
         clear_bilibili_sessdata: bool | None = None,
         transcriber_type: str | None = None,
-        vibevoice_language_model: str | None = None,
-        vibevoice_max_new_tokens: int | None = None,
-        vibevoice_dtype: str | None = None,
-        vibevoice_inference_mode: str | None = None,
-        vibevoice_api_url: str | None = None,
     ) -> dict[str, Any]:
         if (
             device is None
@@ -402,11 +457,6 @@ class TranscriptionSettingsManager:
             and bilibili_sessdata is None
             and clear_bilibili_sessdata is None
             and transcriber_type is None
-            and vibevoice_language_model is None
-            and vibevoice_max_new_tokens is None
-            and vibevoice_dtype is None
-            and vibevoice_inference_mode is None
-            and vibevoice_api_url is None
         ):
             raise ValueError("至少需要更新一个配置项")
 
@@ -444,9 +494,12 @@ class TranscriptionSettingsManager:
 
         next_transcriber_type = current_transcriber_type
         if transcriber_type is not None:
-            t_type = str(transcriber_type or "fast_whisper").strip().lower()
-            if t_type in {"fast_whisper", "vibe_voice_asr"}:
-                next_transcriber_type = t_type
+            normalized_type = str(transcriber_type or "").strip().lower()
+            if normalized_type not in VALID_TRANSCRIBER_TYPES:
+                raise ValueError(
+                    "transcriber_type 仅支持 fast_whisper 或 vibe_voice_asr"
+                )
+            next_transcriber_type = normalized_type
 
         if next_device == "cuda":
             cuda_diag = _detect_cuda_support()
@@ -454,10 +507,9 @@ class TranscriptionSettingsManager:
                 raise ValueError(str(cuda_diag["cuda_message"]))
 
         if next_model_source == "manual_path":
-            transcriber_cls = Transcriber.get_class(next_transcriber_type)
-            validation = transcriber_cls.validate_model_path(next_model_path)
-            if not validation.valid:
-                raise ValueError(validation.message)
+            valid, message, _ = _validate_manual_model_dir(next_model_path)
+            if not valid:
+                raise ValueError(message)
 
         device_changed = next_device != current_device
         model_source_changed = next_model_source != current_model_source
@@ -478,21 +530,16 @@ class TranscriptionSettingsManager:
                 logger.info(
                     "[TranscriptionSettingsManager] 正在重建转录器实例，若模型未缓存可能会触发下载，请稍候..."
                 )
-                rebuild_cls = Transcriber.get_class(next_transcriber_type)
-                runtime_state = {
-                    "device": next_device,
-                    "model_source": next_model_source,
-                    "model_size": next_model_size,
-                    "model_path": next_model_path,
-                    "transcriber_type": next_transcriber_type,
-                    "vibevoice_language_model": self._vibevoice_language_model,
-                    "vibevoice_max_new_tokens": self._vibevoice_max_new_tokens,
-                    "vibevoice_dtype": self._vibevoice_dtype,
-                    "vibevoice_inference_mode": self._vibevoice_inference_mode,
-                    "vibevoice_api_url": self._vibevoice_api_url,
-                }
-                transcriber_kwargs = rebuild_cls.build_runtime_kwargs(runtime_state)
-                transcriber = get_transcriber(next_transcriber_type, **transcriber_kwargs)
+                transcriber_kwargs = self._build_transcriber_kwargs(
+                    device=next_device,
+                    model_source=next_model_source,
+                    model_size=next_model_size,
+                    model_path=next_model_path,
+                    transcriber_type=next_transcriber_type,
+                )
+                transcriber = get_transcriber(
+                    next_transcriber_type, **transcriber_kwargs
+                )
                 logger.info("[TranscriptionSettingsManager] 转录器实例重建完成。")
             except Exception as e:
                 raise ValueError(f"切换转录配置失败: {e}") from e
@@ -502,22 +549,24 @@ class TranscriptionSettingsManager:
             self._model_source = next_model_source
             self._model_size = next_model_size
             self._model_path = next_model_path
+            self._transcriber_type = next_transcriber_type
 
             if transcriber is not None and self._transcriber_worker is not None:
                 self._transcriber_worker.update_transcriber(transcriber)
                 logger.info(
                     "[TranscriptionSettingsManager] 已更新转录配置: "
-                    f"device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
+                    f"transcriber_type={self._transcriber_type}, device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
                 )
             elif (
                 device_changed
                 or model_source_changed
                 or model_size_changed
                 or model_path_changed
+                or transcriber_type_changed
             ) and self._transcriber_worker is None:
                 logger.info(
                     "[TranscriptionSettingsManager] 已保存转录配置（worker 尚未初始化，将在首次任务时生效）: "
-                    f"device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
+                    f"transcriber_type={self._transcriber_type}, device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
                 )
 
             if enable_bilibili_subtitle_fetch is not None:
@@ -537,60 +586,6 @@ class TranscriptionSettingsManager:
                 logger.info(
                     "[TranscriptionSettingsManager] 已更新全局 B 站 SESSDATA。"
                     f" has_value={bool(self._bilibili_sessdata)}"
-                )
-
-            # Update transcriber_type
-            if transcriber_type is not None:
-                t_type = str(transcriber_type or "fast_whisper").strip().lower()
-                if t_type in {"fast_whisper", "vibe_voice_asr"}:
-                    self._transcriber_type = t_type
-                    logger.info(
-                        f"[TranscriptionSettingsManager] 已更新转录器类型: {self._transcriber_type}"
-                    )
-
-            # Update VibeVoice-specific settings
-            if vibevoice_language_model is not None:
-                self._vibevoice_language_model = (
-                    str(vibevoice_language_model) or "Qwen/Qwen2.5-7B"
-                )
-                logger.info(
-                    f"[TranscriptionSettingsManager] 已更新 VibeVoice 语言模型: {self._vibevoice_language_model}"
-                )
-
-            if vibevoice_max_new_tokens is not None:
-                try:
-                    max_tokens = int(vibevoice_max_new_tokens)
-                    self._vibevoice_max_new_tokens = (
-                        max_tokens if max_tokens > 0 else 8192
-                    )
-                except (ValueError, TypeError):
-                    self._vibevoice_max_new_tokens = 8192
-                logger.info(
-                    f"[TranscriptionSettingsManager] 已更新 VibeVoice 最大生成 token 数: {self._vibevoice_max_new_tokens}"
-                )
-
-            if vibevoice_dtype is not None:
-                dtype = str(vibevoice_dtype or "bfloat16").lower()
-                self._vibevoice_dtype = (
-                    dtype if dtype in VALID_VIBEVOICE_DTYPES else "bfloat16"
-                )
-                logger.info(
-                    f"[TranscriptionSettingsManager] 已更新 VibeVoice 数据类型: {self._vibevoice_dtype}"
-                )
-
-            if vibevoice_inference_mode is not None:
-                mode = str(vibevoice_inference_mode or "local").strip().lower()
-                self._vibevoice_inference_mode = (
-                    mode if mode in {"local", "api"} else "local"
-                )
-                logger.info(
-                    f"[TranscriptionSettingsManager] 已更新 VibeVoice 推理模式: {self._vibevoice_inference_mode}"
-                )
-
-            if vibevoice_api_url is not None:
-                self._vibevoice_api_url = str(vibevoice_api_url or "").strip()
-                logger.info(
-                    f"[TranscriptionSettingsManager] 已更新 VibeVoice API URL: {self._vibevoice_api_url}"
                 )
 
         return self.get_settings()
@@ -626,16 +621,11 @@ class TranscriptionSettingsManager:
     def get_runtime_state(self) -> dict[str, Any]:
         with self._lock:
             return {
+                "transcriber_type": self._transcriber_type,
                 "device": self._device,
                 "model_source": self._model_source,
                 "model_size": self._model_size,
                 "model_path": self._model_path,
                 "enable_bilibili_subtitle_fetch": self._enable_bilibili_subtitle_fetch,
                 "bilibili_sessdata": self._bilibili_sessdata,
-                "transcriber_type": self._transcriber_type,
-                "vibevoice_language_model": self._vibevoice_language_model,
-                "vibevoice_max_new_tokens": self._vibevoice_max_new_tokens,
-                "vibevoice_dtype": self._vibevoice_dtype,
-                "vibevoice_inference_mode": self._vibevoice_inference_mode,
-                "vibevoice_api_url": self._vibevoice_api_url,
             }

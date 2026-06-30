@@ -35,15 +35,11 @@ from src.main.python.sheng_wen.transcriber.settings_manager import (
     TranscriptionSettingsManager,
 )
 from src.main.python.sheng_wen.transcriber.transcriber import ModelLoadError
-from src.main.python.sheng_wen.transcriber.vibevoice_service_manager import (
-    VibeVoiceServiceManager,
-)
 from src.main.python.sheng_wen.version import APP_VERSION
 
 setup_logging()
 downloader_worker = file_upload_worker = llm_worker = transcriber_worker = None
 config_manager = get_config_manager()
-vibevoice_service_manager = VibeVoiceServiceManager()
 llm_cfg = config.llm
 initial_llm_config = LLMConfig(
     base_url=llm_cfg.base_url,
@@ -71,11 +67,6 @@ transcription_settings_manager = TranscriptionSettingsManager(
     initial_enable_bilibili_subtitle_fetch=initial_enable_bilibili_subtitle_fetch,
     initial_bilibili_sessdata=initial_bilibili_sessdata,
     transcriber_type=whisper_cfg.transcriber_type,
-    vibevoice_language_model=whisper_cfg.vibevoice_language_model,
-    vibevoice_max_new_tokens=whisper_cfg.vibevoice_max_new_tokens,
-    vibevoice_dtype=whisper_cfg.vibevoice_dtype,
-    vibevoice_inference_mode=whisper_cfg.vibevoice_inference_mode,
-    vibevoice_api_url=whisper_cfg.vibevoice_api_url,
 )
 llm_provider_manager = LLMProviderManager(
     initial_config=initial_llm_config,
@@ -91,7 +82,6 @@ async def lifespan(app: FastAPI):
     yield
     await pipeline.stop()
     await stop_all_workers()
-    await vibevoice_service_manager.shutdown()
 
 
 app = FastAPI(
@@ -122,7 +112,6 @@ def _sync_worker_state() -> None:
 app.state.config_manager = config_manager
 app.state.llm_provider_manager = llm_provider_manager
 app.state.transcription_settings_manager = transcription_settings_manager
-app.state.vibevoice_service_manager = vibevoice_service_manager
 app.state.event_bus = event_bus
 app.state.pipeline = pipeline
 
@@ -148,39 +137,30 @@ async def get_transcriber_worker():
     global transcriber_worker
     if transcriber_worker is not None:
         return transcriber_worker
-    from .transcriber.transcriber import Transcriber as TranscriberABC
     from .transcriber.transcriber import get_transcriber
     from .transcriber.transcriber_worker import TranscriberWorker
 
     runtime_transcription_state = transcription_settings_manager.get_runtime_state()
+    transcriber_config = transcription_settings_manager.build_transcriber_kwargs()
     transcriber_type = str(
         runtime_transcription_state.get("transcriber_type") or "fast_whisper"
     )
-
-    # Resolve effective transcriber type (vibe_voice_asr + api inference mode → vibe_voice_api)
-    effective_type = transcriber_type
-    if transcriber_type == "vibe_voice_asr":
-        inference_mode = str(
-            runtime_transcription_state.get("vibevoice_inference_mode", "local")
-        )
-        if inference_mode == "api":
-            api_url = str(
-                runtime_transcription_state.get("vibevoice_api_url", "")
-            ).strip()
-            if not api_url:
-                raise ValueError("API 推理模式需要填写推理服务地址")
-            effective_type = "vibe_voice_api"
-            logger.info(f"[Transcriber] VibeVoice API 模式, URL: {api_url}")
-        else:
-            model_path = str(runtime_transcription_state.get("model_path") or "")
-            logger.info(f"[Transcriber] VibeVoice-ASR 本地模式, 路径: {model_path}")
-
-    # Build kwargs via transcriber classmethod and create instance
-    transcriber_cls = TranscriberABC.get_class(effective_type)
-    transcriber_config = transcriber_cls.build_runtime_kwargs(
-        runtime_transcription_state
+    model_source = str(
+        runtime_transcription_state.get("model_source") or "auto_download"
     )
-    transcriber = get_transcriber(effective_type, **transcriber_config)
+    if transcriber_type == "vibe_voice_asr":
+        logger.info(
+            f"[Transcriber] VibeVoice-ASR 模型路径: {transcriber_config.get('model_path')}"
+        )
+    elif model_source == "manual_path":
+        logger.info(
+            f"[Transcriber] 使用本地模型路径: {transcriber_config.get('model_size_or_path')}"
+        )
+    else:
+        logger.info(
+            f"[Transcriber] 使用模型大小: {transcriber_config.get('model_size')}"
+        )
+    transcriber = get_transcriber(transcriber_type, **transcriber_config)
     llm_w = await get_llm_worker()
     transcriber_worker = TranscriberWorker(
         name="TranscriberWorker", transcriber=transcriber, next_worker=llm_w

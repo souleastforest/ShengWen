@@ -15,12 +15,7 @@
     "device": "cpu",
     "enable_bilibili_subtitle_fetch": true,
     "bilibili_sessdata": "",
-    "faster_whisper_model_path": null,
-    "vibevoice_language_model": "Qwen/Qwen2.5-7B",
-    "vibevoice_max_new_tokens": 8192,
-    "vibevoice_dtype": "bfloat16",
-    "vibevoice_inference_mode": "local",
-    "vibevoice_api_url": ""
+    "faster_whisper_model_path": null
   },
   "llm": {
     "provider": "openai_compatible",
