@@ -138,14 +138,9 @@ def validate_vibevoice_model_path(model_path: str) -> VibeVoiceValidationResult:
         "processor_config_present": has_processor_config,
     }
 
-    if not has_processor_config:
-        message = (
-            "模型目录校验通过，但缺少 preprocessor_config.json（处理器配置）。"
-            "模型可能仍可加载，但建议检查模型完整性。"
-        )
-        details["warning"] = "missing_processor_config"
-    else:
-        message = "模型目录校验通过。"
+    # preprocessor_config.json is not shipped with VibeVoice-ASR models;
+    # the processor loads its config from config.json + tokenizer files.
+    message = "模型目录校验通过。"
 
     logger.info(f"[VibeVoiceModelValidator] {message} Path: {abs_path}")
 

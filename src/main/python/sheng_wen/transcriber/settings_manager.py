@@ -501,21 +501,35 @@ class TranscriptionSettingsManager:
                 )
             next_transcriber_type = normalized_type
 
-        if next_device == "cuda":
-            cuda_diag = _detect_cuda_support()
-            if not bool(cuda_diag["cuda_available"]):
-                raise ValueError(str(cuda_diag["cuda_message"]))
-
-        if next_model_source == "manual_path":
-            valid, message, _ = _validate_manual_model_dir(next_model_path)
-            if not valid:
-                raise ValueError(message)
-
+        # Compute changes BEFORE validation so we only validate fields that
+        # are actually changing (the frontend sends the full form on every save).
         device_changed = next_device != current_device
         model_source_changed = next_model_source != current_model_source
         model_size_changed = next_model_size != current_model_size
         model_path_changed = next_model_path != current_model_path
         transcriber_type_changed = next_transcriber_type != current_transcriber_type
+
+        if device_changed and next_device == "cuda":
+            cuda_diag = _detect_cuda_support()
+            if not bool(cuda_diag["cuda_available"]):
+                raise ValueError(str(cuda_diag["cuda_message"]))
+
+        if (
+            (model_path_changed or model_source_changed)
+            and next_model_source == "manual_path"
+            and next_model_path
+        ):
+            if next_transcriber_type == "vibe_voice_asr":
+                from .vibevoice_model_validator import validate_vibevoice_model_path
+
+                vv_result = validate_vibevoice_model_path(next_model_path)
+                if not vv_result.valid:
+                    raise ValueError(vv_result.message)
+            else:
+                valid, message, _ = _validate_manual_model_dir(next_model_path)
+                if not valid:
+                    raise ValueError(message)
+
         should_rebuild = bool(worker_for_rebuild) and (
             device_changed
             or model_source_changed

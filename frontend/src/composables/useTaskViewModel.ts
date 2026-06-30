@@ -468,6 +468,7 @@ export function useTaskViewModel() {
 
   const updateTranscriptionSettings = async (payload: UpdateTranscriptionSettingsRequest) => {
     isUpdatingTranscriptionSettings.value = true
+    error.value = null
     try {
       const response = await axios.put(`${apiBaseUrl}/transcription/settings`, payload)
       transcriptionSettings.value = response.data
