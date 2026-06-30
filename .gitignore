@@ -49,19 +49,11 @@ dist/
 .vscode/
 .idea/
 
-# npm / frontend
+# npm cache
 .npm-cache
 frontend/.npm-cache
 frontend/node_modules/
 frontend/dist/
-
-# Playwright
-frontend/test-results/
-frontend/playwright-report/
-frontend/blob-report/
-
-# Vitest
-frontend/coverage/
 
 # Codex agent artifacts
 .codex/
