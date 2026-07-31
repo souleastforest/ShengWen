@@ -174,6 +174,12 @@ class TestVibeVoiceAsrTranscriberTimestampParsing(unittest.TestCase):
         result = VibeVoiceAsrTranscriber._parse_timestamp("abc:def:ghi")
         self.assertEqual(result, 0.0)
 
+        result = VibeVoiceAsrTranscriber._parse_timestamp(12.5)
+        self.assertEqual(result, 12.5)
+
+        result = VibeVoiceAsrTranscriber._parse_timestamp(42)
+        self.assertEqual(result, 42.0)
+
 
 class TestVibeVoiceAsrTranscriberInputMovement(unittest.TestCase):
     """Test _move_inputs_to_device static method"""
