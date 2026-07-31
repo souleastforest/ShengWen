@@ -129,5 +129,52 @@ class TestTranscriptionSettingsManager(unittest.TestCase):
             self.assertEqual(manager.get_runtime_state()["model_source"], "manual_path")
 
 
+    def test_vibevoice_settings_round_trip_and_local_kwargs(self):
+        manager = TranscriptionSettingsManager(initial_device="cpu", model_size="tiny")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name in ("config.json", "model.safetensors"):
+                with open(os.path.join(temp_dir, name), "w", encoding="utf-8") as f:
+                    f.write("{}")
+
+            settings = manager.update_settings(
+                transcriber_type="vibe_voice_asr",
+                model_source="manual_path",
+                model_path=temp_dir,
+                vibevoice_language_model="/models/Qwen2.5-7B",
+                vibevoice_max_new_tokens=4096,
+                vibevoice_dtype="float16",
+                vibevoice_inference_mode="local",
+            )
+
+        self.assertTrue(settings["model_path_valid"])
+        self.assertEqual(
+            settings["required_model_files"],
+            ["config.json", "model.safetensors|pytorch_model.bin"],
+        )
+        self.assertEqual(settings["vibevoice_language_model"], "/models/Qwen2.5-7B")
+        self.assertEqual(settings["vibevoice_max_new_tokens"], 4096)
+        self.assertEqual(settings["vibevoice_dtype"], "float16")
+
+        kwargs = manager.build_transcriber_kwargs()
+        self.assertEqual(kwargs["language_model_pretrained_name"], "/models/Qwen2.5-7B")
+        self.assertEqual(kwargs["max_new_tokens"], 4096)
+        self.assertEqual(kwargs["dtype"], "float16")
+
+    def test_vibevoice_api_mode_uses_remote_transcriber_kwargs(self):
+        manager = TranscriptionSettingsManager(initial_device="cpu", model_size="tiny")
+        manager.update_settings(
+            transcriber_type="vibe_voice_asr",
+            vibevoice_inference_mode="api",
+            vibevoice_api_url="http://localhost:8000/",
+            vibevoice_max_new_tokens=4096,
+        )
+
+        self.assertEqual(manager.get_active_transcriber_type(), "vibe_voice_api")
+        self.assertEqual(
+            manager.build_transcriber_kwargs(),
+            {"api_url": "http://localhost:8000", "max_new_tokens": 4096},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -62,6 +62,8 @@ class TestVibeVoiceAsrTranscriberInitialization(unittest.TestCase):
         self.assertEqual(transcriber.model_path, "/path/to/model")
         self.assertEqual(transcriber.device, "cuda:0")
         self.assertEqual(transcriber.max_new_tokens, 4096)
+        self.assertEqual(transcriber.language_model_pretrained_name, "Qwen/Qwen2.5-7B")
+        self.assertEqual(transcriber.dtype, "bfloat16")
         self.assertIsNone(transcriber.processor)
         self.assertIsNone(transcriber.model)
         self.assertEqual(transcriber.model_load_time, 0.0)

@@ -23,17 +23,49 @@ from .transcriber import (
 class VibeVoiceAsrTranscriber(Transcriber):
     """基于 VibeVoice-ASR 的转录器实现。"""
 
+    REQUIRED_FILES = ("config.json", "model.safetensors|pytorch_model.bin")
+
+    @classmethod
+    def validate_model_path(cls, path: str):
+        from .transcriber import ModelPathValidationResult
+        from .vibevoice_model_validator import validate_vibevoice_model_path
+
+        result = validate_vibevoice_model_path(path)
+        return ModelPathValidationResult(
+            result.valid, result.message, result.resolved_path, result.missing_files
+        )
+
+    @classmethod
+    def required_model_files(cls) -> list[str]:
+        return list(cls.REQUIRED_FILES)
+
+    @classmethod
+    def build_runtime_kwargs(cls, runtime_state: dict) -> dict:
+        return {
+            "model_path": runtime_state.get("model_path", ""),
+            "device": runtime_state.get("device", "cuda"),
+            "language_model_pretrained_name": runtime_state.get(
+                "vibevoice_language_model", "Qwen/Qwen2.5-7B"
+            ),
+            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 8192),
+            "dtype": runtime_state.get("vibevoice_dtype", "bfloat16"),
+        }
+
     def __init__(
         self,
         model_path: str,
         device: str = "cuda",
+        language_model_pretrained_name: str = "Qwen/Qwen2.5-7B",
         max_new_tokens: int = 8192,
+        dtype: str = "bfloat16",
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.model_path = model_path
         self.device = device
+        self.language_model_pretrained_name = language_model_pretrained_name
         self.max_new_tokens = max_new_tokens
+        self.dtype = dtype
 
         self.processor: VibeVoiceASRProcessor | None = None
         self.model: VibeVoiceASRForConditionalGeneration | None = None
@@ -48,17 +80,21 @@ class VibeVoiceAsrTranscriber(Transcriber):
 
         start_time = time.time()
         try:
+            torch_dtype = getattr(torch, self.dtype, None)
+            if torch_dtype is None:
+                raise ValueError(f"不支持的数据类型: {self.dtype}")
             logger.info(
                 f"[VibeVoiceAsrTranscriber] Loading model from {self.model_path} "
-                f"(device={self.device}, dtype=bfloat16)"
+                f"(device={self.device}, dtype={self.dtype}, "
+                f"language_model={self.language_model_pretrained_name})"
             )
             self.processor = VibeVoiceASRProcessor.from_pretrained(
                 self.model_path,
-                language_model_pretrained_name="Qwen/Qwen2.5-7B",
+                language_model_pretrained_name=self.language_model_pretrained_name,
             )
             self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
                 self.model_path,
-                dtype=torch.bfloat16,
+                dtype=torch_dtype,
                 device=self.device,
                 trust_remote_code=True,
             )
@@ -74,17 +110,20 @@ class VibeVoiceAsrTranscriber(Transcriber):
         if not timestamp_str:
             return 0.0
 
-        parts = timestamp_str.strip().split(":")
-        if len(parts) == 3:
-            hours = float(parts[0])
-            minutes = float(parts[1])
-            seconds = float(parts[2])
-            return hours * 3600.0 + minutes * 60.0 + seconds
+        try:
+            parts = timestamp_str.strip().split(":")
+            if len(parts) == 3:
+                hours = float(parts[0])
+                minutes = float(parts[1])
+                seconds = float(parts[2])
+                return hours * 3600.0 + minutes * 60.0 + seconds
 
-        if len(parts) == 2:
-            minutes = float(parts[0])
-            seconds = float(parts[1])
-            return minutes * 60.0 + seconds
+            if len(parts) == 2:
+                minutes = float(parts[0])
+                seconds = float(parts[1])
+                return minutes * 60.0 + seconds
+        except (TypeError, ValueError):
+            return 0.0
 
         return 0.0
 

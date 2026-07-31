@@ -67,6 +67,11 @@ transcription_settings_manager = TranscriptionSettingsManager(
     initial_enable_bilibili_subtitle_fetch=initial_enable_bilibili_subtitle_fetch,
     initial_bilibili_sessdata=initial_bilibili_sessdata,
     transcriber_type=whisper_cfg.transcriber_type,
+    vibevoice_language_model=whisper_cfg.vibevoice_language_model,
+    vibevoice_max_new_tokens=whisper_cfg.vibevoice_max_new_tokens,
+    vibevoice_dtype=whisper_cfg.vibevoice_dtype,
+    vibevoice_inference_mode=whisper_cfg.vibevoice_inference_mode,
+    vibevoice_api_url=whisper_cfg.vibevoice_api_url,
 )
 llm_provider_manager = LLMProviderManager(
     initial_config=initial_llm_config,
@@ -142,15 +147,24 @@ async def get_transcriber_worker():
 
     runtime_transcription_state = transcription_settings_manager.get_runtime_state()
     transcriber_config = transcription_settings_manager.build_transcriber_kwargs()
-    transcriber_type = str(
+    configured_transcriber_type = str(
         runtime_transcription_state.get("transcriber_type") or "fast_whisper"
     )
+    transcriber_type = transcription_settings_manager.get_active_transcriber_type()
     model_source = str(
         runtime_transcription_state.get("model_source") or "auto_download"
     )
-    if transcriber_type == "vibe_voice_asr":
+    if configured_transcriber_type == "vibe_voice_asr":
+        if transcriber_type == "vibe_voice_api":
+            logger.info(
+                f"[Transcriber] 使用 VibeVoice 推理服务: {transcriber_config.get('api_url')}"
+            )
+        else:
+            logger.info(
+                f"[Transcriber] VibeVoice-ASR 模型路径: {transcriber_config.get('model_path')}"
+            )
         logger.info(
-            f"[Transcriber] VibeVoice-ASR 模型路径: {transcriber_config.get('model_path')}"
+            f"[Transcriber] VibeVoice 语言模型: {runtime_transcription_state.get('vibevoice_language_model')}"
         )
     elif model_source == "manual_path":
         logger.info(

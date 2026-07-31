@@ -34,5 +34,27 @@ class TestJSONConfigManager(unittest.TestCase):
             self.assertIsNone(whisper.faster_whisper_model_path)
 
 
+    def test_vibevoice_settings_are_persisted_and_reloaded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "settings.json")
+            manager = JSONConfigManager(config_path=config_path)
+            manager.save_transcription_config(
+                {
+                    "vibevoice_language_model": "/models/Qwen2.5-7B",
+                    "vibevoice_max_new_tokens": 4096,
+                    "vibevoice_dtype": "float16",
+                    "vibevoice_inference_mode": "api",
+                    "vibevoice_api_url": "http://localhost:8000",
+                }
+            )
+
+            reloaded = JSONConfigManager(config_path=config_path).get_whisper_config()
+            self.assertEqual(reloaded.vibevoice_language_model, "/models/Qwen2.5-7B")
+            self.assertEqual(reloaded.vibevoice_max_new_tokens, 4096)
+            self.assertEqual(reloaded.vibevoice_dtype, "float16")
+            self.assertEqual(reloaded.vibevoice_inference_mode, "api")
+            self.assertEqual(reloaded.vibevoice_api_url, "http://localhost:8000")
+
+
 if __name__ == "__main__":
     unittest.main()

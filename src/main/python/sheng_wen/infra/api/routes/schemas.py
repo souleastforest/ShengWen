@@ -108,6 +108,11 @@ class TranscriptionSettings(BaseModel):
     has_bilibili_sessdata: bool
     bilibili_cookie_source: str
     bilibili_sessdata_masked: str
+    vibevoice_language_model: str
+    vibevoice_max_new_tokens: int
+    vibevoice_dtype: str
+    vibevoice_inference_mode: str
+    vibevoice_api_url: str
 
 
 class TranscriptionSettingsUpdate(BaseModel):
@@ -122,6 +127,21 @@ class TranscriptionSettingsUpdate(BaseModel):
         default=None, description="tiny/base/small/medium/large"
     )
     model_path: Optional[str] = Field(default=None, description="手动模型目录路径")
+    vibevoice_language_model: Optional[str] = Field(
+        default=None, description="VibeVoice 使用的语言模型目录或 Hugging Face 模型 ID"
+    )
+    vibevoice_max_new_tokens: Optional[int] = Field(
+        default=None, ge=1, description="VibeVoice 最大生成 Token 数"
+    )
+    vibevoice_dtype: Optional[str] = Field(
+        default=None, description="VibeVoice 数据类型: bfloat16 或 float16"
+    )
+    vibevoice_inference_mode: Optional[str] = Field(
+        default=None, description="VibeVoice 推理模式: local 或 api"
+    )
+    vibevoice_api_url: Optional[str] = Field(
+        default=None, description="VibeVoice vLLM API 地址"
+    )
     enable_bilibili_subtitle_fetch: Optional[bool] = Field(
         default=None,
         description="是否优先尝试直取 B 站字幕（失败时回退 ASR）",

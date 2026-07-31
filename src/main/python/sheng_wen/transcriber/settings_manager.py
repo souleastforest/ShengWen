@@ -225,6 +225,8 @@ def _mask_cookie_value(value: str) -> str:
 VALID_MODEL_SIZES = {"tiny", "base", "small", "medium", "large"}
 VALID_MODEL_SOURCES = {"auto_download", "manual_path"}
 VALID_TRANSCRIBER_TYPES = {"fast_whisper", "vibe_voice_asr"}
+VALID_VIBEVOICE_DTYPES = {"bfloat16", "float16"}
+VALID_VIBEVOICE_INFERENCE_MODES = {"local", "api"}
 REQUIRED_MANUAL_MODEL_FILES = (
     "config.json",
     "model.bin",
@@ -260,6 +262,27 @@ def _normalize_transcriber_type(
     return fallback
 
 
+def _normalize_vibevoice_language_model(value: str | None) -> str:
+    return _sanitize_model_path(value) or "Qwen/Qwen2.5-7B"
+
+
+def _normalize_vibevoice_max_new_tokens(value: int | str | None) -> int:
+    try:
+        return max(1, int(value or 8192))
+    except (TypeError, ValueError):
+        return 8192
+
+
+def _normalize_vibevoice_dtype(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in VALID_VIBEVOICE_DTYPES else "bfloat16"
+
+
+def _normalize_vibevoice_inference_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in VALID_VIBEVOICE_INFERENCE_MODES else "local"
+
+
 def _validate_manual_model_dir(model_path: str) -> tuple[bool, str, str]:
     resolved = _sanitize_model_path(model_path)
     if not resolved:
@@ -289,6 +312,24 @@ def _validate_manual_model_dir(model_path: str) -> tuple[bool, str, str]:
     return (True, "模型目录校验通过。", abs_path)
 
 
+def _validate_model_dir_for_transcriber(
+    transcriber_type: str, model_path: str
+) -> tuple[bool, str, str, list[str]]:
+    if transcriber_type == "vibe_voice_asr":
+        from .vibevoice_model_validator import validate_vibevoice_model_path
+
+        result = validate_vibevoice_model_path(model_path)
+        return (
+            result.valid,
+            result.message,
+            result.resolved_path,
+            ["config.json", "model.safetensors|pytorch_model.bin"],
+        )
+
+    valid, message, resolved_path = _validate_manual_model_dir(model_path)
+    return valid, message, resolved_path, list(REQUIRED_MANUAL_MODEL_FILES)
+
+
 class TranscriptionSettingsManager:
     """运行时转录设置管理器。"""
 
@@ -301,6 +342,11 @@ class TranscriptionSettingsManager:
         initial_enable_bilibili_subtitle_fetch: bool = True,
         initial_bilibili_sessdata: str = "",
         transcriber_type: str = "fast_whisper",
+        vibevoice_language_model: str = "Qwen/Qwen2.5-7B",
+        vibevoice_max_new_tokens: int = 8192,
+        vibevoice_dtype: str = "bfloat16",
+        vibevoice_inference_mode: str = "local",
+        vibevoice_api_url: str = "",
     ):
         self._lock = Lock()
         self._device = initial_device
@@ -317,6 +363,17 @@ class TranscriptionSettingsManager:
             self._model_source = "manual_path"
         self._enable_bilibili_subtitle_fetch = initial_enable_bilibili_subtitle_fetch
         self._bilibili_sessdata = _sanitize_cookie_value(initial_bilibili_sessdata)
+        self._vibevoice_language_model = _normalize_vibevoice_language_model(
+            vibevoice_language_model
+        )
+        self._vibevoice_max_new_tokens = _normalize_vibevoice_max_new_tokens(
+            vibevoice_max_new_tokens
+        )
+        self._vibevoice_dtype = _normalize_vibevoice_dtype(vibevoice_dtype)
+        self._vibevoice_inference_mode = _normalize_vibevoice_inference_mode(
+            vibevoice_inference_mode
+        )
+        self._vibevoice_api_url = str(vibevoice_api_url or "").strip().rstrip("/")
         self._transcriber_worker: Any = None
 
     def bind_transcriber_worker(self, worker: Any) -> None:
@@ -349,6 +406,11 @@ class TranscriptionSettingsManager:
             model_size = self._model_size
             model_path = self._model_path
             transcriber_type = self._transcriber_type
+            vibevoice_language_model = self._vibevoice_language_model
+            vibevoice_max_new_tokens = self._vibevoice_max_new_tokens
+            vibevoice_dtype = self._vibevoice_dtype
+            vibevoice_inference_mode = self._vibevoice_inference_mode
+            vibevoice_api_url = self._vibevoice_api_url
 
         sessdata, source = self.resolve_bilibili_sessdata()
         cuda_diag = _detect_cuda_support()
@@ -356,9 +418,12 @@ class TranscriptionSettingsManager:
         devices = ["cpu"]
         if cuda_available:
             devices.append("cuda")
-        manual_valid, manual_message, manual_resolved_path = _validate_manual_model_dir(
-            model_path
-        )
+        (
+            manual_valid,
+            manual_message,
+            manual_resolved_path,
+            required_model_files,
+        ) = _validate_model_dir_for_transcriber(transcriber_type, model_path)
         model_path_valid = manual_valid if model_source == "manual_path" else True
         model_path_message = (
             manual_message
@@ -377,7 +442,11 @@ class TranscriptionSettingsManager:
             "model_path_resolved": manual_resolved_path
             if model_source == "manual_path"
             else "",
-            "required_model_files": list(REQUIRED_MANUAL_MODEL_FILES),
+            "required_model_files": (
+                required_model_files
+                if transcriber_type == "vibe_voice_asr"
+                else list(REQUIRED_MANUAL_MODEL_FILES)
+            ),
             "cuda_available": cuda_available,
             "available_devices": devices,
             "has_nvidia_gpu": bool(cuda_diag["has_nvidia_gpu"]),
@@ -393,7 +462,21 @@ class TranscriptionSettingsManager:
             "has_bilibili_sessdata": bool(sessdata),
             "bilibili_cookie_source": source,
             "bilibili_sessdata_masked": _mask_cookie_value(sessdata),
+            "vibevoice_language_model": vibevoice_language_model,
+            "vibevoice_max_new_tokens": vibevoice_max_new_tokens,
+            "vibevoice_dtype": vibevoice_dtype,
+            "vibevoice_inference_mode": vibevoice_inference_mode,
+            "vibevoice_api_url": vibevoice_api_url,
         }
+
+    def get_active_transcriber_type(self) -> str:
+        with self._lock:
+            if (
+                self._transcriber_type == "vibe_voice_asr"
+                and self._vibevoice_inference_mode == "api"
+            ):
+                return "vibe_voice_api"
+            return self._transcriber_type
 
     def _build_transcriber_kwargs(
         self,
@@ -402,14 +485,29 @@ class TranscriptionSettingsManager:
         model_size: str,
         model_path: str,
         transcriber_type: str = "fast_whisper",
-    ) -> dict[str, str]:
+        vibevoice_language_model: str = "Qwen/Qwen2.5-7B",
+        vibevoice_max_new_tokens: int = 8192,
+        vibevoice_dtype: str = "bfloat16",
+        vibevoice_inference_mode: str = "local",
+        vibevoice_api_url: str = "",
+    ) -> dict[str, Any]:
         if transcriber_type == "vibe_voice_asr":
+            if vibevoice_inference_mode == "api":
+                if not vibevoice_api_url:
+                    raise ValueError("VibeVoice API 模式需要填写推理服务地址。")
+                return {
+                    "api_url": vibevoice_api_url,
+                    "max_new_tokens": vibevoice_max_new_tokens,
+                }
             resolved = _sanitize_model_path(model_path)
             if not resolved:
                 raise ValueError("VibeVoice-ASR 需要指定本地模型目录路径。")
             return {
                 "model_path": resolved,
                 "device": device,
+                "language_model_pretrained_name": vibevoice_language_model,
+                "max_new_tokens": vibevoice_max_new_tokens,
+                "dtype": vibevoice_dtype,
             }
 
         kwargs: dict[str, str] = {
@@ -425,7 +523,7 @@ class TranscriptionSettingsManager:
             kwargs["model_size"] = model_size
         return kwargs
 
-    def build_transcriber_kwargs(self) -> dict[str, str]:
+    def build_transcriber_kwargs(self) -> dict[str, Any]:
         with self._lock:
             return self._build_transcriber_kwargs(
                 device=self._device,
@@ -433,6 +531,11 @@ class TranscriptionSettingsManager:
                 model_size=self._model_size,
                 model_path=self._model_path,
                 transcriber_type=self._transcriber_type,
+                vibevoice_language_model=self._vibevoice_language_model,
+                vibevoice_max_new_tokens=self._vibevoice_max_new_tokens,
+                vibevoice_dtype=self._vibevoice_dtype,
+                vibevoice_inference_mode=self._vibevoice_inference_mode,
+                vibevoice_api_url=self._vibevoice_api_url,
             )
 
     def update_settings(
@@ -447,6 +550,11 @@ class TranscriptionSettingsManager:
         bilibili_sessdata: str | None = None,
         clear_bilibili_sessdata: bool | None = None,
         transcriber_type: str | None = None,
+        vibevoice_language_model: str | None = None,
+        vibevoice_max_new_tokens: int | None = None,
+        vibevoice_dtype: str | None = None,
+        vibevoice_inference_mode: str | None = None,
+        vibevoice_api_url: str | None = None,
     ) -> dict[str, Any]:
         if (
             device is None
@@ -457,6 +565,11 @@ class TranscriptionSettingsManager:
             and bilibili_sessdata is None
             and clear_bilibili_sessdata is None
             and transcriber_type is None
+            and vibevoice_language_model is None
+            and vibevoice_max_new_tokens is None
+            and vibevoice_dtype is None
+            and vibevoice_inference_mode is None
+            and vibevoice_api_url is None
         ):
             raise ValueError("至少需要更新一个配置项")
 
@@ -466,6 +579,11 @@ class TranscriptionSettingsManager:
             current_model_size = self._model_size
             current_model_path = self._model_path
             current_transcriber_type = self._transcriber_type
+            current_vibevoice_language_model = self._vibevoice_language_model
+            current_vibevoice_max_new_tokens = self._vibevoice_max_new_tokens
+            current_vibevoice_dtype = self._vibevoice_dtype
+            current_vibevoice_inference_mode = self._vibevoice_inference_mode
+            current_vibevoice_api_url = self._vibevoice_api_url
             worker_for_rebuild = self._transcriber_worker
 
         next_device = current_device
@@ -501,6 +619,41 @@ class TranscriptionSettingsManager:
                 )
             next_transcriber_type = normalized_type
 
+        next_vibevoice_language_model = current_vibevoice_language_model
+        if vibevoice_language_model is not None:
+            next_vibevoice_language_model = _sanitize_model_path(
+                vibevoice_language_model
+            )
+            if not next_vibevoice_language_model:
+                raise ValueError("VibeVoice 语言模型不能为空。")
+
+        next_vibevoice_max_new_tokens = current_vibevoice_max_new_tokens
+        if vibevoice_max_new_tokens is not None:
+            try:
+                next_vibevoice_max_new_tokens = int(vibevoice_max_new_tokens)
+            except (TypeError, ValueError) as e:
+                raise ValueError("VibeVoice 最大生成 Token 数必须是正整数。") from e
+            if next_vibevoice_max_new_tokens < 1:
+                raise ValueError("VibeVoice 最大生成 Token 数必须大于 0。")
+
+        next_vibevoice_dtype = current_vibevoice_dtype
+        if vibevoice_dtype is not None:
+            next_vibevoice_dtype = str(vibevoice_dtype or "").strip().lower()
+            if next_vibevoice_dtype not in VALID_VIBEVOICE_DTYPES:
+                raise ValueError("VibeVoice 数据类型仅支持 bfloat16 或 float16")
+
+        next_vibevoice_inference_mode = current_vibevoice_inference_mode
+        if vibevoice_inference_mode is not None:
+            next_vibevoice_inference_mode = str(
+                vibevoice_inference_mode or ""
+            ).strip().lower()
+            if next_vibevoice_inference_mode not in VALID_VIBEVOICE_INFERENCE_MODES:
+                raise ValueError("VibeVoice 推理模式仅支持 local 或 api")
+
+        next_vibevoice_api_url = current_vibevoice_api_url
+        if vibevoice_api_url is not None:
+            next_vibevoice_api_url = str(vibevoice_api_url or "").strip().rstrip("/")
+
         # Compute changes BEFORE validation so we only validate fields that
         # are actually changing (the frontend sends the full form on every save).
         device_changed = next_device != current_device
@@ -508,27 +661,51 @@ class TranscriptionSettingsManager:
         model_size_changed = next_model_size != current_model_size
         model_path_changed = next_model_path != current_model_path
         transcriber_type_changed = next_transcriber_type != current_transcriber_type
+        vibevoice_language_model_changed = (
+            next_vibevoice_language_model != current_vibevoice_language_model
+        )
+        vibevoice_max_new_tokens_changed = (
+            next_vibevoice_max_new_tokens != current_vibevoice_max_new_tokens
+        )
+        vibevoice_dtype_changed = next_vibevoice_dtype != current_vibevoice_dtype
+        vibevoice_inference_mode_changed = (
+            next_vibevoice_inference_mode != current_vibevoice_inference_mode
+        )
+        vibevoice_api_url_changed = next_vibevoice_api_url != current_vibevoice_api_url
 
-        if device_changed and next_device == "cuda":
+        if (
+            device_changed
+            and next_device == "cuda"
+            and not (
+                next_transcriber_type == "vibe_voice_asr"
+                and next_vibevoice_inference_mode == "api"
+            )
+        ):
             cuda_diag = _detect_cuda_support()
             if not bool(cuda_diag["cuda_available"]):
                 raise ValueError(str(cuda_diag["cuda_message"]))
 
         if (
-            (model_path_changed or model_source_changed)
+            (
+                model_path_changed
+                or model_source_changed
+                or transcriber_type_changed
+            )
             and next_model_source == "manual_path"
             and next_model_path
         ):
-            if next_transcriber_type == "vibe_voice_asr":
-                from .vibevoice_model_validator import validate_vibevoice_model_path
+            valid, message, _, _ = _validate_model_dir_for_transcriber(
+                next_transcriber_type, next_model_path
+            )
+            if not valid:
+                raise ValueError(message)
 
-                vv_result = validate_vibevoice_model_path(next_model_path)
-                if not vv_result.valid:
-                    raise ValueError(vv_result.message)
-            else:
-                valid, message, _ = _validate_manual_model_dir(next_model_path)
-                if not valid:
-                    raise ValueError(message)
+        if (
+            next_transcriber_type == "vibe_voice_asr"
+            and next_vibevoice_inference_mode == "api"
+            and not next_vibevoice_api_url
+        ):
+            raise ValueError("VibeVoice API 模式需要填写推理服务地址。")
 
         should_rebuild = bool(worker_for_rebuild) and (
             device_changed
@@ -536,6 +713,11 @@ class TranscriptionSettingsManager:
             or model_size_changed
             or model_path_changed
             or transcriber_type_changed
+            or vibevoice_language_model_changed
+            or vibevoice_max_new_tokens_changed
+            or vibevoice_dtype_changed
+            or vibevoice_inference_mode_changed
+            or vibevoice_api_url_changed
         )
 
         transcriber = None
@@ -550,9 +732,20 @@ class TranscriptionSettingsManager:
                     model_size=next_model_size,
                     model_path=next_model_path,
                     transcriber_type=next_transcriber_type,
+                    vibevoice_language_model=next_vibevoice_language_model,
+                    vibevoice_max_new_tokens=next_vibevoice_max_new_tokens,
+                    vibevoice_dtype=next_vibevoice_dtype,
+                    vibevoice_inference_mode=next_vibevoice_inference_mode,
+                    vibevoice_api_url=next_vibevoice_api_url,
+                )
+                active_transcriber_type = (
+                    "vibe_voice_api"
+                    if next_transcriber_type == "vibe_voice_asr"
+                    and next_vibevoice_inference_mode == "api"
+                    else next_transcriber_type
                 )
                 transcriber = get_transcriber(
-                    next_transcriber_type, **transcriber_kwargs
+                    active_transcriber_type, **transcriber_kwargs
                 )
                 logger.info("[TranscriptionSettingsManager] 转录器实例重建完成。")
             except Exception as e:
@@ -564,6 +757,11 @@ class TranscriptionSettingsManager:
             self._model_size = next_model_size
             self._model_path = next_model_path
             self._transcriber_type = next_transcriber_type
+            self._vibevoice_language_model = next_vibevoice_language_model
+            self._vibevoice_max_new_tokens = next_vibevoice_max_new_tokens
+            self._vibevoice_dtype = next_vibevoice_dtype
+            self._vibevoice_inference_mode = next_vibevoice_inference_mode
+            self._vibevoice_api_url = next_vibevoice_api_url
 
             if transcriber is not None and self._transcriber_worker is not None:
                 self._transcriber_worker.update_transcriber(transcriber)
@@ -577,6 +775,11 @@ class TranscriptionSettingsManager:
                 or model_size_changed
                 or model_path_changed
                 or transcriber_type_changed
+                or vibevoice_language_model_changed
+                or vibevoice_max_new_tokens_changed
+                or vibevoice_dtype_changed
+                or vibevoice_inference_mode_changed
+                or vibevoice_api_url_changed
             ) and self._transcriber_worker is None:
                 logger.info(
                     "[TranscriptionSettingsManager] 已保存转录配置（worker 尚未初始化，将在首次任务时生效）: "
@@ -642,4 +845,9 @@ class TranscriptionSettingsManager:
                 "model_path": self._model_path,
                 "enable_bilibili_subtitle_fetch": self._enable_bilibili_subtitle_fetch,
                 "bilibili_sessdata": self._bilibili_sessdata,
+                "vibevoice_language_model": self._vibevoice_language_model,
+                "vibevoice_max_new_tokens": self._vibevoice_max_new_tokens,
+                "vibevoice_dtype": self._vibevoice_dtype,
+                "vibevoice_inference_mode": self._vibevoice_inference_mode,
+                "vibevoice_api_url": self._vibevoice_api_url,
             }

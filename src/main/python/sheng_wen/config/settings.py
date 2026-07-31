@@ -62,6 +62,11 @@ class WhisperConfig:
     enable_bilibili_subtitle_fetch: bool = True
     bilibili_sessdata: str = ""
     faster_whisper_model_path: str | None = None
+    vibevoice_language_model: str = "Qwen/Qwen2.5-7B"
+    vibevoice_max_new_tokens: int = 8192
+    vibevoice_dtype: Literal["bfloat16", "float16"] = "bfloat16"
+    vibevoice_inference_mode: Literal["local", "api"] = "local"
+    vibevoice_api_url: str = ""
 
     @property
     def configured_model_path(self) -> str | None:
@@ -315,6 +320,7 @@ class JSONConfigManager:
         self.update_section("llm", llm_patch)
 
     def save_transcription_config(self, payload: dict[str, Any]):
+        defaults = DEFAULT_SETTINGS["whisper"]
         whisper_patch = {}
         resolved_model_source = None
         if "device" in payload:
@@ -357,6 +363,37 @@ class JSONConfigManager:
             whisper_patch["bilibili_sessdata"] = str(
                 payload.get("bilibili_sessdata") or ""
             )
+        if "vibevoice_language_model" in payload:
+            whisper_patch["vibevoice_language_model"] = (
+                str(payload.get("vibevoice_language_model") or "").strip()
+                or defaults["vibevoice_language_model"]
+            )
+        if "vibevoice_max_new_tokens" in payload:
+            whisper_patch["vibevoice_max_new_tokens"] = max(
+                1,
+                int(
+                    payload.get("vibevoice_max_new_tokens")
+                    or defaults["vibevoice_max_new_tokens"]
+                ),
+            )
+        if "vibevoice_dtype" in payload:
+            dtype = str(payload.get("vibevoice_dtype") or "").strip().lower()
+            whisper_patch["vibevoice_dtype"] = (
+                dtype
+                if dtype in {"bfloat16", "float16"}
+                else defaults["vibevoice_dtype"]
+            )
+        if "vibevoice_inference_mode" in payload:
+            mode = str(payload.get("vibevoice_inference_mode") or "").strip().lower()
+            whisper_patch["vibevoice_inference_mode"] = (
+                mode
+                if mode in {"local", "api"}
+                else defaults["vibevoice_inference_mode"]
+            )
+        if "vibevoice_api_url" in payload:
+            whisper_patch["vibevoice_api_url"] = str(
+                payload.get("vibevoice_api_url") or ""
+            ).strip()
         if whisper_patch:
             self.update_section("whisper", whisper_patch)
 
@@ -447,6 +484,35 @@ class JSONConfigManager:
         ).lower()
         if transcriber_type not in {"fast_whisper", "vibe_voice_asr"}:
             transcriber_type = str(defaults["transcriber_type"])
+        vibevoice_language_model = (
+            str(
+                raw.get(
+                    "vibevoice_language_model", defaults["vibevoice_language_model"]
+                )
+                or ""
+            ).strip()
+            or str(defaults["vibevoice_language_model"])
+        )
+        vibevoice_max_new_tokens = max(
+            1,
+            int(
+                raw.get(
+                    "vibevoice_max_new_tokens", defaults["vibevoice_max_new_tokens"]
+                )
+            ),
+        )
+        vibevoice_dtype = str(
+            raw.get("vibevoice_dtype", defaults["vibevoice_dtype"])
+        ).lower()
+        if vibevoice_dtype not in {"bfloat16", "float16"}:
+            vibevoice_dtype = str(defaults["vibevoice_dtype"])
+        vibevoice_inference_mode = str(
+            raw.get(
+                "vibevoice_inference_mode", defaults["vibevoice_inference_mode"]
+            )
+        ).lower()
+        if vibevoice_inference_mode not in {"local", "api"}:
+            vibevoice_inference_mode = str(defaults["vibevoice_inference_mode"])
         return WhisperConfig(
             transcriber_type=transcriber_type,  # type: ignore[arg-type]
             model_source=model_source,  # type: ignore[arg-type]
@@ -463,6 +529,13 @@ class JSONConfigManager:
                 raw.get("bilibili_sessdata", defaults["bilibili_sessdata"]) or ""
             ),
             faster_whisper_model_path=faster_whisper_model_path,
+            vibevoice_language_model=vibevoice_language_model,
+            vibevoice_max_new_tokens=vibevoice_max_new_tokens,
+            vibevoice_dtype=vibevoice_dtype,  # type: ignore[arg-type]
+            vibevoice_inference_mode=vibevoice_inference_mode,  # type: ignore[arg-type]
+            vibevoice_api_url=str(
+                raw.get("vibevoice_api_url", defaults["vibevoice_api_url"]) or ""
+            ).strip(),
         )
 
     def get_llm_config(self) -> LLMConfig:

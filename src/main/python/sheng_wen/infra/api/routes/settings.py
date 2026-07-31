@@ -163,6 +163,11 @@ async def update_transcription_settings(
             bilibili_sessdata=payload.bilibili_sessdata,
             clear_bilibili_sessdata=payload.clear_bilibili_sessdata,
             transcriber_type=payload.transcriber_type,
+            vibevoice_language_model=payload.vibevoice_language_model,
+            vibevoice_max_new_tokens=payload.vibevoice_max_new_tokens,
+            vibevoice_dtype=payload.vibevoice_dtype,
+            vibevoice_inference_mode=payload.vibevoice_inference_mode,
+            vibevoice_api_url=payload.vibevoice_api_url,
         )
         request.app.state.config_manager.save_transcription_config(
             request.app.state.transcription_settings_manager.get_runtime_state()
