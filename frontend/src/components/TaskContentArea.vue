@@ -502,7 +502,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="contentScrollRef" class="flex-1 overflow-y-auto overflow-x-auto p-4 md:p-8 pt-16 md:pt-20 custom-scrollbar">
+  <div ref="contentScrollRef" class="min-h-0 flex-1 overflow-y-auto overflow-x-auto p-4 md:p-8 pt-16 md:pt-20 custom-scrollbar">
     <div class="max-w-4xl mx-auto">
       <!-- 错误状态 -->
       <div v-if="isFailed" class="bg-red-50 border border-red-100 p-6 rounded-2xl mb-6">

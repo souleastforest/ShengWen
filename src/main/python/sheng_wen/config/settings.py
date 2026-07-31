@@ -67,6 +67,9 @@ class WhisperConfig:
     vibevoice_dtype: Literal["bfloat16", "float16"] = "bfloat16"
     vibevoice_inference_mode: Literal["local", "api"] = "local"
     vibevoice_api_url: str = ""
+    asr_chunk_threshold_sec: int = 720
+    asr_chunk_duration_sec: int = 360
+    asr_chunk_oom_fallback: bool = True
 
     @property
     def configured_model_path(self) -> str | None:
@@ -536,6 +539,15 @@ class JSONConfigManager:
             vibevoice_api_url=str(
                 raw.get("vibevoice_api_url", defaults["vibevoice_api_url"]) or ""
             ).strip(),
+            asr_chunk_threshold_sec=max(
+                60, int(raw.get("asr_chunk_threshold_sec", defaults["asr_chunk_threshold_sec"]))
+            ),
+            asr_chunk_duration_sec=max(
+                30, int(raw.get("asr_chunk_duration_sec", defaults["asr_chunk_duration_sec"]))
+            ),
+            asr_chunk_oom_fallback=bool(
+                raw.get("asr_chunk_oom_fallback", defaults["asr_chunk_oom_fallback"])
+            ),
         )
 
     def get_llm_config(self) -> LLMConfig:

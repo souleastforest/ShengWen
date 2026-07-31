@@ -12,6 +12,8 @@ from ..worker import Worker, TaskCancelledError
 from .transcriber import Transcriber, TranscriptionResult, TranscriptionCancelled
 from ..api import notify_task_update
 from ..utils.ffmpeg_helper import FFmpegHelper
+from ..config import config
+from .audio_chunker import cleanup_chunks, get_audio_duration, split_audio_into_chunks
 
 # 使用 TYPE_CHECKING 来避免运行时循环导入
 if TYPE_CHECKING:
@@ -219,6 +221,167 @@ class TranscriberWorker(Worker):
         except Exception as e:
             logger.error(f"[{self.name}] 保存转录文件时出错: {e}", exc_info=True)
 
+    @staticmethod
+    def _is_cuda_oom(error: BaseException) -> bool:
+        text = str(error or "").lower()
+        if "out of memory" not in text:
+            return False
+        return "cuda" in text or "cublas" in text or "torch" in text
+
+    @staticmethod
+    def _clear_cuda_cache() -> None:
+        try:
+            import torch
+        except Exception:
+            return
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                ipc_collect = getattr(torch.cuda, "ipc_collect", None)
+                if ipc_collect:
+                    ipc_collect()
+        except Exception as exc:
+            logger.debug(f"清理 CUDA 缓存失败: {exc}")
+
+    @staticmethod
+    def _merge_chunk_results(
+        results: list[tuple[TranscriptionResult, float]],
+        audio_duration: float,
+    ) -> TranscriptionResult:
+        segments: list[dict[str, Any]] = []
+        transcription_time = 0.0
+        model_load_time = 0.0
+        total_time = 0.0
+        language = ""
+        language_probability = 0.0
+
+        for index, (result, offset) in enumerate(results):
+            if index == 0:
+                model_load_time = float(result.model_load_time or 0.0)
+                language = result.language or ""
+                language_probability = float(result.language_probability or 0.0)
+            transcription_time += float(result.transcription_time or 0.0)
+            total_time += float(result.total_time or 0.0)
+            for segment in result.segments or []:
+                adjusted = dict(segment)
+                adjusted["start"] = max(0.0, float(segment.get("start", 0.0) or 0.0) + offset)
+                adjusted["end"] = max(
+                    adjusted["start"],
+                    float(segment.get("end", segment.get("start", 0.0)) or 0.0) + offset,
+                )
+                segments.append(adjusted)
+
+        segments.sort(key=lambda item: (float(item.get("start", 0.0)), float(item.get("end", 0.0))))
+        duration = max(0.0, float(audio_duration or 0.0))
+        if duration <= 0.0:
+            duration = sum(float(result.audio_duration or 0.0) for result, _ in results)
+        real_time_factor = transcription_time / duration if duration > 0 else 0.0
+        return TranscriptionResult(
+            segments=segments,
+            transcription_time=transcription_time,
+            real_time_factor=real_time_factor,
+            total_time=total_time,
+            model_load_time=model_load_time,
+            audio_duration=duration,
+            language=language,
+            language_probability=language_probability,
+        )
+
+    def _transcribe_audio_with_chunking(
+        self,
+        audio_file: str,
+        progress_callback,
+        cancel_check,
+    ) -> TranscriptionResult:
+        whisper_config = config.whisper
+        audio_duration = get_audio_duration(audio_file)
+        threshold = float(whisper_config.asr_chunk_threshold_sec)
+        chunk_duration = float(whisper_config.asr_chunk_duration_sec)
+
+        with self._transcriber_lock:
+            transcriber = self._transcriber
+
+        def transcribe_one(path: str, callback):
+            if cancel_check():
+                raise TaskCancelledError("任务已取消，停止转录。")
+            return transcriber.transcribe(
+                path,
+                progress_callback=callback,
+                cancel_check=cancel_check,
+            )
+
+        def run_chunks(duration: float, reason: str) -> TranscriptionResult:
+            chunks = split_audio_into_chunks(audio_file, chunk_duration)
+            source_path = os.path.abspath(audio_file)
+            if len(chunks) == 1 and os.path.abspath(chunks[0][0]) == source_path:
+                raise RuntimeError(
+                    f"无法为 {duration:.1f} 秒音频创建 {chunk_duration:.0f} 秒分片，已停止整段推理以避免再次显存溢出"
+                )
+
+            logger.info(
+                f"[{self.name}] 启用 ASR 分片: duration={duration:.1f}s, "
+                f"chunk_duration={chunk_duration:.1f}s, chunks={len(chunks)}, reason={reason}"
+            )
+            results: list[tuple[TranscriptionResult, float]] = []
+            try:
+                for index, (chunk_path, offset) in enumerate(chunks):
+                    expected_duration = min(chunk_duration, max(0.0, duration - offset))
+                    if expected_duration <= 0:
+                        continue
+                    self._clear_cuda_cache()
+                    logger.info(
+                        f"[{self.name}] 开始 ASR 分片 {index + 1}/{len(chunks)}: "
+                        f"{offset:.1f}s-{offset + expected_duration:.1f}s"
+                    )
+
+                    def chunk_progress(progress: float, start=offset, span=expected_duration):
+                        clamped = max(0.0, min(float(progress), 1.0))
+                        overall = (start + clamped * span) / duration if duration > 0 else clamped
+                        progress_callback(max(0.0, min(overall, 1.0)))
+
+                    try:
+                        result = transcribe_one(chunk_path, chunk_progress)
+                    except (TaskCancelledError, TranscriptionCancelled):
+                        raise
+                    except Exception as exc:
+                        end = offset + expected_duration
+                        raise RuntimeError(
+                            f"ASR 分片 {index + 1}/{len(chunks)} "
+                            f"({offset:.1f}s-{end:.1f}s) 失败: {exc}"
+                        ) from exc
+                    results.append((result, offset))
+                    completed = min(duration, offset + expected_duration)
+                    progress_callback(completed / duration if duration > 0 else 1.0)
+                    self._clear_cuda_cache()
+                    logger.info(
+                        f"[{self.name}] ASR 分片完成 {index + 1}/{len(chunks)}: "
+                        f"elapsed={result.transcription_time:.2f}s"
+                    )
+                if not results:
+                    raise RuntimeError("ASR 分片未产生任何结果")
+                return self._merge_chunk_results(results, duration)
+            finally:
+                cleanup_chunks(chunks)
+                self._clear_cuda_cache()
+
+        if audio_duration > threshold:
+            return run_chunks(audio_duration, "超过长音频阈值")
+
+        try:
+            result = transcribe_one(audio_file, progress_callback)
+            return result
+        except Exception as exc:
+            if not whisper_config.asr_chunk_oom_fallback or not self._is_cuda_oom(exc):
+                raise
+            fallback_duration = audio_duration or float(getattr(exc, "audio_duration", 0.0) or 0.0)
+            if fallback_duration <= 0:
+                raise
+            self._clear_cuda_cache()
+            logger.warning(
+                f"[{self.name}] 整段 ASR 发生 CUDA OOM，切换到 {chunk_duration:.0f} 秒分片重试"
+            )
+            return run_chunks(fallback_duration, "整段推理 CUDA OOM")
+
     def process_task(self, payload: Dict[str, Any]):
         """
         处理一个转录任务。
@@ -293,13 +456,33 @@ class TranscriberWorker(Worker):
                     if progress_percent == last_progress_percent:
                         return
                     last_progress_percent = progress_percent
-                    from ..task_updater import update_and_notify
-                    self._submit_coro(update_and_notify(task_id, {"progress": progress_percent}))
+                    task_progress = float(progress_percent)
                     if multipart_part:
-                        from ..task_parts import update_task_part
-                        update_task_part(str(task_id), int(multipart_part["index"]), {
+                        from ..task_parts import get_task_parts, update_task_part
+                        part_index = int(multipart_part["index"])
+                        update_task_part(str(task_id), part_index, {
                             "status": "TRANSCRIBING", "progress": progress_percent
                         })
+                        parts = get_task_parts(str(task_id), include_text=False)
+                        weighted_total = sum(
+                            max(0.0, float(part.get("duration") or part.get("audio_duration") or 0.0))
+                            for part in parts
+                        )
+                        if weighted_total > 0:
+                            weighted_done = sum(
+                                max(0.0, float(part.get("duration") or part.get("audio_duration") or 0.0))
+                                * max(0.0, min(float(part.get("progress") or 0.0), 100.0))
+                                / 100.0
+                                for part in parts
+                            )
+                            task_progress = weighted_done / weighted_total * 100.0
+                        elif parts:
+                            task_progress = sum(
+                                max(0.0, min(float(part.get("progress") or 0.0), 100.0))
+                                for part in parts
+                            ) / len(parts)
+                    from ..task_updater import update_and_notify
+                    self._submit_coro(update_and_notify(task_id, {"progress": task_progress}))
 
                     # 每 10% 打点一次，便于快速判断是后端卡住还是前端未刷新。
                     progress_bucket = progress_percent // 10
@@ -307,9 +490,7 @@ class TranscriberWorker(Worker):
                         last_logged_bucket = progress_bucket
                         logger.info(f"[{self.name}] 转录进度 task={task_id}: {progress_percent}%")
 
-            with self._transcriber_lock:
-                transcriber = self._transcriber
-            result = transcriber.transcribe(
+            result = self._transcribe_audio_with_chunking(
                 audio_file,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,

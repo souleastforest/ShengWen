@@ -183,6 +183,7 @@ export function useTaskViewModel() {
 
   let ws: WebSocket | null = null
   let submitAbortController: AbortController | null = null
+  let taskPartsRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
   // --- Actions ---
   const fetchTasks = async () => {
@@ -194,8 +195,9 @@ export function useTaskViewModel() {
       if (selectedTask.value) {
         const current = tasks.value.find(t => t.id === selectedTask.value?.id)
         if (current) {
-          // Merge updates
+          // Merge updates so detail fields and part statistics are not lost.
           selectedTask.value = { ...selectedTask.value, ...current }
+          scheduleTaskPartsRefresh(current.id)
         }
       }
     } catch (err) {
@@ -331,8 +333,25 @@ export function useTaskViewModel() {
 
   const fetchTaskParts = async (taskId: string) => {
     const response = await axios.get(apiBaseUrl + "/tasks/" + taskId + "/parts")
-    taskParts.value = response.data
-    return taskParts.value
+    if (selectedTask.value?.id === taskId) {
+      taskParts.value = response.data
+    }
+    return response.data as TaskPart[]
+  }
+
+  const scheduleTaskPartsRefresh = (taskId: string) => {
+    if (!selectedTask.value || selectedTask.value.id !== taskId || !selectedTask.value.has_parts) {
+      return
+    }
+    if (taskPartsRefreshTimer) {
+      clearTimeout(taskPartsRefreshTimer)
+    }
+    taskPartsRefreshTimer = setTimeout(() => {
+      taskPartsRefreshTimer = null
+      fetchTaskParts(taskId).catch(err => {
+        console.error('Failed to refresh task parts:', err)
+      })
+    }, 400)
   }
 
   const selectTask = async (task: Task) => {
@@ -406,14 +425,15 @@ export function useTaskViewModel() {
         const updatedTask = data.task
         const index = tasks.value.findIndex(t => t.id === updatedTask.id)
         if (index !== -1) {
-          tasks.value[index] = updatedTask
+          tasks.value[index] = { ...tasks.value[index], ...updatedTask }
         } else {
           tasks.value.unshift(updatedTask)
         }
-        
+
         if (selectedTask.value?.id === updatedTask.id) {
-          // Merge updates to preserve details that might not be in the broadcast
+          // Merge updates to preserve details that might not be in the broadcast.
           selectedTask.value = { ...selectedTask.value, ...updatedTask }
+          scheduleTaskPartsRefresh(updatedTask.id)
         }
       } else if (data.type === 'progress_update') {
         const { task_id, progress } = data
@@ -766,6 +786,10 @@ export function useTaskViewModel() {
   onUnmounted(() => {
     if (ws) {
       ws.close()
+    }
+    if (taskPartsRefreshTimer) {
+      clearTimeout(taskPartsRefreshTimer)
+      taskPartsRefreshTimer = null
     }
   })
 

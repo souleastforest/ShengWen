@@ -42,7 +42,7 @@ const formatDuration = (seconds?: number) => {
 </script>
 
 <template>
-  <section v-if="parts.length" class="mx-4 mb-4 rounded-xl border border-slate-200 bg-white shadow-sm">
+  <section v-if="parts.length" class="mx-4 mb-4 shrink-0 rounded-xl border border-slate-200 bg-white shadow-sm">
     <header class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
       <div>
         <h2 class="text-sm font-semibold text-slate-800">分P处理进度</h2>
@@ -59,7 +59,7 @@ const formatDuration = (seconds?: number) => {
       </button>
     </header>
 
-    <div class="divide-y divide-slate-100">
+    <div class="max-h-[40vh] overflow-y-auto overscroll-contain divide-y divide-slate-100">
       <article v-for="part in parts" :key="part.part_index" class="px-4 py-3">
         <button type="button" class="flex w-full items-center gap-3 text-left" @click="expandedPart = expandedPart === part.part_index ? null : part.part_index">
           <span class="w-10 shrink-0 text-xs font-semibold text-slate-500">P{{ part.part_index + 1 }}</span>

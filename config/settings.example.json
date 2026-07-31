@@ -20,7 +20,10 @@
     "vibevoice_max_new_tokens": 8192,
     "vibevoice_dtype": "bfloat16",
     "vibevoice_inference_mode": "local",
-    "vibevoice_api_url": ""
+    "vibevoice_api_url": "",
+    "asr_chunk_threshold_sec": 720,
+    "asr_chunk_duration_sec": 360,
+    "asr_chunk_oom_fallback": true
   },
   "llm": {
     "provider": "openai_compatible",
