@@ -211,7 +211,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 raise TranscriptionCancelled("任务已取消，停止转录。")
 
             generated_ids = self._extract_generated_ids(output_ids)
-            generated_ids = generated_ids[:, input_length:]
+            generated_ids = generated_ids[0, input_length:]
             text = self.processor.decode(generated_ids, skip_special_tokens=True)
             raw_segments = self.processor.post_process_transcription(text)
 
