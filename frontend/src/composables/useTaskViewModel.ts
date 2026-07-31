@@ -865,7 +865,7 @@ export function useTaskViewModel() {
         // No need to do more, WS will update the status
       } catch (err) {
         console.error('Failed to re-summarize task:', err)
-        error.value = '重新总结失败'
+        error.value = axios.isAxiosError(err) ? err.response?.data?.detail || "重新总结失败" : "重新总结失败"
       }
     },
     reTranscribe: async (taskId: string) => {

@@ -226,7 +226,7 @@ async def re_summarize_task(
         raise HTTPException(status_code=404, detail="Task not found")
     if not task.get("transcript"):
         raise HTTPException(
-            status_code=400, detail="No transcript available for re-summarization"
+            status_code=400, detail="任务没有可供重新总结的转录原文，请先重新转录。"
         )
 
     requested_mode = payload.summary_mode if payload else None
