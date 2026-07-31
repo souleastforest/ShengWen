@@ -107,8 +107,14 @@ class VibeVoiceAsrTranscriber(Transcriber):
             raise ModelLoadError(f"加载 VibeVoice-ASR 模型失败: {e}") from e
 
     @staticmethod
-    def _parse_timestamp(timestamp_str: str) -> float:
-        if not timestamp_str:
+    def _parse_timestamp(timestamp_str: str | float | int | None) -> float:
+        if timestamp_str is None or timestamp_str == "":
+            return 0.0
+
+        if isinstance(timestamp_str, (int, float)):
+            return float(timestamp_str)
+
+        if not isinstance(timestamp_str, str):
             return 0.0
 
         try:
