@@ -715,6 +715,42 @@ class VideoDownloaderWorker(Worker):
                 f"[{self.name}] B 站作者信息写入失败（仅提示，不影响流程）: {e}"
             )
 
+
+    @staticmethod
+    def _selected_bilibili_playlist_items(payload: Dict[str, Any]) -> str | None:
+        parts_config = payload.get("bilibili_parts")
+        if not isinstance(parts_config, dict):
+            return None
+
+        indices = parts_config.get("indices")
+        if not isinstance(indices, list):
+            return None
+
+        part_numbers = []
+        for raw_index in indices:
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
+                continue
+            if index >= 0:
+                part_numbers.append(str(index + 1))
+
+        return ",".join(part_numbers) or None
+
+
+    @staticmethod
+    def _resolve_downloaded_video_paths(ydl: Any, info_dict: Dict[str, Any]) -> List[str]:
+        entries = info_dict.get("entries") if isinstance(info_dict, dict) else None
+        candidates = entries if isinstance(entries, list) else [info_dict]
+        paths = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            path = ydl.prepare_filename(candidate)
+            if os.path.exists(path):
+                paths.append(path)
+        return paths
+
     def process_task(self, payload: Any):
         """
         下载视频并将其传递给下一个工作单元。
@@ -806,6 +842,22 @@ class VideoDownloaderWorker(Worker):
                     "progress_hooks": [progress_hook],
                 }
 
+            selected_playlist_items = self._selected_bilibili_playlist_items(payload)
+            parts_config = payload.get("bilibili_parts")
+            if (
+                self._is_bilibili_url(str(video_url))
+                and isinstance(parts_config, dict)
+                and parts_config.get("mode") == "merge"
+                and selected_playlist_items
+                and len(selected_playlist_items.split(",")) > 1
+            ):
+                raise RuntimeError(
+                    "所选多个分P没有可用字幕，当前不能合并为一个本地 ASR 任务。"
+                    "请改用拆分为多个任务。"
+                )
+            if selected_playlist_items:
+                ydl_opts["playlist_items"] = selected_playlist_items
+
             # 如果有 ffmpeg 路径，添加到配置中
             if ffmpeg_location:
                 ydl_opts["ffmpeg_location"] = ffmpeg_location
@@ -835,7 +887,14 @@ class VideoDownloaderWorker(Worker):
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info_dict = ydl.extract_info(video_url, download=True)
-                video_path = ydl.prepare_filename(info_dict)
+                video_paths = self._resolve_downloaded_video_paths(ydl, info_dict)
+
+            if len(video_paths) != 1:
+                raise RuntimeError(
+                    f"下载结果包含 {len(video_paths)} 个分P，无法作为单一转录任务处理。"
+                    "请在分P选择器中选择拆分为多个任务，或仅选择一个分P。"
+                )
+            video_path = video_paths[0]
 
             logger.info(f"[{self.name}] 视频下载成功: {video_path}")
 

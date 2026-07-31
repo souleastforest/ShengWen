@@ -68,6 +68,21 @@ async def _get_bilibili_video_title_and_parts(video_url: str) -> tuple[str, list
 
 @router.post("/", response_model=Task, status_code=201)
 async def create_task(task_in: TaskCreate, request: Request):
+    if not task_in.bilibili_parts and deps._is_bilibili_video_url(str(task_in.video_url)):
+        try:
+            _, parts_info = await _get_bilibili_video_title_and_parts(str(task_in.video_url))
+        except Exception as e:
+            logger.warning(f"获取 B 站分P信息失败: {e}")
+            raise HTTPException(
+                status_code=422,
+                detail="无法确认 B 站分P信息，请先在分P选择器中选择要处理的内容。",
+            ) from e
+        if len(parts_info) > 1:
+            raise HTTPException(
+                status_code=422,
+                detail="检测到多分P视频，请先选择要处理的分P和处理方式。",
+            )
+
     if task_in.bilibili_parts and task_in.bilibili_parts.mode == "separate":
         try:
             video_title, parts_info = await _get_bilibili_video_title_and_parts(
