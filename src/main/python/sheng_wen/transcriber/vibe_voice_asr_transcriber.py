@@ -95,9 +95,9 @@ class VibeVoiceAsrTranscriber(Transcriber):
             self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
                 self.model_path,
                 dtype=torch_dtype,
-                device=self.device,
                 trust_remote_code=True,
             )
+            self.model.to(self.device)
             self.model_load_time = time.time() - start_time
             logger.info(
                 f"[VibeVoiceAsrTranscriber] Model loaded in {self.model_load_time:.2f}s"
