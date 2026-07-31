@@ -98,6 +98,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 trust_remote_code=True,
             )
             self.model.to(self.device)
+            self.model.eval()
             self.model_load_time = time.time() - start_time
             logger.info(
                 f"[VibeVoiceAsrTranscriber] Model loaded in {self.model_load_time:.2f}s"
@@ -189,11 +190,18 @@ class VibeVoiceAsrTranscriber(Transcriber):
             if cancel_check and cancel_check():
                 raise TranscriptionCancelled("任务已取消，停止转录。")
 
+            input_length = inputs["input_ids"].shape[1]
+            generation_config = {
+                "max_new_tokens": self.max_new_tokens,
+                "do_sample": False,
+                "pad_token_id": self.processor.pad_id,
+                "eos_token_id": self.processor.tokenizer.eos_token_id,
+            }
+
             with torch.inference_mode():
                 output_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    temperature=0.0,
+                    **generation_config,
                 )
 
             if progress_callback:
@@ -203,6 +211,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 raise TranscriptionCancelled("任务已取消，停止转录。")
 
             generated_ids = self._extract_generated_ids(output_ids)
+            generated_ids = generated_ids[:, input_length:]
             text = self.processor.decode(generated_ids, skip_special_tokens=True)
             raw_segments = self.processor.post_process_transcription(text)
 
