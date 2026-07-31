@@ -120,6 +120,23 @@ class LLMWorker(Worker):
             await self._mark_failed(task_id, f"读取中间文件时出错: {e}")
             return
 
+        if not transcript_text.strip():
+            empty_error = "转录文本为空，无法生成总结；已跳过 LLM 请求（可能是 ASR 未生成有效转录片段）。"
+            if multipart_part and task_id:
+                from ..task_parts import update_task_part
+                update_task_part(
+                    task_id,
+                    int(multipart_part["index"]),
+                    {
+                        "status": "FAILED",
+                        "progress": 0,
+                        "error_message": empty_error,
+                    },
+                )
+            else:
+                await self._mark_failed(task_id, empty_error)
+            return
+
         task_data = None
         if task_id:
             from ..db import db
