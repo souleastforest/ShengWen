@@ -61,3 +61,7 @@ frontend/dist/
 # Local model weights
 models/
 
+
+# Root-level development artifacts
+node_modules/
+frontend/test-results/
