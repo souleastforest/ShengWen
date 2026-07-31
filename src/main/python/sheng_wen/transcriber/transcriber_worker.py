@@ -229,6 +229,7 @@ class TranscriberWorker(Worker):
         audio_file = payload.get("audio_file")
         output_file = payload.get("output_file")
         task_id = payload.get("task_id")
+        multipart_part = payload.get("multipart_part")
 
         if not audio_file or not output_file:
             error_msg = "payload 中缺少 'audio_file' 或 'output_file'"
@@ -294,6 +295,11 @@ class TranscriberWorker(Worker):
                     last_progress_percent = progress_percent
                     from ..task_updater import update_and_notify
                     self._submit_coro(update_and_notify(task_id, {"progress": progress_percent}))
+                    if multipart_part:
+                        from ..task_parts import update_task_part
+                        update_task_part(str(task_id), int(multipart_part["index"]), {
+                            "status": "TRANSCRIBING", "progress": progress_percent
+                        })
 
                     # 每 10% 打点一次，便于快速判断是后端卡住还是前端未刷新。
                     progress_bucket = progress_percent // 10
@@ -320,6 +326,17 @@ class TranscriberWorker(Worker):
 
             intermediate_file_path = os.path.splitext(output_file)[0] + ".txt"
             self._save_transcription_to_file(result, intermediate_file_path)
+
+            if multipart_part:
+                from ..task_parts import update_task_part
+                with open(intermediate_file_path, "r", encoding="utf-8") as f:
+                    part_transcript = f.read()
+                update_task_part(str(task_id), int(multipart_part["index"]), {
+                    "status": "SUMMARIZING", "progress": 100,
+                    "transcript": part_transcript,
+                    "audio_duration": result.audio_duration,
+                    "transcription_time": result.transcription_time,
+                })
 
             if task_id:
                 from ..db import TaskStatus
@@ -355,7 +372,9 @@ class TranscriberWorker(Worker):
                 **payload
             }
             
-            self._submit_coro(self._next_worker.add_task(next_payload))
+            if not multipart_part:
+                self._submit_coro(self._next_worker.add_task(next_payload))
+            return intermediate_file_path
 
         except (TaskCancelledError, TranscriptionCancelled):
             logger.info(f"[{self.name}] 任务已取消，停止后续转录流程: {task_id}")

@@ -30,6 +30,7 @@ class TaskStatus(str, Enum):
     TRANSCRIBING = "TRANSCRIBING"
     SUMMARIZING = "SUMMARIZING"
     COMPLETED = "COMPLETED"
+    PARTIAL = "PARTIAL"
     FAILED = "FAILED"
 
 class TaskModel(Base):

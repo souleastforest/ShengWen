@@ -22,6 +22,7 @@ from src.main.python.sheng_wen.infra.api.routes.schemas import (
 )
 from src.main.python.sheng_wen.infra.api.routes.websocket import notify_task_update
 from src.main.python.sheng_wen.utils.media import build_transcriber_payload
+from src.main.python.sheng_wen.task_parts import delete_task_parts, get_task_parts, get_task_part_stats, init_task_parts, reset_failed_parts
 
 
 router = APIRouter(prefix="/tasks")
@@ -60,10 +61,21 @@ async def _get_bilibili_video_title_and_parts(video_url: str) -> tuple[str, list
             parts.append(
                 {
                     "index": int(page.get("page", 0)) - 1,
+                    "cid": int(page.get("cid", 0)),
                     "title": str(page.get("part") or ""),
+                    "duration": int(page.get("duration") or 0),
                 }
             )
     return (title, parts)
+
+
+
+def _with_part_stats(task_data: dict):
+    stats = get_task_part_stats(str(task_data.get("id") or ""))
+    if stats.get("has_parts"):
+        task_data = dict(task_data)
+        task_data.update(stats)
+    return task_data
 
 
 @router.post("/", response_model=Task, status_code=201)
@@ -147,6 +159,13 @@ async def create_task(task_in: TaskCreate, request: Request):
 
         return first_task_data
 
+    merge_parts_info = []
+    if task_in.bilibili_parts and task_in.bilibili_parts.mode == "merge":
+        try:
+            _, merge_parts_info = await _get_bilibili_video_title_and_parts(str(task_in.video_url))
+        except Exception as e:
+            logger.warning(f"获取合并模式分P信息失败: {e}")
+
     task_id = str(uuid.uuid4())
     resolved_summary_mode = deps._normalize_summary_mode(task_in.summary_mode)
     task_data = {
@@ -165,6 +184,15 @@ async def create_task(task_in: TaskCreate, request: Request):
     }
     db.save_task(task_id, task_data)
 
+    if task_in.bilibili_parts and task_in.bilibili_parts.mode == "merge":
+        part_map = {int(part.get("index", -1)): part for part in merge_parts_info}
+        init_task_parts(task_id, [
+            {"index": index, "cid": part_map.get(index, {}).get("cid"),
+             "title": part_map.get(index, {}).get("title") or f"P{index + 1}",
+             "duration": part_map.get(index, {}).get("duration", 0)}
+            for index in task_in.bilibili_parts.indices
+        ])
+
     task_payload = {
         "task_id": task_id,
         "video_url": str(task_in.video_url),
@@ -180,16 +208,18 @@ async def create_task(task_in: TaskCreate, request: Request):
             "mode": task_in.bilibili_parts.mode,
             "indices": task_in.bilibili_parts.indices,
         }
+        if task_in.bilibili_parts.mode == "merge":
+            task_payload["multipart_batch"] = True
 
     await request.app.state.event_bus.publish(TASK_CREATED, task_payload)
     await notify_task_update(task_id)
-    return task_data
+    return _with_part_stats(task_data)
 
 
 @router.get("/", response_model=list[Task])
 async def list_tasks():
     tasks = db.list_tasks()
-    return sorted(tasks, key=lambda x: x["created_at"], reverse=True)
+    return [_with_part_stats(task) for task in sorted(tasks, key=lambda x: x["created_at"], reverse=True)]
 
 
 @router.get("/{task_id}", response_model=Task)
@@ -198,7 +228,38 @@ async def get_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     deps._trigger_author_resolution_if_needed(task)
-    return task
+    return _with_part_stats(task)
+
+
+@router.get("/{task_id}/parts")
+async def get_task_parts_route(task_id: str):
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return get_task_parts(task_id)
+
+
+@router.post("/{task_id}/retry-failed-parts", response_model=Task)
+async def retry_failed_parts(task_id: str, request: Request, payload: dict | None = None):
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parts = get_task_parts(task_id)
+    failed_indices = {part["part_index"] for part in parts if part["status"] == "FAILED"}
+    requested_indices = (payload or {}).get("part_indices") or (payload or {}).get("indices")
+    if requested_indices is None:
+        indices = sorted(failed_indices)
+    else:
+        indices = sorted({int(index) for index in requested_indices if int(index) in failed_indices})
+    if not parts or not indices:
+        raise HTTPException(status_code=409, detail="当前没有失败的分P")
+    reset_failed_parts(task_id, indices)
+    from src.main.python.sheng_wen.task_updater import update_and_notify
+    await update_and_notify(task_id, {"status": TaskStatus.PENDING, "progress": 0.0, "error_message": None})
+    worker_factory = deps.get_worker_factory(request, "get_downloader_worker")
+    worker = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
+    await worker.add_task({"task_id": task_id, "video_url": str(task.get("video_url") or ""), "quality": "audio_only", "summary_mode": task.get("summary_mode") or "auto", "bilibili_parts": {"mode": "merge", "indices": indices}, "multipart_batch": True})
+    return _with_part_stats(db.get_task(task_id))
 
 
 @router.patch("/{task_id}", response_model=Task)
@@ -251,6 +312,15 @@ async def re_summarize_task(
             "summary_meta": None,
         },
     )
+
+    multipart_parts = get_task_parts(task_id)
+    if multipart_parts:
+        await worker.add_task({
+            "task_id": task_id,
+            "summary_mode": resolved_summary_mode,
+            "multipart_resummarize": True,
+        })
+        return _with_part_stats(db.get_task(task_id))
 
     temp_file = os.path.join("temp", f"{task_id}_re.txt")
     os.makedirs("temp", exist_ok=True)
@@ -437,5 +507,6 @@ async def delete_task(task_id: str, request: Request):
             f"[delete_task] 任务 {task_id} 取消结果: " + ", ".join(cancellation_reports)
         )
 
+    delete_task_parts(task_id)
     db.delete_task(task_id)
     return None

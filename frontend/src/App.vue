@@ -22,6 +22,7 @@ import Sidebar from './components/Sidebar.vue'
 import FloatingToolbar from './components/FloatingToolbar.vue'
 import TaskInfoModal from './components/TaskInfoModal.vue'
 import TaskContentArea from './components/TaskContentArea.vue'
+import TaskPartsPanel from './components/TaskPartsPanel.vue'
 import MermaidViewerModal from './components/MermaidViewerModal.vue'
 import SummaryImageWorkbenchModal from './components/SummaryImageWorkbenchModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
@@ -32,6 +33,8 @@ import ToastContainer from './components/ToastContainer.vue'
 const {
   tasks,
   selectedTask,
+  taskParts,
+  retryFailedParts,
   videoUrl,
   selectedFile,
   localFilePath,
@@ -901,6 +904,7 @@ watch(
         />
 
         <!-- 内容滚动区 -->
+        <TaskPartsPanel :parts="taskParts" @retry="retryFailedParts(selectedTask.id)" />
         <TaskContentArea
           :task="selectedTask"
           :active-tab="activeTab"

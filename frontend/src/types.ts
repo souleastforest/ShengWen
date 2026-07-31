@@ -5,8 +5,24 @@ export const TaskStatus = {
   TRANSCRIBING: "TRANSCRIBING",
   SUMMARIZING: "SUMMARIZING",
   COMPLETED: "COMPLETED",
-  FAILED: "FAILED"
+  FAILED: "FAILED",
+  PARTIAL: "PARTIAL"
 } as const;
+
+export interface TaskPart {
+  task_id: string;
+  part_index: number;
+  cid?: number;
+  title?: string;
+  duration?: number;
+  status: string;
+  progress: number;
+  error_message?: string;
+  transcript?: string;
+  summary?: string;
+  audio_duration?: number;
+  transcription_time?: number;
+}
 
 export type TaskStatus = typeof TaskStatus[keyof typeof TaskStatus];
 export type SummaryMode = 'standard' | 'agent' | 'auto';
@@ -15,6 +31,11 @@ export interface Task {
   id: string;
   video_url: string;
   status: TaskStatus;
+  part_count?: number;
+  part_completed?: number;
+  part_failed?: number;
+  current_part?: number;
+  has_parts?: boolean;
   created_at: string;
   latest_modified_at?: string;
   progress: number;

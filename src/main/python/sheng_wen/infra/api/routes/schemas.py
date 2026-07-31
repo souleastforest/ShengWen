@@ -40,6 +40,11 @@ class Task(BaseModel):
     summary_chunk_total: Optional[int] = None
     summary_chunk_done: Optional[int] = None
     summary_meta: Optional[str] = None
+    part_count: Optional[int] = None
+    part_completed: Optional[int] = None
+    part_failed: Optional[int] = None
+    current_part: Optional[int] = None
+    has_parts: bool = False
 
 
 class ReSummarizeRequest(BaseModel):

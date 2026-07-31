@@ -2,6 +2,7 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import type {
   Task,
+  TaskPart,
   CreateTaskRequest,
   SummaryMode,
   LLMProvider,
@@ -139,6 +140,7 @@ export function useTaskViewModel() {
   // --- UI State ---
   const tasks = ref<Task[]>([])
   const selectedTask = ref<Task | null>(null)
+  const taskParts = ref<TaskPart[]>([])
   const videoUrl = ref('')
   const selectedFile = ref<File | null>(null)
   const localFilePath = ref('')
@@ -185,7 +187,7 @@ export function useTaskViewModel() {
   // --- Actions ---
   const fetchTasks = async () => {
     try {
-      const response = await axios.get(`${apiBaseUrl}/tasks/`)
+      const response = await axios.get(apiBaseUrl + "/tasks/")
       tasks.value = response.data
       
       // Sync selected task details
@@ -327,16 +329,35 @@ export function useTaskViewModel() {
     isSubmitting.value = false
   }
 
+  const fetchTaskParts = async (taskId: string) => {
+    const response = await axios.get(apiBaseUrl + "/tasks/" + taskId + "/parts")
+    taskParts.value = response.data
+    return taskParts.value
+  }
+
   const selectTask = async (task: Task) => {
     try {
       const response = await axios.get(`${apiBaseUrl}/tasks/${task.id}`)
       selectedTask.value = response.data
+      if (response.data?.has_parts) {
+        await fetchTaskParts(task.id)
+      } else {
+        taskParts.value = []
+      }
       if (selectedTask.value?.status === 'PENDING' || selectedTask.value?.status === 'DOWNLOADING' || selectedTask.value?.status === 'TRANSCRIBING' || selectedTask.value?.status === 'SUMMARIZING') {
         activeTab.value = 'summary'
       }
     } catch (err) {
       console.error('Failed to fetch task details:', err)
       error.value = '获取任务详情失败'
+    }
+  }
+
+  const retryFailedParts = async (taskId: string) => {
+    await axios.post(apiBaseUrl + "/tasks/" + taskId + "/retry-failed-parts")
+    const current = selectedTask.value
+    if (current && current.id === taskId) {
+      await selectTask(current)
     }
   }
 
@@ -734,6 +755,7 @@ export function useTaskViewModel() {
   // --- Lifecycle ---
   onMounted(() => {
     fetchTasks()
+
     fetchLlmProviders()
     fetchLlmSettings()
     fetchTranscriptionSettings()
@@ -751,6 +773,7 @@ export function useTaskViewModel() {
     // State
     tasks,
     selectedTask,
+    taskParts,
     videoUrl,
     selectedFile,
     localFilePath,
@@ -764,6 +787,9 @@ export function useTaskViewModel() {
     llmProviders,
     llmSettings,
     isUpdatingLlmSettings,
+    fetchTaskParts,
+    retryFailedParts,
+
     transcriptionSettings,
     isUpdatingTranscriptionSettings,
     summarizationSettings,
