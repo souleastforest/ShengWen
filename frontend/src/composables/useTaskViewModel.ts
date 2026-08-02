@@ -383,19 +383,24 @@ export function useTaskViewModel() {
   }
 
   const selectTask = (task: Task) => {
-    // Show the lightweight task metadata immediately. Loading the large transcript
-    // and summary continues in the background so clicking a task never blocks the UI.
-    selectedTask.value = task
-    taskParts.value = []
-    taskPartDetails.value = {}
-    loadingPartIndex.value = null
+    // Show lightweight metadata immediately. Preserve already loaded content when
+    // WebSocket reconnects or the same task is selected again.
+    const current = selectedTask.value
+    const preserveLoadedContent = current?.id === task.id
+      && (current.summary !== undefined || current.transcript !== undefined)
+    selectedTask.value = preserveLoadedContent ? current : task
+    if (!preserveLoadedContent) {
+      taskParts.value = []
+      taskPartDetails.value = {}
+      loadingPartIndex.value = null
+    }
     if (task.status === 'PENDING' || task.status === 'DOWNLOADING' || task.status === 'TRANSCRIBING' || task.status === 'SUMMARIZING') {
       activeTab.value = 'summary'
     }
 
     void (async () => {
       try {
-        const detailPromise = axios.get(`${apiBaseUrl}/tasks/${task.id}`)
+        const detailPromise = axios.get(`${apiBaseUrl}/tasks/${task.id}?include_content=false`)
         const partsPromise = task.has_parts
           ? fetchTaskParts(task.id)
           : Promise.resolve([] as TaskPart[])

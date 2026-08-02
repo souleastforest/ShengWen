@@ -765,8 +765,15 @@ marked.setOptions({ renderer })
 
 // Defer large summary compilation so the multipart preview stays interactive.
 const compiledMarkdown = ref('')
+const showFullMultipartSummary = ref(false)
 let markdownCompileTimer: ReturnType<typeof setTimeout> | null = null
 let markdownCompileGeneration = 0
+
+const getMultipartOverview = (summary: string) => {
+  const marker = summary.search(/^#\s*分P总结.*$/m)
+  if (marker > 0) return summary.slice(0, marker).trim()
+  return summary.slice(0, 12000).trim()
+}
 
 const scheduleMarkdownCompile = () => {
   markdownCompileGeneration += 1
@@ -786,7 +793,10 @@ const scheduleMarkdownCompile = () => {
 
     const summary = task.summary
     if (!summary) return
-    const cleanedSummary = stripDoubleBracePlaceholders(summary)
+    const previewSummary = task.has_parts && !showFullMultipartSummary.value
+      ? getMultipartOverview(summary)
+      : summary
+    const cleanedSummary = stripDoubleBracePlaceholders(previewSummary)
     const html = marked.parse(cleanedSummary) as string
     compiledMarkdown.value = postProcessCompiledMarkdown(html, {
       videoUrl: task.video_url || '',
@@ -795,9 +805,16 @@ const scheduleMarkdownCompile = () => {
 }
 
 watch(
-  [() => selectedTask.value?.id, () => selectedTask.value?.summary],
+  [() => selectedTask.value?.id, () => selectedTask.value?.summary, showFullMultipartSummary],
   scheduleMarkdownCompile,
   { immediate: true },
+)
+
+watch(
+  () => selectedTask.value?.id,
+  () => {
+    showFullMultipartSummary.value = false
+  },
 )
 
 const topic = computed(() => {
@@ -946,6 +963,7 @@ watch(
           :task="selectedTask"
           :active-tab="activeTab"
           :compiled-markdown="compiledMarkdown"
+          :show-full-multipart-summary="showFullMultipartSummary"
           :summary-highlight-request="summaryHighlightRequest"
           :heading-jump-request="headingJumpRequest"
           :topic="topic"
@@ -958,6 +976,7 @@ watch(
           @update:editing-topic-value="(val) => editingTopicValue = val"
           @update-markdown-headings="handleMarkdownHeadingsUpdate"
           @update-active-heading-id="handleActiveHeadingIdUpdate"
+          @expand-multipart-summary="showFullMultipartSummary = true"
         />
       </template>
 

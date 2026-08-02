@@ -230,13 +230,26 @@ async def list_tasks():
     return lightweight_tasks
 
 
+def _summary_overview(summary: str) -> str:
+    marker = re.search(r"^#\s*分P总结.*$", summary, re.MULTILINE)
+    if marker and marker.start() > 0:
+        return summary[:marker.start()].strip()
+    return summary[:12000].strip()
+
+
 @router.get("/{task_id}", response_model=Task)
-async def get_task(task_id: str):
+async def get_task(task_id: str, include_content: bool = True):
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     deps._trigger_author_resolution_if_needed(task)
-    return _with_part_stats(task)
+    result = dict(_with_part_stats(task))
+    if not include_content:
+        if result.get("summary"):
+            result["summary"] = _summary_overview(str(result["summary"]))
+        result.pop("transcript", None)
+        result.pop("summary_meta", None)
+    return result
 
 
 @router.get("/{task_id}/parts")

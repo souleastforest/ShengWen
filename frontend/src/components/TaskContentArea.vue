@@ -21,6 +21,7 @@ interface Props {
   task: Task
   activeTab: 'summary' | 'transcript'
   compiledMarkdown: string
+  showFullMultipartSummary: boolean
   summaryHighlightRequest?: SummaryHighlightRequest | null
   headingJumpRequest?: { id: string; requestId: number } | null
   topic: string
@@ -38,6 +39,7 @@ const emit = defineEmits<{
   'update:editing-topic-value': [value: string]
   'update-markdown-headings': [headings: MarkdownHeadingItem[]]
   'update-active-heading-id': [headingId: string]
+  'expand-multipart-summary': []
 }>()
 
 const isCompleted = computed(() => props.task.status === TaskStatus.COMPLETED)
@@ -549,6 +551,16 @@ onBeforeUnmount(() => {
             <p v-else-if="task.summary" class="text-slate-400 italic">正在加载总结预览...</p>
             <p v-else class="text-slate-400 italic">暂无总结内容</p>
           </article>
+          <div v-if="task.has_parts && task.summary && !showFullMultipartSummary" class="border-t border-slate-100 px-8 py-4">
+            <button
+              type="button"
+              class="text-sm font-medium text-blue-600 hover:text-blue-700"
+              @click="emit('expand-multipart-summary')"
+            >
+              展开完整分P总结
+            </button>
+            <span class="ml-2 text-xs text-slate-400">默认只加载总体概览，避免一次渲染 100 个分P</span>
+          </div>
         </div>
 
         <!-- 转录文本 Tab -->
