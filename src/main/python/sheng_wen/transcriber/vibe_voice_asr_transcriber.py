@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import math
 import time
 from typing import Any
 
@@ -159,6 +161,71 @@ class VibeVoiceAsrTranscriber(Transcriber):
             return output_ids.sequences
         return output_ids
 
+    @staticmethod
+    def _needs_chunking(audio_duration: float, threshold: float = 600.0) -> bool:
+        return float(audio_duration or 0.0) >= threshold
+
+    @staticmethod
+    def _merge_chunk_results(
+        chunk_results: list[tuple[TranscriptionResult, float]],
+        model_load_time: float = 0.0,
+    ) -> TranscriptionResult:
+        merged_segments: list[dict[str, Any]] = []
+        transcription_time = 0.0
+        max_end = 0.0
+        for result, offset in chunk_results:
+            transcription_time += float(result.transcription_time or 0.0)
+            max_end = max(max_end, float(result.audio_duration or 0.0) + offset)
+            for segment in result.segments or []:
+                item = dict(segment)
+                item["start"] = float(item.get("start", 0.0) or 0.0) + offset
+                item["end"] = max(
+                    item["start"],
+                    float(item.get("end", item["start"]) or 0.0) + offset,
+                )
+                merged_segments.append(item)
+        merged_segments.sort(key=lambda item: (item["start"], item["end"]))
+        return TranscriptionResult(
+            segments=merged_segments,
+            transcription_time=transcription_time,
+            real_time_factor=(
+                transcription_time / max_end if max_end > 0.0 else 0.0
+            ),
+            total_time=transcription_time + float(model_load_time or 0.0),
+            model_load_time=float(model_load_time or 0.0),
+            audio_duration=max_end,
+            language="unknown",
+            language_probability=0.0,
+        )
+
+    @staticmethod
+    def _clear_cuda_cache() -> None:
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                ipc_collect = getattr(torch.cuda, "ipc_collect", None)
+                if ipc_collect:
+                    ipc_collect()
+        except Exception as exc:
+            logger.debug(f"[VibeVoiceAsrTranscriber] CUDA 缓存清理失败: {exc}")
+
+    def release_inference_resources(self) -> None:
+        """释放一次推理产生的临时张量，但保留已加载模型供下一片复用。"""
+        gc.collect()
+        self._clear_cuda_cache()
+
+    def reset_model(self) -> None:
+        """在 OOM 后彻底释放模型，下一次推理时懒加载。"""
+        self.model = None
+        self.processor = None
+        self.model_load_time = 0.0
+        self.release_inference_resources()
+        logger.warning("[VibeVoiceAsrTranscriber] OOM 后已释放模型，下一片将重新加载。")
+
+    def _generation_budget(self, audio_duration: float) -> int:
+        duration_budget = max(2048, int(math.ceil(max(0.0, audio_duration) * 8.0)))
+        return min(max(1, int(self.max_new_tokens)), duration_budget)
+
     def transcribe(
         self,
         file_path: str,
@@ -166,6 +233,9 @@ class VibeVoiceAsrTranscriber(Transcriber):
         cancel_check: Any = None,
     ) -> TranscriptionResult:
         total_start_time = time.time()
+        inputs = None
+        output_ids = None
+        generated_ids = None
 
         try:
             if cancel_check and cancel_check():
@@ -197,8 +267,20 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 raise TranscriptionCancelled("任务已取消，停止转录。")
 
             input_length = inputs["input_ids"].shape[1]
+            speech_tensors = inputs.get("speech_tensors")
+            audio_duration = (
+                float(speech_tensors.shape[-1]) / 24000.0
+                if speech_tensors is not None and hasattr(speech_tensors, "shape")
+                else 0.0
+            )
+            effective_max_new_tokens = self._generation_budget(audio_duration)
+            logger.info(
+                "[VibeVoiceAsrTranscriber] generation budget: "
+                f"audio={audio_duration:.1f}s max_new_tokens={effective_max_new_tokens} "
+                f"global_max={self.max_new_tokens}"
+            )
             generation_config = {
-                "max_new_tokens": self.max_new_tokens,
+                "max_new_tokens": effective_max_new_tokens,
                 "do_sample": False,
                 "pad_token_id": self.processor.pad_id,
                 "eos_token_id": self.processor.tokenizer.eos_token_id,
@@ -218,16 +300,21 @@ class VibeVoiceAsrTranscriber(Transcriber):
 
             generated_ids = self._extract_generated_ids(output_ids)
             generated_ids = generated_ids[0, input_length:]
+            if generated_ids.shape[0] >= effective_max_new_tokens:
+                logger.warning(
+                    "[VibeVoiceAsrTranscriber] 输出达到 max_new_tokens，可能发生截断: "
+                    f"{effective_max_new_tokens}"
+                )
             text = self.processor.decode(generated_ids, skip_special_tokens=True)
             raw_segments = self.processor.post_process_transcription(text)
 
             result_segments = []
-            audio_duration = 0.0
+            transcribed_duration = 0.0
 
             for segment in raw_segments:
                 start = self._parse_timestamp(segment.get("start_time", "0:00.000"))
                 end = self._parse_timestamp(segment.get("end_time", "0:00.000"))
-                audio_duration = max(audio_duration, end)
+                transcribed_duration = max(transcribed_duration, end)
 
                 result_segments.append(
                     {
@@ -244,7 +331,9 @@ class VibeVoiceAsrTranscriber(Transcriber):
             transcription_time = time.time() - transcribe_start_time
             total_time = time.time() - total_start_time
             real_time_factor = (
-                transcription_time / audio_duration if audio_duration > 0 else 0.0
+                transcription_time / transcribed_duration
+                if transcribed_duration > 0
+                else 0.0
             )
 
             return TranscriptionResult(
@@ -253,7 +342,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 real_time_factor=real_time_factor,
                 total_time=total_time,
                 model_load_time=self.model_load_time,
-                audio_duration=audio_duration,
+                audio_duration=transcribed_duration,
                 language="unknown",
                 language_probability=0.0,
             )
@@ -261,3 +350,8 @@ class VibeVoiceAsrTranscriber(Transcriber):
             raise
         except Exception as e:
             raise TranscriptionError(f"转录文件 '{file_path}' 时发生错误: {e}") from e
+        finally:
+            inputs = None
+            output_ids = None
+            generated_ids = None
+            self.release_inference_resources()

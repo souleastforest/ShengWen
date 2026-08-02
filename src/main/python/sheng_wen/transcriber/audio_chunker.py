@@ -76,6 +76,7 @@ def split_audio_into_chunks(
     chunks: list[tuple[str, float]] = []
     offset = 0.0
     index = 0
+    expected_chunks = max(1, int((duration + chunk_duration - 1e-6) // chunk_duration))
 
     while offset < duration:
         remaining = duration - offset
@@ -107,20 +108,33 @@ def split_audio_into_chunks(
             )
         except OSError as exc:
             logger.warning(f"Failed to create audio chunk at offset {offset}: {exc}")
-            break
+            cleanup_chunks(chunks)
+            raise RuntimeError(
+                f"无法创建音频分片（offset={offset:.1f}s）: {exc}"
+            ) from exc
 
         if result.returncode != 0 or not os.path.exists(chunk_path):
             logger.warning(
                 f"ffmpeg failed to create chunk for {path} at offset {offset}: "
                 f"{(result.stderr or '').strip()}"
             )
-            break
+            cleanup_chunks(chunks)
+            raise RuntimeError(
+                f"无法创建音频分片（offset={offset:.1f}s）: "
+                f"{(result.stderr or '').strip()}"
+            )
 
         chunks.append((chunk_path, offset))
         offset += chunk_duration
         index += 1
 
-    return chunks or [(path, 0.0)]
+    if len(chunks) != expected_chunks:
+        cleanup_chunks(chunks)
+        raise RuntimeError(
+            f"音频分片不完整：期望 {expected_chunks} 片，实际生成 {len(chunks)} 片"
+        )
+
+    return chunks
 
 
 def cleanup_chunks(chunks: list[tuple[str, float]]) -> None:

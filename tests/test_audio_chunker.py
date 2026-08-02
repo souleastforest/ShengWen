@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import math
 import struct
 import wave
@@ -115,3 +116,43 @@ class TestCleanupChunks:
         cleanup_chunks(chunks)
 
         assert wav_path.exists()
+
+
+def test_partial_ffmpeg_failure_is_not_returned(monkeypatch, tmp_path):
+    wav_path = tmp_path / "partial.wav"
+    _create_sine_wav(wav_path, duration_sec=12.0)
+
+    class Result:
+        def __init__(self, returncode):
+            self.returncode = returncode
+            self.stderr = "simulated ffmpeg failure"
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            output_path = command[-1]
+            Path(output_path).write_bytes(b"partial")
+            return Result(0)
+        return Result(1)
+
+    monkeypatch.setattr(
+        "src.main.python.sheng_wen.transcriber.audio_chunker.subprocess.run",
+        fake_run,
+    )
+    monkeypatch.setattr(
+        "src.main.python.sheng_wen.transcriber.audio_chunker._get_ffmpeg_path",
+        lambda: "ffmpeg",
+    )
+    monkeypatch.setattr(
+        "src.main.python.sheng_wen.transcriber.audio_chunker.get_audio_duration",
+        lambda _path: 12.0,
+    )
+
+    try:
+        split_audio_into_chunks(str(wav_path), chunk_duration=5.0)
+    except RuntimeError as exc:
+        assert "无法创建音频分片" in str(exc)
+    else:
+        raise AssertionError("expected partial chunk failure")

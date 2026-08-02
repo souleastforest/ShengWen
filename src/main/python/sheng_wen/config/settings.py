@@ -67,8 +67,9 @@ class WhisperConfig:
     vibevoice_dtype: Literal["bfloat16", "float16"] = "bfloat16"
     vibevoice_inference_mode: Literal["local", "api"] = "local"
     vibevoice_api_url: str = ""
-    asr_chunk_threshold_sec: int = 720
+    asr_chunk_threshold_sec: int = 600
     asr_chunk_duration_sec: int = 360
+    asr_chunk_fallback_duration_sec: int = 180
     asr_chunk_oom_fallback: bool = True
 
     @property
@@ -544,6 +545,15 @@ class JSONConfigManager:
             ),
             asr_chunk_duration_sec=max(
                 30, int(raw.get("asr_chunk_duration_sec", defaults["asr_chunk_duration_sec"]))
+            ),
+            asr_chunk_fallback_duration_sec=max(
+                30,
+                int(
+                    raw.get(
+                        "asr_chunk_fallback_duration_sec",
+                        defaults["asr_chunk_fallback_duration_sec"],
+                    )
+                ),
             ),
             asr_chunk_oom_fallback=bool(
                 raw.get("asr_chunk_oom_fallback", defaults["asr_chunk_oom_fallback"])

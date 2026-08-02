@@ -21,8 +21,9 @@
     "vibevoice_dtype": "bfloat16",
     "vibevoice_inference_mode": "local",
     "vibevoice_api_url": "",
-    "asr_chunk_threshold_sec": 720,
+    "asr_chunk_threshold_sec": 600,
     "asr_chunk_duration_sec": 360,
+    "asr_chunk_fallback_duration_sec": 180,
     "asr_chunk_oom_fallback": true
   },
   "llm": {

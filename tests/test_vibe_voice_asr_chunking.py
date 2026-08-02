@@ -114,3 +114,14 @@ class TestNeedsChunking:
 
     def test_zero(self):
         assert VibeVoiceAsrTranscriber._needs_chunking(0.0) is False
+
+
+def test_generation_budget_scales_with_chunk_duration():
+    transcriber = VibeVoiceAsrTranscriber(
+        model_path="/tmp/model",
+        max_new_tokens=8192,
+    )
+
+    assert transcriber._generation_budget(180.0) == 2048
+    assert transcriber._generation_budget(360.0) == 2880
+    assert transcriber._generation_budget(2000.0) == 8192

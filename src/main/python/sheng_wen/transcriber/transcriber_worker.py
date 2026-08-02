@@ -287,6 +287,33 @@ class TranscriberWorker(Worker):
             language_probability=language_probability,
         )
 
+    @staticmethod
+    def _release_transcriber_resources(transcriber: Transcriber, reset_model: bool = False) -> None:
+        try:
+            if reset_model and hasattr(transcriber, "reset_model"):
+                transcriber.reset_model()
+            elif hasattr(transcriber, "release_inference_resources"):
+                transcriber.release_inference_resources()
+            else:
+                TranscriberWorker._clear_cuda_cache()
+        except Exception as exc:
+            logger.debug(f"[TranscriberWorker] 释放转录资源失败: {exc}")
+
+    @staticmethod
+    def _log_cuda_memory(stage: str) -> None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                logger.info(
+                    f"[TranscriberWorker] CUDA memory {stage}: "
+                    f"allocated={allocated:.2f}GiB reserved={reserved:.2f}GiB"
+                )
+        except Exception:
+            return
+
     def _transcribe_audio_with_chunking(
         self,
         audio_file: str,
@@ -297,9 +324,21 @@ class TranscriberWorker(Worker):
         audio_duration = get_audio_duration(audio_file)
         threshold = float(whisper_config.asr_chunk_threshold_sec)
         chunk_duration = float(whisper_config.asr_chunk_duration_sec)
+        fallback_chunk_duration = float(
+            getattr(
+                whisper_config,
+                "asr_chunk_fallback_duration_sec",
+                max(30.0, chunk_duration / 2.0),
+            )
+        )
 
         with self._transcriber_lock:
             transcriber = self._transcriber
+
+        if audio_duration <= 0.0:
+            raise RuntimeError(
+                f"无法探测音频时长，已停止整段 CUDA 推理: {audio_file}"
+            )
 
         def transcribe_one(path: str, callback):
             if cancel_check():
@@ -310,33 +349,47 @@ class TranscriberWorker(Worker):
                 cancel_check=cancel_check,
             )
 
-        def run_chunks(duration: float, reason: str) -> TranscriptionResult:
-            chunks = split_audio_into_chunks(audio_file, chunk_duration)
+        def run_chunks(duration: float, current_chunk_duration: float, reason: str):
+            chunks = split_audio_into_chunks(audio_file, current_chunk_duration)
             source_path = os.path.abspath(audio_file)
             if len(chunks) == 1 and os.path.abspath(chunks[0][0]) == source_path:
                 raise RuntimeError(
-                    f"无法为 {duration:.1f} 秒音频创建 {chunk_duration:.0f} 秒分片，已停止整段推理以避免再次显存溢出"
+                    f"无法为 {duration:.1f} 秒音频创建 {current_chunk_duration:.0f} 秒分片"
                 )
 
             logger.info(
                 f"[{self.name}] 启用 ASR 分片: duration={duration:.1f}s, "
-                f"chunk_duration={chunk_duration:.1f}s, chunks={len(chunks)}, reason={reason}"
+                f"chunk_duration={current_chunk_duration:.1f}s, "
+                f"chunks={len(chunks)}, reason={reason}"
             )
             results: list[tuple[TranscriptionResult, float]] = []
             try:
                 for index, (chunk_path, offset) in enumerate(chunks):
-                    expected_duration = min(chunk_duration, max(0.0, duration - offset))
+                    expected_duration = min(
+                        current_chunk_duration, max(0.0, duration - offset)
+                    )
                     if expected_duration <= 0:
                         continue
-                    self._clear_cuda_cache()
+                    self._release_transcriber_resources(transcriber)
+                    self._log_cuda_memory(
+                        f"before chunk {index + 1}/{len(chunks)}"
+                    )
                     logger.info(
                         f"[{self.name}] 开始 ASR 分片 {index + 1}/{len(chunks)}: "
                         f"{offset:.1f}s-{offset + expected_duration:.1f}s"
                     )
 
-                    def chunk_progress(progress: float, start=offset, span=expected_duration):
+                    def chunk_progress(
+                        progress: float,
+                        start=offset,
+                        span=expected_duration,
+                    ):
                         clamped = max(0.0, min(float(progress), 1.0))
-                        overall = (start + clamped * span) / duration if duration > 0 else clamped
+                        overall = (
+                            (start + clamped * span) / duration
+                            if duration > 0
+                            else clamped
+                        )
                         progress_callback(max(0.0, min(overall, 1.0)))
 
                     try:
@@ -352,7 +405,10 @@ class TranscriberWorker(Worker):
                     results.append((result, offset))
                     completed = min(duration, offset + expected_duration)
                     progress_callback(completed / duration if duration > 0 else 1.0)
-                    self._clear_cuda_cache()
+                    self._release_transcriber_resources(transcriber)
+                    self._log_cuda_memory(
+                        f"after chunk {index + 1}/{len(chunks)}"
+                    )
                     logger.info(
                         f"[{self.name}] ASR 分片完成 {index + 1}/{len(chunks)}: "
                         f"elapsed={result.transcription_time:.2f}s"
@@ -362,25 +418,46 @@ class TranscriberWorker(Worker):
                 return self._merge_chunk_results(results, duration)
             finally:
                 cleanup_chunks(chunks)
-                self._clear_cuda_cache()
+                self._release_transcriber_resources(transcriber)
 
-        if audio_duration > threshold:
-            return run_chunks(audio_duration, "超过长音频阈值")
+        def run_with_adaptive_chunks(duration: float, reason: str):
+            try:
+                return run_chunks(duration, chunk_duration, reason)
+            except Exception as exc:
+                is_oom = self._is_cuda_oom(exc)
+                if not is_oom:
+                    raise
+                error_text = str(exc)
+                del exc
+                logger.warning(
+                    f"[{self.name}] {reason} 的 6 分钟分片发生 CUDA OOM，"
+                    f"释放模型并降级到 {fallback_chunk_duration:.0f} 秒分片: {error_text}"
+                )
+                self._release_transcriber_resources(transcriber, reset_model=True)
+                return run_chunks(
+                    duration,
+                    fallback_chunk_duration,
+                    f"{reason}; 6分钟分片CUDA OOM",
+                )
+
+        if audio_duration >= threshold:
+            return run_with_adaptive_chunks(audio_duration, "超过长音频阈值")
 
         try:
-            result = transcribe_one(audio_file, progress_callback)
-            return result
+            return transcribe_one(audio_file, progress_callback)
         except Exception as exc:
-            if not whisper_config.asr_chunk_oom_fallback or not self._is_cuda_oom(exc):
+            is_oom = self._is_cuda_oom(exc)
+            if not whisper_config.asr_chunk_oom_fallback or not is_oom:
                 raise
-            fallback_duration = audio_duration or float(getattr(exc, "audio_duration", 0.0) or 0.0)
-            if fallback_duration <= 0:
-                raise
-            self._clear_cuda_cache()
-            logger.warning(
-                f"[{self.name}] 整段 ASR 发生 CUDA OOM，切换到 {chunk_duration:.0f} 秒分片重试"
-            )
-            return run_chunks(fallback_duration, "整段推理 CUDA OOM")
+            error_text = str(exc)
+            del exc
+
+        logger.warning(
+            f"[{self.name}] 整段 ASR 发生 CUDA OOM，释放模型后切换到 "
+            f"{chunk_duration:.0f} 秒分片重试: {error_text}"
+        )
+        self._release_transcriber_resources(transcriber, reset_model=True)
+        return run_with_adaptive_chunks(audio_duration, "整段推理 CUDA OOM")
 
     def process_task(self, payload: Dict[str, Any]):
         """
