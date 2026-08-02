@@ -382,24 +382,33 @@ export function useTaskViewModel() {
     }, 400)
   }
 
-  const selectTask = async (task: Task) => {
-    try {
-      const response = await axios.get(`${apiBaseUrl}/tasks/${task.id}`)
-      selectedTask.value = response.data
-      taskPartDetails.value = {}
-      loadingPartIndex.value = null
-      if (response.data?.has_parts) {
-        await fetchTaskParts(task.id)
-      } else {
-        taskParts.value = []
-      }
-      if (selectedTask.value?.status === 'PENDING' || selectedTask.value?.status === 'DOWNLOADING' || selectedTask.value?.status === 'TRANSCRIBING' || selectedTask.value?.status === 'SUMMARIZING') {
-        activeTab.value = 'summary'
-      }
-    } catch (err) {
-      console.error('Failed to fetch task details:', err)
-      error.value = '获取任务详情失败'
+  const selectTask = (task: Task) => {
+    // Show the lightweight task metadata immediately. Loading the large transcript
+    // and summary continues in the background so clicking a task never blocks the UI.
+    selectedTask.value = task
+    taskParts.value = []
+    taskPartDetails.value = {}
+    loadingPartIndex.value = null
+    if (task.status === 'PENDING' || task.status === 'DOWNLOADING' || task.status === 'TRANSCRIBING' || task.status === 'SUMMARIZING') {
+      activeTab.value = 'summary'
     }
+
+    void (async () => {
+      try {
+        const detailPromise = axios.get(`${apiBaseUrl}/tasks/${task.id}`)
+        const partsPromise = task.has_parts
+          ? fetchTaskParts(task.id)
+          : Promise.resolve([] as TaskPart[])
+        const [response] = await Promise.all([detailPromise, partsPromise])
+        if (selectedTask.value?.id !== task.id) return
+        selectedTask.value = response.data
+      } catch (err) {
+        console.error('Failed to fetch task details:', err)
+        if (selectedTask.value?.id === task.id) {
+          error.value = '获取任务详情失败'
+        }
+      }
+    })()
   }
 
   const retryFailedParts = async (taskId: string) => {
@@ -442,10 +451,9 @@ export function useTaskViewModel() {
       // Fetch latest state on reconnection to sync any missed updates
       fetchTasks()
       // Also refresh the selected task details if one is selected
-      if (selectedTask.value) {
-        selectTask(selectedTask.value).catch(err => {
-          console.error('Failed to refresh selected task:', err)
-        })
+      const currentTask = selectedTask.value
+      if (currentTask) {
+        selectTask(currentTask)
       }
     }
     

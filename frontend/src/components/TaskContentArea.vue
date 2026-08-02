@@ -545,7 +545,8 @@ onBeforeUnmount(() => {
             class="prose prose-sm md:prose-base prose-slate prose-headings:font-bold prose-a:text-blue-600 hover:prose-a:underline prose-img:rounded-xl max-w-none px-8 py-8 ss-shared-prose markdown-theme-container"
             :data-theme="currentThemeId"
           >
-            <div v-if="task.summary" data-summary-content v-html="compiledMarkdown"></div>
+            <div v-if="task.summary && compiledMarkdown" data-summary-content v-html="compiledMarkdown"></div>
+            <p v-else-if="task.summary" class="text-slate-400 italic">正在加载总结预览...</p>
             <p v-else class="text-slate-400 italic">暂无总结内容</p>
           </article>
         </div>

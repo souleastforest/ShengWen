@@ -763,14 +763,42 @@ renderer.code = ({ text, lang }) => {
 }
 marked.setOptions({ renderer })
 
-const compiledMarkdown = computed(() => {
-  if (!selectedTask.value?.summary) return ''
-  const cleanedSummary = stripDoubleBracePlaceholders(selectedTask.value.summary)
-  const html = marked.parse(cleanedSummary) as string
-  return postProcessCompiledMarkdown(html, {
-    videoUrl: selectedTask.value.video_url || '',
-  })
-})
+// Defer large summary compilation so the multipart preview stays interactive.
+const compiledMarkdown = ref('')
+let markdownCompileTimer: ReturnType<typeof setTimeout> | null = null
+let markdownCompileGeneration = 0
+
+const scheduleMarkdownCompile = () => {
+  markdownCompileGeneration += 1
+  const generation = markdownCompileGeneration
+  if (markdownCompileTimer) {
+    clearTimeout(markdownCompileTimer)
+    markdownCompileTimer = null
+  }
+
+  compiledMarkdown.value = ''
+  const task = selectedTask.value
+  if (!task?.summary) return
+
+  markdownCompileTimer = setTimeout(() => {
+    markdownCompileTimer = null
+    if (generation !== markdownCompileGeneration || selectedTask.value?.id !== task.id) return
+
+    const summary = task.summary
+    if (!summary) return
+    const cleanedSummary = stripDoubleBracePlaceholders(summary)
+    const html = marked.parse(cleanedSummary) as string
+    compiledMarkdown.value = postProcessCompiledMarkdown(html, {
+      videoUrl: task.video_url || '',
+    })
+  }, 120)
+}
+
+watch(
+  [() => selectedTask.value?.id, () => selectedTask.value?.summary],
+  scheduleMarkdownCompile,
+  { immediate: true },
+)
 
 const topic = computed(() => {
   if (selectedTask.value?.topic) return selectedTask.value.topic
