@@ -219,7 +219,15 @@ async def create_task(task_in: TaskCreate, request: Request):
 @router.get("/", response_model=list[Task])
 async def list_tasks():
     tasks = db.list_tasks()
-    return [_with_part_stats(task) for task in sorted(tasks, key=lambda x: x["created_at"], reverse=True)]
+    lightweight_tasks = []
+    for task in sorted(tasks, key=lambda x: x["created_at"], reverse=True):
+        item = dict(_with_part_stats(task))
+        # 侧栏只需要状态和摘要元数据；正文在选中任务后由 GET /tasks/{id} 按需加载。
+        item.pop("transcript", None)
+        item.pop("summary", None)
+        item.pop("summary_meta", None)
+        lightweight_tasks.append(item)
+    return lightweight_tasks
 
 
 @router.get("/{task_id}", response_model=Task)
