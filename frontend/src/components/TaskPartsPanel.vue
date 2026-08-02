@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { TaskPart } from '../types'
 
 const props = defineProps<{
@@ -12,7 +12,42 @@ const emit = defineEmits<{
 }>()
 
 const expandedPart = ref<number | null>(null)
+const currentPage = ref(1)
+const pageSize = 20
 const failedParts = computed(() => props.parts.filter((part) => part.status === 'FAILED'))
+const totalPages = computed(() => Math.max(1, Math.ceil(props.parts.length / pageSize)))
+const paginatedParts = computed(() => {
+  const start = (currentPage.value - 1) * pageSize
+  return props.parts.slice(start, start + pageSize)
+})
+const pageNumbers = computed(() =>
+  Array.from({ length: totalPages.value }, (_, index) => index + 1)
+)
+
+watch(
+  () => props.parts.length,
+  () => {
+    currentPage.value = Math.min(currentPage.value, totalPages.value)
+    if (expandedPart.value !== null && !props.parts.some((part) => part.part_index === expandedPart.value)) {
+      expandedPart.value = null
+    }
+  },
+)
+
+watch(
+  () => props.parts[0]?.task_id,
+  () => {
+    currentPage.value = 1
+    expandedPart.value = null
+  },
+)
+
+const goToPage = (page: number) => {
+  const nextPage = Math.max(1, Math.min(page, totalPages.value))
+  if (nextPage === currentPage.value) return
+  currentPage.value = nextPage
+  expandedPart.value = null
+}
 
 const statusLabel = (status: TaskPart['status']) => {
   switch (status) {
@@ -46,7 +81,9 @@ const formatDuration = (seconds?: number) => {
     <header class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
       <div>
         <h2 class="text-sm font-semibold text-slate-800">分P处理进度</h2>
-        <p class="mt-0.5 text-xs text-slate-500">按顺序串行下载、转录和总结，共 {{ parts.length }} 个分P</p>
+        <p class="mt-0.5 text-xs text-slate-500">
+          按顺序串行下载、转录和总结，共 {{ parts.length }} 个分P；当前第 {{ currentPage }}/{{ totalPages }} 页
+        </p>
       </div>
       <button
         v-if="failedParts.length"
@@ -60,7 +97,7 @@ const formatDuration = (seconds?: number) => {
     </header>
 
     <div class="max-h-[40vh] overflow-y-auto overscroll-contain divide-y divide-slate-100">
-      <article v-for="part in parts" :key="part.part_index" class="px-4 py-3">
+      <article v-for="part in paginatedParts" :key="part.part_index" class="px-4 py-3">
         <button type="button" class="flex w-full items-center gap-3 text-left" @click="expandedPart = expandedPart === part.part_index ? null : part.part_index">
           <span class="w-10 shrink-0 text-xs font-semibold text-slate-500">P{{ part.part_index + 1 }}</span>
           <span class="min-w-0 flex-1 truncate text-sm text-slate-700">{{ part.title || '未命名分P' }}</span>
@@ -84,5 +121,39 @@ const formatDuration = (seconds?: number) => {
         </div>
       </article>
     </div>
+
+    <footer
+      v-if="totalPages > 1"
+      class="flex items-center justify-center gap-1 border-t border-slate-100 px-4 py-3"
+      aria-label="分P分页"
+    >
+      <button
+        type="button"
+        class="rounded-lg px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+        :disabled="currentPage === 1"
+        @click="goToPage(currentPage - 1)"
+      >
+        上一页
+      </button>
+      <button
+        v-for="page in pageNumbers"
+        :key="page"
+        type="button"
+        class="min-w-8 rounded-lg px-2 py-1.5 text-xs"
+        :class="page === currentPage ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-slate-100'"
+        :aria-current="page === currentPage ? 'page' : undefined"
+        @click="goToPage(page)"
+      >
+        {{ page }}
+      </button>
+      <button
+        type="button"
+        class="rounded-lg px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+        :disabled="currentPage === totalPages"
+        @click="goToPage(currentPage + 1)"
+      >
+        下一页
+      </button>
+    </footer>
   </section>
 </template>
