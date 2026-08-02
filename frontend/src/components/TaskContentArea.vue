@@ -22,6 +22,8 @@ interface Props {
   activeTab: 'summary' | 'transcript'
   compiledMarkdown: string
   showFullMultipartSummary: boolean
+  multipartPage: number
+  multipartPageCount: number
   summaryHighlightRequest?: SummaryHighlightRequest | null
   headingJumpRequest?: { id: string; requestId: number } | null
   topic: string
@@ -40,6 +42,8 @@ const emit = defineEmits<{
   'update-markdown-headings': [headings: MarkdownHeadingItem[]]
   'update-active-heading-id': [headingId: string]
   'expand-multipart-summary': []
+  'collapse-multipart-summary': []
+  'change-multipart-page': [page: number]
 }>()
 
 const isCompleted = computed(() => props.task.status === TaskStatus.COMPLETED)
@@ -559,7 +563,33 @@ onBeforeUnmount(() => {
             >
               展开完整分P总结
             </button>
-            <span class="ml-2 text-xs text-slate-400">默认只加载总体概览，避免一次渲染 100 个分P</span>
+            <span class="ml-2 text-xs text-slate-400">按页加载分P总结，每页 10 个 P</span>
+          </div>
+          <div v-else-if="task.has_parts && task.summary && showFullMultipartSummary" class="flex items-center justify-between gap-3 border-t border-slate-100 px-8 py-3 text-sm">
+            <button
+              type="button"
+              class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="multipartPage <= 0"
+              @click="emit('change-multipart-page', multipartPage - 1)"
+            >
+              上一页
+            </button>
+            <span class="text-xs text-slate-500">第 {{ multipartPage + 1 }} / {{ multipartPageCount }} 页</span>
+            <button
+              type="button"
+              class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="multipartPage >= multipartPageCount - 1"
+              @click="emit('change-multipart-page', multipartPage + 1)"
+            >
+              下一页
+            </button>
+            <button
+              type="button"
+              class="text-xs text-slate-500 hover:text-slate-700"
+              @click="emit('collapse-multipart-summary')"
+            >
+              收起
+            </button>
           </div>
         </div>
 

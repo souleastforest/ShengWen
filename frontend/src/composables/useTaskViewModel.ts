@@ -333,6 +333,14 @@ export function useTaskViewModel() {
     isSubmitting.value = false
   }
 
+  const fetchTaskFullContent = async (taskId: string) => {
+    const response = await axios.get(`${apiBaseUrl}/tasks/${taskId}?include_content=true`)
+    if (selectedTask.value?.id === taskId) {
+      selectedTask.value = { ...selectedTask.value, ...response.data }
+    }
+    return response.data as Task
+  }
+
   const fetchTaskParts = async (taskId: string) => {
     const response = await axios.get(apiBaseUrl + "/tasks/" + taskId + "/parts")
     if (selectedTask.value?.id === taskId) {
@@ -858,6 +866,7 @@ export function useTaskViewModel() {
     isUpdatingLlmSettings,
     fetchTaskParts,
     fetchTaskPart,
+    fetchTaskFullContent,
     retryFailedParts,
 
     transcriptionSettings,

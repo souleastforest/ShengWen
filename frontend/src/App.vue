@@ -64,6 +64,7 @@ const {
   submitTask,
   cancelSubmitting,
   selectTask,
+  fetchTaskFullContent,
   downloadContent,
   copyContent,
   isSidebarOpen,
@@ -766,6 +767,8 @@ marked.setOptions({ renderer })
 // Defer large summary compilation so the multipart preview stays interactive.
 const compiledMarkdown = ref('')
 const showFullMultipartSummary = ref(false)
+const multipartPage = ref(0)
+const multipartPageSize = 10
 let markdownCompileTimer: ReturnType<typeof setTimeout> | null = null
 let markdownCompileGeneration = 0
 
@@ -774,6 +777,31 @@ const getMultipartOverview = (summary: string) => {
   if (marker > 0) return summary.slice(0, marker).trim()
   return summary.slice(0, 12000).trim()
 }
+
+const getMultipartPages = (summary: string) => {
+  const marker = summary.search(/^#\s*分P总结.*$/m)
+  if (marker < 0) return [summary]
+  const body = summary.slice(marker)
+  const matches = Array.from(body.matchAll(/^##\s+P\d+[:：].*$/gm))
+  if (!matches.length) return [body.trim()]
+  const sections = matches.map((match, index) => {
+    const start = match.index ?? 0
+    const nextMatch = matches[index + 1]
+    const end = nextMatch?.index ?? body.length
+    return body.slice(start, end).trim()
+  })
+  const pages: string[] = []
+  for (let index = 0; index < sections.length; index += multipartPageSize) {
+    pages.push(`# 分P总结\\n\\n${sections.slice(index, index + multipartPageSize).join('\\n\\n')}`)
+  }
+  return pages
+}
+
+const multipartPageCount = computed(() => {
+  const summary = selectedTask.value?.summary
+  if (!summary || !selectedTask.value?.has_parts) return 0
+  return getMultipartPages(summary).length
+})
 
 const scheduleMarkdownCompile = () => {
   markdownCompileGeneration += 1
@@ -793,9 +821,15 @@ const scheduleMarkdownCompile = () => {
 
     const summary = task.summary
     if (!summary) return
-    const previewSummary = task.has_parts && !showFullMultipartSummary.value
-      ? getMultipartOverview(summary)
-      : summary
+    let previewSummary = summary
+    if (task.has_parts) {
+      if (!showFullMultipartSummary.value) {
+        previewSummary = getMultipartOverview(summary)
+      } else {
+        const pages = getMultipartPages(summary)
+        previewSummary = pages[multipartPage.value] || pages[0] || ''
+      }
+    }
     const cleanedSummary = stripDoubleBracePlaceholders(previewSummary)
     const html = marked.parse(cleanedSummary) as string
     compiledMarkdown.value = postProcessCompiledMarkdown(html, {
@@ -805,7 +839,7 @@ const scheduleMarkdownCompile = () => {
 }
 
 watch(
-  [() => selectedTask.value?.id, () => selectedTask.value?.summary, showFullMultipartSummary],
+  [() => selectedTask.value?.id, () => selectedTask.value?.summary, showFullMultipartSummary, multipartPage],
   scheduleMarkdownCompile,
   { immediate: true },
 )
@@ -814,8 +848,31 @@ watch(
   () => selectedTask.value?.id,
   () => {
     showFullMultipartSummary.value = false
+    multipartPage.value = 0
   },
 )
+
+const expandMultipartSummary = async () => {
+  multipartPage.value = 0
+  if (selectedTask.value) {
+    try {
+      await fetchTaskFullContent(selectedTask.value.id)
+    } catch (error) {
+      console.error('Failed to load full multipart summary:', error)
+      return
+    }
+  }
+  showFullMultipartSummary.value = true
+}
+
+const collapseMultipartSummary = () => {
+  showFullMultipartSummary.value = false
+  multipartPage.value = 0
+}
+
+const changeMultipartPage = (page: number) => {
+  multipartPage.value = Math.max(0, Math.min(page, Math.max(0, multipartPageCount.value - 1)))
+}
 
 const topic = computed(() => {
   if (selectedTask.value?.topic) return selectedTask.value.topic
@@ -964,6 +1021,8 @@ watch(
           :active-tab="activeTab"
           :compiled-markdown="compiledMarkdown"
           :show-full-multipart-summary="showFullMultipartSummary"
+          :multipart-page="multipartPage"
+          :multipart-page-count="multipartPageCount"
           :summary-highlight-request="summaryHighlightRequest"
           :heading-jump-request="headingJumpRequest"
           :topic="topic"
@@ -976,7 +1035,9 @@ watch(
           @update:editing-topic-value="(val) => editingTopicValue = val"
           @update-markdown-headings="handleMarkdownHeadingsUpdate"
           @update-active-heading-id="handleActiveHeadingIdUpdate"
-          @expand-multipart-summary="showFullMultipartSummary = true"
+          @expand-multipart-summary="expandMultipartSummary"
+          @collapse-multipart-summary="collapseMultipartSummary"
+          @change-multipart-page="changeMultipartPage"
         />
       </template>
 
