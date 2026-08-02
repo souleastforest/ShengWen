@@ -34,6 +34,9 @@ const {
   tasks,
   selectedTask,
   taskParts,
+  taskPartDetails,
+  loadingPartIndex,
+  fetchTaskPart,
   retryFailedParts,
   videoUrl,
   selectedFile,
@@ -904,7 +907,13 @@ watch(
         />
 
         <!-- 内容滚动区 -->
-        <TaskPartsPanel :parts="taskParts" @retry="retryFailedParts(selectedTask.id)" />
+        <TaskPartsPanel
+          :parts="taskParts"
+          :part-details="taskPartDetails"
+          :loading-part-index="loadingPartIndex"
+          @expand="(partIndex) => selectedTask && fetchTaskPart(selectedTask.id, partIndex)"
+          @retry="retryFailedParts(selectedTask.id)"
+        />
         <TaskContentArea
           :task="selectedTask"
           :active-tab="activeTab"

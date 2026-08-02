@@ -22,7 +22,7 @@ from src.main.python.sheng_wen.infra.api.routes.schemas import (
 )
 from src.main.python.sheng_wen.infra.api.routes.websocket import notify_task_update
 from src.main.python.sheng_wen.utils.media import build_transcriber_payload
-from src.main.python.sheng_wen.task_parts import delete_task_parts, get_task_parts, get_task_part_stats, init_task_parts, reset_failed_parts
+from src.main.python.sheng_wen.task_parts import delete_task_parts, get_task_part, get_task_parts, get_task_part_stats, init_task_parts, reset_failed_parts
 
 
 router = APIRouter(prefix="/tasks")
@@ -236,7 +236,19 @@ async def get_task_parts_route(task_id: str):
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return get_task_parts(task_id)
+    # 初次加载只返回状态和元数据；完整转录/总结在展开单个分P时按需获取。
+    return get_task_parts(task_id, include_text=False)
+
+
+@router.get("/{task_id}/parts/{part_index}")
+async def get_task_part_route(task_id: str, part_index: int):
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    part = get_task_part(task_id, part_index)
+    if not part:
+        raise HTTPException(status_code=404, detail="Task part not found")
+    return part
 
 
 @router.post("/{task_id}/retry-failed-parts", response_model=Task)

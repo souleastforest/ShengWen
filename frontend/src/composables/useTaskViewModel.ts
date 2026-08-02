@@ -141,6 +141,8 @@ export function useTaskViewModel() {
   const tasks = ref<Task[]>([])
   const selectedTask = ref<Task | null>(null)
   const taskParts = ref<TaskPart[]>([])
+  const taskPartDetails = ref<Record<number, TaskPart>>({})
+  const loadingPartIndex = ref<number | null>(null)
   const videoUrl = ref('')
   const selectedFile = ref<File | null>(null)
   const localFilePath = ref('')
@@ -339,6 +341,32 @@ export function useTaskViewModel() {
     return response.data as TaskPart[]
   }
 
+  const fetchTaskPart = async (taskId: string, partIndex: number) => {
+    const cached = taskPartDetails.value[partIndex]
+    if (cached?.task_id === taskId && (cached.transcript !== undefined || cached.summary !== undefined)) {
+      return cached
+    }
+
+    loadingPartIndex.value = partIndex
+    try {
+      const response = await axios.get(
+        apiBaseUrl + "/tasks/" + taskId + "/parts/" + partIndex,
+      )
+      const detail = response.data as TaskPart
+      if (selectedTask.value?.id === taskId) {
+        taskPartDetails.value = {
+          ...taskPartDetails.value,
+          [partIndex]: detail,
+        }
+      }
+      return detail
+    } finally {
+      if (loadingPartIndex.value === partIndex) {
+        loadingPartIndex.value = null
+      }
+    }
+  }
+
   const scheduleTaskPartsRefresh = (taskId: string) => {
     if (!selectedTask.value || selectedTask.value.id !== taskId || !selectedTask.value.has_parts) {
       return
@@ -358,6 +386,8 @@ export function useTaskViewModel() {
     try {
       const response = await axios.get(`${apiBaseUrl}/tasks/${task.id}`)
       selectedTask.value = response.data
+      taskPartDetails.value = {}
+      loadingPartIndex.value = null
       if (response.data?.has_parts) {
         await fetchTaskParts(task.id)
       } else {
@@ -798,6 +828,8 @@ export function useTaskViewModel() {
     tasks,
     selectedTask,
     taskParts,
+    taskPartDetails,
+    loadingPartIndex,
     videoUrl,
     selectedFile,
     localFilePath,
@@ -812,6 +844,7 @@ export function useTaskViewModel() {
     llmSettings,
     isUpdatingLlmSettings,
     fetchTaskParts,
+    fetchTaskPart,
     retryFailedParts,
 
     transcriptionSettings,
