@@ -94,10 +94,12 @@ def get_llm(config: LLMConfig, llm_type: str | None = None, **kwargs) -> LLM:
     # 延迟导入以避免循环依赖
     from .litellm_client import LiteLLMClient
     from .anthropic_client import AnthropicClient
+    from .openai_responses_client import OpenAiResponsesClient
 
     llm_clients = {
         "litellm": LiteLLMClient,
         "anthropic": AnthropicClient,
+        "openai_responses": OpenAiResponsesClient,
     }
 
     # 自动路由：provider 字段决定使用哪个客户端
@@ -105,6 +107,7 @@ def get_llm(config: LLMConfig, llm_type: str | None = None, **kwargs) -> LLM:
         provider = (config.provider or "").strip().lower()
         provider_to_type = {
             "anthropic": "anthropic",
+            "openai_responses": "openai_responses",
         }
         llm_type = provider_to_type.get(provider, "litellm")
 

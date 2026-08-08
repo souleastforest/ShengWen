@@ -25,6 +25,7 @@ dependencies = [
     "browser-cookie3==0.19.1",
     "anthropic>=0.39.0",
     "loguru>=0.7.0",
+    "openai>=1.80.0",
 ]
 
 [tool.uv]
