@@ -367,14 +367,15 @@ const handleReDownload = async (taskId: string) => {
   }
 }
 
-const handleDownloadMarkdown = () => {
+const handleDownloadMarkdown = async () => {
   success('开始下载 AI 总结...')
-  downloadContent('summary')
+  // downloadContent 为异步：未加载完整内容时会先按需请求（避免下载到截断版）
+  await downloadContent('summary')
 }
 
-const handleDownloadTxt = () => {
+const handleDownloadTxt = async () => {
   success('开始下载转录文本...')
-  downloadContent('transcript')
+  await downloadContent('transcript')
 }
 
 const handleTestLlm = async () => {

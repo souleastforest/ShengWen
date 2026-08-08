@@ -548,8 +548,15 @@ class VideoDownloaderWorker(Worker):
                 "audio_missing_reason": "subtitle_only",
             }
             summary_mode = str(payload.get("summary_mode") or "").strip().lower()
-            if summary_mode in {"auto", "standard", "agent"}:
+            skip_summarization = summary_mode == "none"
+            if summary_mode in {"auto", "standard", "agent", "none"}:
                 update_data["summary_mode"] = summary_mode
+            if skip_summarization:
+                update_data["status"] = TaskStatus.COMPLETED
+                update_data["progress"] = 100
+                logger.info(
+                    f"[{self.name}] 仅转录模式，跳过 AI 总结: task_id={task_id}"
+                )
             self._submit_coro(update_and_notify(task_id, update_data))
 
             next_payload = payload.copy()
@@ -561,7 +568,8 @@ class VideoDownloaderWorker(Worker):
             )
             if self.is_task_cancelled(task_id):
                 raise TaskCancelledError(f"任务已取消，停止派发总结: {task_id}")
-            self._submit_coro(self.summary_worker.add_task(next_payload))
+            if not skip_summarization:
+                self._submit_coro(self.summary_worker.add_task(next_payload))
 
             logger.info(
                 f"[{self.name}] 已使用B站字幕（{subtitle_result.get('language')}），跳过音频转录。"
@@ -666,8 +674,15 @@ class VideoDownloaderWorker(Worker):
                 "audio_missing_reason": "subtitle_only",
             }
             summary_mode = str(payload.get("summary_mode") or "").strip().lower()
-            if summary_mode in {"auto", "standard", "agent"}:
+            skip_summarization = summary_mode == "none"
+            if summary_mode in {"auto", "standard", "agent", "none"}:
                 update_data["summary_mode"] = summary_mode
+            if skip_summarization:
+                update_data["status"] = TaskStatus.COMPLETED
+                update_data["progress"] = 100
+                logger.info(
+                    f"[{self.name}] 仅转录模式，跳过 AI 总结: task_id={task_id}"
+                )
             self._submit_coro(update_and_notify(task_id, update_data))
 
             next_payload = payload.copy()
@@ -690,14 +705,15 @@ class VideoDownloaderWorker(Worker):
                     task_id,
                     part_index,
                     {
-                        "status": "SUMMARIZING",
+                        "status": "COMPLETED" if skip_summarization else "SUMMARIZING",
                         "progress": 100,
                         "transcript": merged_transcript,
                         "audio_duration": total_duration,
                     },
                 )
-                asyncio.run(self.summary_worker.process_task(next_payload))
-            else:
+                if not skip_summarization:
+                    asyncio.run(self.summary_worker.process_task(next_payload))
+            elif not skip_summarization:
                 self._submit_coro(self.summary_worker.add_task(next_payload))
 
             logger.info(
@@ -878,6 +894,22 @@ class VideoDownloaderWorker(Worker):
             },
         )
         if self.summary_worker is None:
+            db.update_task(
+                task_id,
+                {
+                    "status": TaskStatus.PARTIAL if failed else TaskStatus.COMPLETED,
+                    "progress": 100.0,
+                },
+            )
+            return
+
+        summary_mode = str(payload.get("summary_mode") or "").strip().lower()
+        if summary_mode == "none":
+            # 仅转录模式：分P转录已完成且合并完成，跳过总览 AI 总结，直接终态
+            logger.info(
+                f"[{self.name}] 仅转录模式，跳过 AI 总结: task_id={task_id}, "
+                f"completed={len(completed)}, failed={len(failed)}"
+            )
             db.update_task(
                 task_id,
                 {
@@ -1145,7 +1177,16 @@ class VideoDownloaderWorker(Worker):
 
                 if payload.get("bilibili_batch_child"):
                     intermediate_file_path = self.next_worker.process_task(next_payload)
-                    if intermediate_file_path and self.summary_worker:
+                    summary_mode = str(
+                        next_payload.get("summary_mode") or ""
+                    ).strip().lower()
+                    if summary_mode == "none":
+                        # 仅转录模式：TranscriberWorker 已将分P置为 COMPLETED，跳过 AI 总结
+                        logger.info(
+                            f"[{self.name}] 仅转录模式，跳过 AI 总结: task_id={task_id}, "
+                            f"part={int(payload.get('multipart_part', {}).get('index', 0)) + 1}"
+                        )
+                    elif intermediate_file_path and self.summary_worker:
                         asyncio.run(
                             self.summary_worker.process_task(
                                 {

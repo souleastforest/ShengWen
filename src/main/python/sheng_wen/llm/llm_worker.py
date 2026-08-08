@@ -16,7 +16,7 @@ from ..worker import TaskCancelledError, Worker
 from .llm import LLM, LLMError, LLMMessage
 
 
-VALID_SUMMARY_MODES = {"auto", "standard", "agent"}
+VALID_SUMMARY_MODES = {"auto", "standard", "agent", "none"}
 
 
 class LLMWorker(Worker):
@@ -26,6 +26,8 @@ class LLMWorker(Worker):
     - standard: 单次总结
     - agent: 分块总结
     - auto: 自动判定（长文本走 agent）
+    - none: 仅转录模式由 TranscriberWorker 直接终态处理，不派发本 worker；
+      若经 re-summarize 等入口仍携带 none 到达此处，按 auto 判定兜底生成总结。
     """
 
     def __init__(self, name: str, llm_client: LLM):

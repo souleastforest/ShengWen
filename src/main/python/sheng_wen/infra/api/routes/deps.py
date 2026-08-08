@@ -19,7 +19,7 @@ from src.main.python.sheng_wen.transcriber.transcriber import ModelLoadError
 from src.main.python.sheng_wen.utils.media import SUPPORTED_MEDIA_EXTENSIONS
 
 
-VALID_SUMMARY_MODES = {"auto", "standard", "agent"}
+VALID_SUMMARY_MODES = {"auto", "standard", "agent", "none"}
 _author_resolution_inflight_task_ids: set[str] = set()
 _author_resolution_attempted_task_ids: set[str] = set()
 

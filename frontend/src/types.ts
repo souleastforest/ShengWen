@@ -25,7 +25,8 @@ export interface TaskPart {
 }
 
 export type TaskStatus = typeof TaskStatus[keyof typeof TaskStatus];
-export type SummaryMode = 'standard' | 'agent' | 'auto';
+// 'none'：仅转录原文，跳过 AI 总结（后端 summary_mode='none'）
+export type SummaryMode = 'standard' | 'agent' | 'auto' | 'none';
 
 /**
  * 音频缺失原因（与后端 storage 回收 / 字幕直取逻辑保持一致）：
@@ -78,7 +79,7 @@ export interface Task {
 export interface CreateTaskRequest {
   video_url: string;
   quality: string;
-  summary_mode?: Exclude<SummaryMode, 'auto'> | SummaryMode;
+  summary_mode?: SummaryMode;
 }
 
 export interface MarkdownHeadingItem {

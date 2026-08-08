@@ -585,12 +585,17 @@ class TranscriberWorker(Worker):
             intermediate_file_path = os.path.splitext(output_file)[0] + ".txt"
             self._save_transcription_to_file(result, intermediate_file_path)
 
+            summary_mode = str(payload.get("summary_mode") or "").strip().lower()
+            # 仅转录模式：转录完成后直接终态，不派发 AI 总结
+            skip_summarization = summary_mode == "none"
+
             if multipart_part:
                 from ..task_parts import update_task_part
                 with open(intermediate_file_path, "r", encoding="utf-8") as f:
                     part_transcript = f.read()
                 update_task_part(str(task_id), int(multipart_part["index"]), {
-                    "status": "SUMMARIZING", "progress": 100,
+                    "status": "COMPLETED" if skip_summarization else "SUMMARIZING",
+                    "progress": 100,
                     "transcript": part_transcript,
                     "audio_duration": result.audio_duration,
                     "transcription_time": result.transcription_time,
@@ -601,14 +606,6 @@ class TranscriberWorker(Worker):
                 # 保存转录文本到数据库供前端查看
                 with open(intermediate_file_path, "r", encoding="utf-8") as f:
                     transcript = f.read()
-                summary_mode = str(payload.get("summary_mode") or "").strip().lower()
-
-                # 转录完成，准备进入总结阶段
-                logger.info(
-                    f"[TranscriberWorker] Transcription completed: task_id={task_id}, "
-                    f"status: TRANSCRIBING→SUMMARIZING, "
-                    f"duration={result.transcription_time:.2f}s, audio_duration={result.audio_duration:.2f}s"
-                )
 
                 update_data = {
                     "status": TaskStatus.SUMMARIZING,
@@ -620,8 +617,23 @@ class TranscriberWorker(Worker):
                     "summary_chunk_done": None,
                     "summary_meta": None,
                 }
-                if summary_mode in {"auto", "standard", "agent"}:
+                if summary_mode in {"auto", "standard", "agent", "none"}:
                     update_data["summary_mode"] = summary_mode
+                if skip_summarization:
+                    update_data["status"] = TaskStatus.COMPLETED
+                    update_data["progress"] = 100
+                    logger.info(
+                        f"[TranscriberWorker] 仅转录模式，跳过 AI 总结: task_id={task_id}, "
+                        f"status: TRANSCRIBING→COMPLETED, "
+                        f"duration={result.transcription_time:.2f}s, audio_duration={result.audio_duration:.2f}s"
+                    )
+                else:
+                    # 转录完成，准备进入总结阶段
+                    logger.info(
+                        f"[TranscriberWorker] Transcription completed: task_id={task_id}, "
+                        f"status: TRANSCRIBING→SUMMARIZING, "
+                        f"duration={result.transcription_time:.2f}s, audio_duration={result.audio_duration:.2f}s"
+                    )
                 from ..task_updater import update_and_notify
                 self._submit_coro(update_and_notify(task_id, update_data))
 
@@ -629,8 +641,8 @@ class TranscriberWorker(Worker):
                 "intermediate_file_path": intermediate_file_path,
                 **payload
             }
-            
-            if not multipart_part:
+
+            if not multipart_part and not skip_summarization:
                 self._submit_coro(self._next_worker.add_task(next_payload))
             return intermediate_file_path
 

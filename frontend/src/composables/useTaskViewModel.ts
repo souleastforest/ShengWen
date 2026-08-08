@@ -119,6 +119,41 @@ const isCanceledRequest = (err: unknown): boolean => {
   return err.code === 'ERR_CANCELED'
 }
 
+// per-task 完整内容缓存（include_content=true 的结果，key=taskId）。
+// 用于 A→B→A 往返切换时恢复已加载的完整 transcript/summary，以及
+// 防止轻量响应的截断版 summary 覆盖完整版。内容可能变化的操作
+// （重新转录/重新总结/重试失败分P）会显式失效对应条目。
+const taskFullContentCache = new Map<string, Task>()
+
+// include_content=true 请求的 in-flight 去重：同 id 并发（tab watch 与
+// copyContent/downloadContent 同时触发）只发一次 GET，后续调用共享同一 Promise。
+const taskFullContentPending = new Map<string, Promise<Task>>()
+
+// 任务内容版本计数：WS 广播（内容/状态变化）与重试等操作递增版本。
+// fetchTaskFullContent 发起时记录版本，响应返回时版本已变则跳过写缓存，
+// 防止在途的旧完整响应重新污染缓存（re-transcribe 清缓存后的竞态）。
+const taskContentVersion = new Map<string, number>()
+
+const bumpTaskContentVersion = (taskId: string) => {
+  taskContentVersion.set(taskId, (taskContentVersion.get(taskId) ?? 0) + 1)
+}
+
+// 处理中状态：内容将变化，命中时失效 per-task 缓存
+const PROCESSING_STATUSES = new Set([
+  'PENDING',
+  'DOWNLOADING',
+  'UPLOADING',
+  'TRANSCRIBING',
+  'SUMMARIZING',
+])
+
+// 测试专用钩子：清空 module 级缓存（生产代码不调用；防止测试间相互污染）
+export const __resetTaskContentCaches = () => {
+  taskFullContentCache.clear()
+  taskFullContentPending.clear()
+  taskContentVersion.clear()
+}
+
 export function useTaskViewModel() {
   const normalizeBase = (base?: string) => (base || '').trim().replace(/\/+$/, '')
   const isLoopbackHost = (host: string) => {
@@ -150,7 +185,7 @@ export function useTaskViewModel() {
   const selectedFile = ref<File | null>(null)
   const localFilePath = ref('')
   const quality = ref('audio_only')
-  const summaryMode = ref<Exclude<SummaryMode, 'auto'>>('standard')
+  const summaryMode = ref<SummaryMode>('standard')
   const isSubmitting = ref(false)
   const error = ref<string | null>(null)
   const activeTab = ref<'summary' | 'transcript'>('summary')
@@ -346,12 +381,33 @@ export function useTaskViewModel() {
     isSubmitting.value = false
   }
 
-  const fetchTaskFullContent = async (taskId: string) => {
-    const response = await axios.get(`${apiBaseUrl}/tasks/${taskId}?include_content=true`)
-    if (selectedTask.value?.id === taskId) {
-      selectedTask.value = { ...selectedTask.value, ...response.data }
-    }
-    return response.data as Task
+  const fetchTaskFullContent = (taskId: string): Promise<Task> => {
+    // 同 id 并发请求去重：直接复用进行中的 Promise，避免重复 GET
+    const existing = taskFullContentPending.get(taskId)
+    if (existing) return existing
+
+    // 发起时记录内容版本：请求期间任务内容若发生变化（WS 广播递增版本），
+    // 响应返回时跳过写缓存，避免在途的旧内容重新污染缓存。
+    const version = taskContentVersion.get(taskId) ?? 0
+    const promise = (async () => {
+      try {
+        const response = await axios.get(`${apiBaseUrl}/tasks/${taskId}?include_content=true`)
+        const data = response.data as Task
+        if ((taskContentVersion.get(taskId) ?? 0) === version) {
+          // 拷贝后入缓存：避免与响应对象共享引用（响应对象可能在别处被合并修改）
+          taskFullContentCache.set(taskId, { ...data })
+        }
+        if (selectedTask.value?.id === taskId) {
+          selectedTask.value = { ...selectedTask.value, ...data }
+        }
+        return data
+      } finally {
+        taskFullContentPending.delete(taskId)
+      }
+    })()
+
+    taskFullContentPending.set(taskId, promise)
+    return promise
   }
 
   const fetchTaskParts = async (taskId: string) => {
@@ -409,13 +465,33 @@ export function useTaskViewModel() {
     const current = selectedTask.value
     const preserveLoadedContent = current?.id === task.id
       && (current.summary !== undefined || current.transcript !== undefined)
-    selectedTask.value = preserveLoadedContent ? current : task
-    if (!preserveLoadedContent) {
+    if (preserveLoadedContent) {
+      // 同任务重选/WS 重连：合并轻量更新，保留已加载的完整内容
+      // （轻量响应的 summary 是 _summary_overview 截断版，不能覆盖完整版）
+      selectedTask.value = {
+        ...task,
+        ...current,
+        summary: current.summary ?? task.summary,
+        transcript: current.transcript ?? task.transcript,
+      }
+    } else {
+      // 切到新任务：立即用 per-task 缓存补齐已加载过的完整内容（A→B→A 往返恢复）
+      const cached = taskFullContentCache.get(task.id)
+      if (cached) {
+        selectedTask.value = {
+          ...cached,
+          ...task,
+          transcript: task.transcript ?? cached.transcript,
+          summary: task.summary ?? cached.summary,
+        }
+      } else {
+        selectedTask.value = task
+      }
       taskParts.value = []
       taskPartDetails.value = {}
       loadingPartIndex.value = null
     }
-    if (task.status === 'PENDING' || task.status === 'DOWNLOADING' || task.status === 'TRANSCRIBING' || task.status === 'SUMMARIZING') {
+    if (PROCESSING_STATUSES.has(task.status)) {
       activeTab.value = 'summary'
     }
 
@@ -427,12 +503,26 @@ export function useTaskViewModel() {
           : Promise.resolve([] as TaskPart[])
         const [response] = await Promise.all([detailPromise, partsPromise])
         if (selectedTask.value?.id !== task.id) return
-        const data = response.data as Task
-        // 轻量详情响应不含转录原文（transcript 为 null）；若此前已通过
-        // “原文”tab/复制等路径加载过完整内容，保留已加载的 transcript。
-        const prevTranscript = selectedTask.value.transcript
-        if (prevTranscript != null && data.transcript == null) {
-          data.transcript = prevTranscript
+        // 浅拷贝响应对象：后续合并会写 transcript/summary 字段，
+        // 不能污染 axios 响应（同一响应对象可能被复用/共享）。
+        const data = { ...(response.data as Task) }
+        // 1) 保留当前选中任务已加载的完整内容（WS 广播合并等路径可能不经缓存）
+        if (selectedTask.value.transcript != null && data.transcript == null) {
+          data.transcript = selectedTask.value.transcript
+        }
+        if (selectedTask.value.summary != null) {
+          data.summary = selectedTask.value.summary
+        }
+        // 2) per-task 缓存补齐：切走再回来时恢复该任务已加载的完整内容。
+        //    轻量响应的 summary 是 _summary_overview 截断版，缓存有完整版时优先。
+        const cached = taskFullContentCache.get(task.id)
+        if (cached) {
+          if (data.transcript == null && cached.transcript != null) {
+            data.transcript = cached.transcript
+          }
+          if (cached.summary != null) {
+            data.summary = cached.summary
+          }
         }
         selectedTask.value = data
       } catch (err) {
@@ -445,31 +535,63 @@ export function useTaskViewModel() {
   }
 
   // 选中任务后详情接口只返回轻量内容（transcript 被后端剥离为 null）。
-  // 用户切换到“原文”tab 时按需加载完整内容（含转录原文）。
-  watch(activeTab, (tab) => {
-    if (tab !== 'transcript') return
-    const task = selectedTask.value
-    if (!task || task.transcript != null) return
-    fetchTaskFullContent(task.id).catch((err) => {
-      console.error('Failed to load full content for transcript tab:', err)
-    })
-  })
+  // 用户切换到“原文”tab 或切换任务时（activeTab 保持 'transcript' 不触发
+  // 单一 activeTab 依赖的 watch）按需加载完整内容（含转录原文）。
+  // transcript != null 守卫：防止重复加载，也防止跨任务 stale 泄漏
+  // （新任务的轻量对象 transcript 为 null，旧任务内容不会被误判为已加载）。
+  watch(
+    [activeTab, () => selectedTask.value?.id],
+    ([tab]) => {
+      if (tab !== 'transcript') return
+      const task = selectedTask.value
+      if (!task || task.transcript != null) return
+      fetchTaskFullContent(task.id).catch((err) => {
+        console.error('Failed to load full content for transcript tab:', err)
+      })
+    },
+    { immediate: true },
+  )
 
   const retryFailedParts = async (taskId: string) => {
     await axios.post(apiBaseUrl + "/tasks/" + taskId + "/retry-failed-parts")
+    // 重试后分片内容会变化（DB 中 content 已置 NULL）：
+    // 失效 per-task 完整内容缓存与分片详情缓存，避免返回旧内容；
+    // 同时递增版本，使在途的旧完整响应不写回缓存。
+    taskFullContentCache.delete(taskId)
+    bumpTaskContentVersion(taskId)
+    taskPartDetails.value = {}
     const current = selectedTask.value
     if (current && current.id === taskId) {
       await selectTask(current)
     }
   }
 
-  const downloadContent = (type: 'summary' | 'transcript') => {
+  const downloadContent = async (type: 'summary' | 'transcript') => {
     if (!selectedTask.value) return
-    
+    const taskId = selectedTask.value.id
+
+    // 轻量详情不含完整内容：下载前按需加载，避免下载到截断版 summary / 空 transcript
+    if (type === 'transcript' && !selectedTask.value.transcript) {
+      try {
+        await fetchTaskFullContent(taskId)
+      } catch (err) {
+        console.error('Failed to load transcript before download:', err)
+      }
+    } else if (type === 'summary' && !selectedTask.value.summary) {
+      try {
+        await fetchTaskFullContent(taskId)
+      } catch (err) {
+        console.error('Failed to load summary before download:', err)
+      }
+    }
+
+    // 等待期间用户可能已切换任务：中止下载
+    if (!selectedTask.value || selectedTask.value.id !== taskId) return
+
     const topic = selectedTask.value.topic || selectedTask.value.title || new Date().toLocaleString('zh-CN').replace(/[/:]/g, '-')
     let content = ''
     let filename = ''
-    
+
     if (type === 'summary') {
       content = selectedTask.value.summary || ''
       filename = `AI总结-${topic}.md`
@@ -477,7 +599,7 @@ export function useTaskViewModel() {
       content = selectedTask.value.transcript || ''
       filename = `视频转录-${topic}.txt`
     }
-    
+
     const blob = new Blob([content], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -517,6 +639,32 @@ export function useTaskViewModel() {
           // Merge updates to preserve details that might not be in the broadcast.
           selectedTask.value = { ...selectedTask.value, ...updatedTask }
           scheduleTaskPartsRefresh(updatedTask.id)
+        }
+
+        // WS 广播是任务内容的权威来源：
+        // - 处理中状态广播（重试/重新转录/重新总结）清空缓存（内容将变化），
+        //   并递增版本，使在途旧完整响应不写回缓存；
+        // - 非处理中广播若携带完整内容（后端广播原始 DB 任务，含完整
+        //   transcript/summary），无条件同步缓存（无旧条目时直接写入），
+        //   避免仅收到最终 COMPLETED 广播时 A→B→A 回退到旧内容；
+        //   同时递增版本，防止在途旧响应覆盖刚同步的新内容。
+        const hasCached = taskFullContentCache.has(updatedTask.id)
+        if (hasCached || taskFullContentPending.has(updatedTask.id)) {
+          bumpTaskContentVersion(updatedTask.id)
+        }
+        if (PROCESSING_STATUSES.has(updatedTask.status)) {
+          taskFullContentCache.delete(updatedTask.id)
+        } else if (updatedTask.transcript != null || updatedTask.summary != null) {
+          const prev = taskFullContentCache.get(updatedTask.id)
+          taskFullContentCache.set(updatedTask.id, prev
+            ? {
+                ...prev,
+                ...updatedTask,
+                transcript: updatedTask.transcript ?? prev.transcript,
+                summary: updatedTask.summary ?? prev.summary,
+              }
+            : { ...updatedTask })
+          bumpTaskContentVersion(updatedTask.id)
         }
 
         // 可选字段：后端广播的队列快照（旧版本无该字段时忽略，向后兼容）
@@ -954,16 +1102,27 @@ export function useTaskViewModel() {
     downloadContent,
     copyContent: async (type: 'summary' | 'transcript') => {
       if (!selectedTask.value) return false
+      // await 前捕获任务身份：等待期间用户可能已切换任务
+      const taskId = selectedTask.value.id
 
-      // 轻量详情不包含转录原文（transcript 为 null），复制前先按需加载完整内容。
+      // 轻量详情不包含转录原文（transcript 为 null），复制前先按需加载完整内容；
+      // summary 为 null（如“仅转录”模式）时同样先加载完整内容。
       if (type === 'transcript' && selectedTask.value.transcript == null) {
         try {
-          await fetchTaskFullContent(selectedTask.value.id)
+          await fetchTaskFullContent(taskId)
         } catch (err) {
           console.error('Failed to load transcript before copy:', err)
         }
+      } else if (type === 'summary' && selectedTask.value.summary == null) {
+        try {
+          await fetchTaskFullContent(taskId)
+        } catch (err) {
+          console.error('Failed to load summary before copy:', err)
+        }
       }
-      if (!selectedTask.value) return false
+
+      // 等待期间切换了任务：中止复制，不复制旧任务内容、不弹错误提示
+      if (!selectedTask.value || selectedTask.value.id !== taskId) return false
 
       // 直接使用当前 selectedTask 的数据，与 compiledMarkdown 保持一致
       let text = ''

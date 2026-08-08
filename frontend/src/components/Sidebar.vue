@@ -23,6 +23,7 @@ import {
   PhLightning,
   PhBrain,
   PhFile,
+  PhFileText,
   PhQuestion,
 } from '@phosphor-icons/vue'
 import {
@@ -42,7 +43,7 @@ const videoUrl = defineModel<string>('videoUrl', { required: true })
 const selectedFile = defineModel<File | null>('selectedFile', { default: null })
 const localFilePath = defineModel<string>('localFilePath', { default: '' })
 // const quality = defineModel<string>('quality', { required: true })
-const summaryMode = defineModel<Exclude<SummaryMode, 'auto'>>('summaryMode', { default: 'standard' })
+const summaryMode = defineModel<SummaryMode>('summaryMode', { default: 'standard' })
 const isSidebarOpen = defineModel<boolean>('isSidebarOpen', { required: true })
 
 const props = defineProps<{
@@ -167,8 +168,24 @@ const triggerFileUpload = () => {
   fileInput.value?.click()
 }
 
-const switchSummaryMode = (mode: Exclude<SummaryMode, 'auto'>) => {
+// 记住开启“仅转录原文”之前的模式，便于一键恢复
+const prevSummaryMode = ref<SummaryMode>('standard')
+
+const switchSummaryMode = (mode: SummaryMode) => {
   summaryMode.value = mode
+  if (mode !== 'none') {
+    prevSummaryMode.value = mode
+  }
+}
+
+// “仅转录原文（跳过 AI 总结）”独立开关：开启后恢复之前的模式
+const toggleTranscriptOnly = () => {
+  if (summaryMode.value === 'none') {
+    summaryMode.value = prevSummaryMode.value
+  } else {
+    prevSummaryMode.value = summaryMode.value
+    summaryMode.value = 'none'
+  }
 }
 
 const handleSubmitAction = () => {
@@ -1272,6 +1289,30 @@ watch(() => props.summarizationSettings, (settings) => {
                   </button>
                 </div>
               </div>
+
+              <!-- 仅转录原文（跳过 AI 总结）开关 -->
+              <button
+                type="button"
+                @click="toggleTranscriptOnly"
+                :title="summaryMode === 'none' ? '点击恢复 AI 总结' : '提交后只转录原文，不生成 AI 总结'"
+                class="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs font-medium transition-all active:scale-[0.98]"
+                :class="summaryMode === 'none'
+                  ? 'border-amber-400 bg-amber-50 text-amber-700 shadow-sm shadow-amber-100'
+                  : 'border-dashed border-slate-300 text-slate-500 hover:border-amber-400 hover:text-amber-600 hover:bg-amber-50/50'"
+              >
+                <span class="flex items-center gap-1.5">
+                  <PhFileText :size="14" :weight="summaryMode === 'none' ? 'fill' : 'regular'" />
+                  <span>仅转录原文（跳过 AI 总结）</span>
+                </span>
+                <span
+                  class="text-[10px] px-1.5 py-0.5 rounded-full"
+                  :class="summaryMode === 'none' ? 'bg-amber-400/20 text-amber-700' : 'bg-slate-100 text-slate-400'"
+                >{{ summaryMode === 'none' ? '已开启' : '关闭' }}</span>
+              </button>
+              <p
+                v-if="summaryMode === 'none'"
+                class="text-[11px] text-amber-600/90 px-1 -mt-0.5 leading-relaxed"
+              >提交后不生成 AI 总结，之后可随时在任务上补总结。</p>
 
               <button
                 @click="handleSubmitAction"
