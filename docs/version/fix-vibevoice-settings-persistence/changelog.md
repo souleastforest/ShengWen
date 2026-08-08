@@ -1,0 +1,13 @@
+# Fix: 任务"原文/全文转录"内容为空 - Change Log
+
+**Branch**: `fix/vibevoice-settings-persistence`
+**Date**: 2026-08-08
+
+## Change Log
+
+- 2026-08-08: 修复"任务已完成但原文/全文转录内容为空、无法复制"的回归 bug。根因：commit `7293823`（perf: avoid loading full multipart summaries on select）将任务选中时的详情请求改为 `GET /tasks/{id}?include_content=false`，后端在该模式下剥离 `transcript` 字段；而唯一加载完整内容（`include_content=true`）的入口 `fetchTaskFullContent` 只挂在 multipart 任务的"展开完整分P总结"按钮上，导致所有历史已完成任务选中后 `transcript` 恒为 null（"AI 总结"tab 正常，因为后端保留截断后的 summary）。修复方案（保持轻量加载性能优化不变）：前端 `useTaskViewModel.ts` 新增三条转录按需加载链路——① watch `activeTab`，切换到"原文"tab 且 transcript 为空时调用 `fetchTaskFullContent` 懒加载完整内容；② `selectTask` 详情响应合并时保留已加载的 transcript，防止轻量响应覆盖；③ `copyContent('transcript')` 在 transcript 为空时先加载完整内容再复制（任务确实无转录时仍返回失败提示）。数据库与后端接口无问题（已验证目标任务 `c54fa795` transcript 完整 5416 字符，`include_content=true` 路径完好）。
+- 2026-08-08: 新增测试覆盖：前端 `useTaskViewModel.transcript.test.ts`（5 个用例：selectTask 轻量请求 / 切"原文"tab 触发完整加载 / 已加载 transcript 不被覆盖 / 复制前先加载 / 无转录时返回 false）；后端 `tests/test_task_include_content.py`（4 个用例：默认返回完整内容 / `include_content=false` 剥离 transcript 与 summary_meta / 超长 summary 截断 / 分P标记处截断）。
+- 2026-08-08: 新增任务排队可视化后端支撑（分支内另一 feature 功能变更，随当前分支发布）——① Worker 基类新增 `snapshot()`（返回 name/active_task_id/waiting_task_ids/queue_size，FIFO 顺序，异常时安全默认）；② 新增 `GET /tasks/queue` 返回 4 个固定队列（VideoDownloaderWorker/FileUploadWorker/TranscriberWorker/LLMWorker）快照 + UTC 时间戳，未实例化 worker 返回全空快照；③ WS `task_update` 消息扩展 `queues` 字段（向后兼容，旧客户端忽略）；④ lifespan 启动 pipeline 前调用 `db.recover_interrupted_tasks()`（同步方法，非 await）将中断任务标记为 FAILED；⑤ `POST /tasks/` 内存 TTL 幂等去重：5 秒内同一 video_url 重复提交直接返回已创建任务完整数据（201），多分P separate 模式跳过，文件上传路径不处理；⑥ domain/task/type.py `TaskStatus` 补 `PARTIAL` 枚举（与 db.py 8 值对齐）。后端单测新增 5 个文件（worker 快照 / queue 路由 / WS queues / lifespan 恢复接线 / 提交去重）共 25 用例。
+- 2026-08-08: 前端排队可视化——① `types.ts` 新增 `QueueSnapshot`/`QueueResponse` 契约；② `useTaskViewModel` 新增 `queues` 状态与 `fetchQueueSnapshot()`，WS `task_update` 解析可选 `queues` 字段自动刷新；③ Sidebar 排队任务显示琥珀色徽章「排队中 (下载/上传/转录/总结队列 #N)」并抑制进度条（`utils/queueStatus.ts` 纯函数推导）；④ TaskInfoModal 补齐 UPLOADING='上传中'/PARTIAL='部分完成' 映射；⑤ 修复 types.test.ts 断言为 8 值（原 CI 红）。前端单测新增 2 文件 11 用例。
+- 2026-08-08: **修复存量严重 bug：pipeline 事件重复订阅**——主应用（ShengWen-app.py）与挂载子应用（api.py）各自的 lifespan 都调用 `pipeline.start()`，导致 TASK_CREATED 被重复订阅、每个任务被派发两次（下载/上传 worker 队列出现两个相同条目）。文件任务第二个条目处理时源文件已被移走 → 误标 FAILED（即使第一个条目正在正常转录/排队）；URL 任务重复下载。修复：`pipeline.start()/stop()` 幂等化（重复调用不再重复订阅）。单测 4 用例（tests/test_pipeline_idempotent.py）。该 bug 由 e2e 队列快照观察发现（修复前 waiting 出现重复条目与 FAILED 排队任务）。
+- 2026-08-08: 【遗留问题】`temp/` 目录（约 4.6GB / 633 文件）无任何回收机制：下载的视频、FileUploadWorker 移动后的任务文件、转录中间产物永久留存。需后续设计按任务生命周期的清理策略。

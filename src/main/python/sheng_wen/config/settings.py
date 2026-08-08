@@ -11,10 +11,14 @@ import json
 from dataclasses import MISSING, dataclass, fields as dataclass_fields
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from ..utils.logger import logger
+from loguru import logger
+
 from ..utils.project_root import get_project_root
+
+if TYPE_CHECKING:
+    from src.main.python.sheng_wen.llm.llm import LLMConfig as LLMConfigDataclass
 
 
 def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +54,7 @@ class AppConfig:
 
 @dataclass
 class WhisperConfig:
+    transcriber_type: Literal["fast_whisper", "vibe_voice_asr"] = "fast_whisper"
     model_source: Literal["auto_download", "manual_path"] = "auto_download"
     model_path: str | None = None
     model_size: Literal["tiny", "base", "small", "medium", "large"] = "tiny"
@@ -57,6 +62,15 @@ class WhisperConfig:
     enable_bilibili_subtitle_fetch: bool = True
     bilibili_sessdata: str = ""
     faster_whisper_model_path: str | None = None
+    vibevoice_language_model: str = "Qwen/Qwen2.5-7B"
+    vibevoice_max_new_tokens: int = 8192
+    vibevoice_dtype: Literal["bfloat16", "float16"] = "bfloat16"
+    vibevoice_inference_mode: Literal["local", "api"] = "local"
+    vibevoice_api_url: str = ""
+    asr_chunk_threshold_sec: int = 600
+    asr_chunk_duration_sec: int = 360
+    asr_chunk_fallback_duration_sec: int = 180
+    asr_chunk_oom_fallback: bool = True
 
     @property
     def configured_model_path(self) -> str | None:
@@ -145,19 +159,48 @@ class SummarizationConfig:
             normalized_mode = "auto"
         self.mode = normalized_mode  # type: ignore[assignment]
 
-        self.auto_chunk_min_audio_duration_sec = max(300, int(self.auto_chunk_min_audio_duration_sec))
-        self.auto_chunk_min_transcript_lines = max(100, int(self.auto_chunk_min_transcript_lines))
+        self.auto_chunk_min_audio_duration_sec = max(
+            300, int(self.auto_chunk_min_audio_duration_sec)
+        )
+        self.auto_chunk_min_transcript_lines = max(
+            100, int(self.auto_chunk_min_transcript_lines)
+        )
         self.chunk_target_duration_sec = max(60, int(self.chunk_target_duration_sec))
         self.chunk_min_duration_sec = max(30, int(self.chunk_min_duration_sec))
-        self.chunk_max_duration_sec = max(self.chunk_target_duration_sec, int(self.chunk_max_duration_sec))
+        self.chunk_max_duration_sec = max(
+            self.chunk_target_duration_sec, int(self.chunk_max_duration_sec)
+        )
         self.boundary_jump_sec = max(1, int(self.boundary_jump_sec))
         self.prev_tail_timestamp_lines_m = max(0, int(self.prev_tail_timestamp_lines_m))
         self.prev_summary_tail_chars_j = max(0, int(self.prev_summary_tail_chars_j))
         self.llm_call_retry_max = max(1, int(self.llm_call_retry_max))
         self.max_agent_value_chars = max(100, int(self.max_agent_value_chars))
-        self.transcript_chunk_emit_duration_sec = max(30, int(self.transcript_chunk_emit_duration_sec))
+        self.transcript_chunk_emit_duration_sec = max(
+            30, int(self.transcript_chunk_emit_duration_sec)
+        )
         self.chunk_prompt_file = _resolve_project_path(self.chunk_prompt_file)
         self.chunk_debug_dump_dir = _resolve_project_path(self.chunk_debug_dump_dir)
+
+
+@dataclass
+class StorageConfig:
+    """Storage management configuration."""
+
+    max_total_mb: float = 2048
+    retention_completed_sec: int = 86400  # 24h
+    retention_failed_sec: int = 7200  # 2h
+    cleanup_interval_sec: int = 600  # 10min
+    base_dir: str = "temp"
+
+
+@dataclass
+class ObservabilityConfig:
+    """OTEL observability configuration (optional, no-op if not configured)."""
+
+    enabled: bool = False
+    otlp_endpoint: str = ""  # e.g., "http://localhost:4317"
+    service_name: str = "sheng-wen"
+    trace_sample_rate: float = 1.0
 
 
 def _dataclass_defaults(cls: type[Any]) -> dict[str, Any]:
@@ -181,6 +224,8 @@ def _build_default_settings() -> dict[str, Any]:
         "database": _dataclass_defaults(DatabaseConfig),
         "cors": _dataclass_defaults(CORSConfig),
         "summarization": _dataclass_defaults(SummarizationConfig),
+        "storage": _dataclass_defaults(StorageConfig),
+        "observability": _dataclass_defaults(ObservabilityConfig),
     }
 
 
@@ -269,33 +314,90 @@ class JSONConfigManager:
             "api_key": str(payload.get("api_key") or defaults["api_key"]),
             "model_id": str(payload.get("model_id") or defaults["model_id"]),
             "temperature": float(payload.get("temperature", defaults["temperature"])),
-            "context_window_size": int(payload.get("context_window_size", defaults["context_window_size"])),
-            "extra_headers": payload.get("extra_headers") if payload.get("extra_headers") is not None else defaults.get("extra_headers"),
+            "context_window_size": int(
+                payload.get("context_window_size", defaults["context_window_size"])
+            ),
+            "extra_headers": payload.get("extra_headers")
+            if payload.get("extra_headers") is not None
+            else defaults.get("extra_headers"),
         }
         self.update_section("llm", llm_patch)
 
     def save_transcription_config(self, payload: dict[str, Any]):
+        defaults = DEFAULT_SETTINGS["whisper"]
         whisper_patch = {}
         resolved_model_source = None
         if "device" in payload:
             whisper_patch["device"] = str(payload["device"] or "cpu").lower()
+        if "transcriber_type" in payload:
+            t_type = (
+                str(payload.get("transcriber_type") or "fast_whisper").strip().lower()
+            )
+            whisper_patch["transcriber_type"] = (
+                t_type
+                if t_type in {"fast_whisper", "vibe_voice_asr"}
+                else "fast_whisper"
+            )
         if "model_source" in payload:
             source = str(payload.get("model_source") or "auto_download").strip().lower()
-            resolved_model_source = source if source in {"auto_download", "manual_path"} else "auto_download"
+            resolved_model_source = (
+                source
+                if source in {"auto_download", "manual_path"}
+                else "auto_download"
+            )
             whisper_patch["model_source"] = resolved_model_source
         if "model_size" in payload:
             size = str(payload.get("model_size") or "tiny").strip().lower()
-            whisper_patch["model_size"] = size if size in {"tiny", "base", "small", "medium", "large"} else "tiny"
+            whisper_patch["model_size"] = (
+                size if size in {"tiny", "base", "small", "medium", "large"} else "tiny"
+            )
         if "model_path" in payload:
-            whisper_patch["model_path"] = str(payload.get("model_path") or "").strip() or None
+            whisper_patch["model_path"] = (
+                str(payload.get("model_path") or "").strip() or None
+            )
         if resolved_model_source == "auto_download":
             # 用户显式切回自动下载时，清空手动路径，避免重启后被兼容逻辑回推到 manual_path。
             whisper_patch["model_path"] = None
             whisper_patch["faster_whisper_model_path"] = None
         if "enable_bilibili_subtitle_fetch" in payload:
-            whisper_patch["enable_bilibili_subtitle_fetch"] = bool(payload["enable_bilibili_subtitle_fetch"])
+            whisper_patch["enable_bilibili_subtitle_fetch"] = bool(
+                payload["enable_bilibili_subtitle_fetch"]
+            )
         if "bilibili_sessdata" in payload:
-            whisper_patch["bilibili_sessdata"] = str(payload.get("bilibili_sessdata") or "")
+            whisper_patch["bilibili_sessdata"] = str(
+                payload.get("bilibili_sessdata") or ""
+            )
+        if "vibevoice_language_model" in payload:
+            whisper_patch["vibevoice_language_model"] = (
+                str(payload.get("vibevoice_language_model") or "").strip()
+                or defaults["vibevoice_language_model"]
+            )
+        if "vibevoice_max_new_tokens" in payload:
+            whisper_patch["vibevoice_max_new_tokens"] = max(
+                1,
+                int(
+                    payload.get("vibevoice_max_new_tokens")
+                    or defaults["vibevoice_max_new_tokens"]
+                ),
+            )
+        if "vibevoice_dtype" in payload:
+            dtype = str(payload.get("vibevoice_dtype") or "").strip().lower()
+            whisper_patch["vibevoice_dtype"] = (
+                dtype
+                if dtype in {"bfloat16", "float16"}
+                else defaults["vibevoice_dtype"]
+            )
+        if "vibevoice_inference_mode" in payload:
+            mode = str(payload.get("vibevoice_inference_mode") or "").strip().lower()
+            whisper_patch["vibevoice_inference_mode"] = (
+                mode
+                if mode in {"local", "api"}
+                else defaults["vibevoice_inference_mode"]
+            )
+        if "vibevoice_api_url" in payload:
+            whisper_patch["vibevoice_api_url"] = str(
+                payload.get("vibevoice_api_url") or ""
+            ).strip()
         if whisper_patch:
             self.update_section("whisper", whisper_patch)
 
@@ -346,16 +448,22 @@ class JSONConfigManager:
         return AppConfig(
             host=str(raw.get("host", defaults["host"])),
             port=int(raw.get("port", defaults["port"])),
-            enable_progress_test=bool(raw.get("enable_progress_test", defaults["enable_progress_test"])),
+            enable_progress_test=bool(
+                raw.get("enable_progress_test", defaults["enable_progress_test"])
+            ),
             enable_mdns=bool(raw.get("enable_mdns", defaults["enable_mdns"])),
-            frontend_dist_dir=str(raw.get("frontend_dist_dir", defaults["frontend_dist_dir"])),
+            frontend_dist_dir=str(
+                raw.get("frontend_dist_dir", defaults["frontend_dist_dir"])
+            ),
             prompt_file=str(raw.get("prompt_file", defaults["prompt_file"])),
         )
 
     def get_whisper_config(self) -> WhisperConfig:
         raw = self.get_raw_config().get("whisper", {})
         defaults = DEFAULT_SETTINGS["whisper"]
-        model_source = str(raw.get("model_source", defaults.get("model_source", "auto_download"))).lower()
+        model_source = str(
+            raw.get("model_source", defaults.get("model_source", "auto_download"))
+        ).lower()
         if model_source not in {"auto_download", "manual_path"}:
             model_source = "auto_download"
         model_size = str(raw.get("model_size", defaults["model_size"])).lower()
@@ -365,21 +473,91 @@ class JSONConfigManager:
         if device not in {"cpu", "cuda"}:
             device = str(defaults["device"])
         model_path = raw.get("model_path", defaults["model_path"])
-        faster_whisper_model_path = raw.get("faster_whisper_model_path", defaults["faster_whisper_model_path"])
+        faster_whisper_model_path = raw.get(
+            "faster_whisper_model_path", defaults["faster_whisper_model_path"]
+        )
         if model_source == "auto_download":
-            fallback_manual_path = str(model_path or "").strip() or str(faster_whisper_model_path or "").strip()
+            fallback_manual_path = (
+                str(model_path or "").strip()
+                or str(faster_whisper_model_path or "").strip()
+            )
             if fallback_manual_path:
                 model_source = "manual_path"
+        transcriber_type = str(
+            raw.get("transcriber_type", defaults["transcriber_type"])
+        ).lower()
+        if transcriber_type not in {"fast_whisper", "vibe_voice_asr"}:
+            transcriber_type = str(defaults["transcriber_type"])
+        vibevoice_language_model = (
+            str(
+                raw.get(
+                    "vibevoice_language_model", defaults["vibevoice_language_model"]
+                )
+                or ""
+            ).strip()
+            or str(defaults["vibevoice_language_model"])
+        )
+        vibevoice_max_new_tokens = max(
+            1,
+            int(
+                raw.get(
+                    "vibevoice_max_new_tokens", defaults["vibevoice_max_new_tokens"]
+                )
+            ),
+        )
+        vibevoice_dtype = str(
+            raw.get("vibevoice_dtype", defaults["vibevoice_dtype"])
+        ).lower()
+        if vibevoice_dtype not in {"bfloat16", "float16"}:
+            vibevoice_dtype = str(defaults["vibevoice_dtype"])
+        vibevoice_inference_mode = str(
+            raw.get(
+                "vibevoice_inference_mode", defaults["vibevoice_inference_mode"]
+            )
+        ).lower()
+        if vibevoice_inference_mode not in {"local", "api"}:
+            vibevoice_inference_mode = str(defaults["vibevoice_inference_mode"])
         return WhisperConfig(
+            transcriber_type=transcriber_type,  # type: ignore[arg-type]
             model_source=model_source,  # type: ignore[arg-type]
             model_path=model_path,
             model_size=model_size,  # type: ignore[arg-type]
             device=device,  # type: ignore[arg-type]
             enable_bilibili_subtitle_fetch=bool(
-                raw.get("enable_bilibili_subtitle_fetch", defaults["enable_bilibili_subtitle_fetch"])
+                raw.get(
+                    "enable_bilibili_subtitle_fetch",
+                    defaults["enable_bilibili_subtitle_fetch"],
+                )
             ),
-            bilibili_sessdata=str(raw.get("bilibili_sessdata", defaults["bilibili_sessdata"]) or ""),
+            bilibili_sessdata=str(
+                raw.get("bilibili_sessdata", defaults["bilibili_sessdata"]) or ""
+            ),
             faster_whisper_model_path=faster_whisper_model_path,
+            vibevoice_language_model=vibevoice_language_model,
+            vibevoice_max_new_tokens=vibevoice_max_new_tokens,
+            vibevoice_dtype=vibevoice_dtype,  # type: ignore[arg-type]
+            vibevoice_inference_mode=vibevoice_inference_mode,  # type: ignore[arg-type]
+            vibevoice_api_url=str(
+                raw.get("vibevoice_api_url", defaults["vibevoice_api_url"]) or ""
+            ).strip(),
+            asr_chunk_threshold_sec=max(
+                60, int(raw.get("asr_chunk_threshold_sec", defaults["asr_chunk_threshold_sec"]))
+            ),
+            asr_chunk_duration_sec=max(
+                30, int(raw.get("asr_chunk_duration_sec", defaults["asr_chunk_duration_sec"]))
+            ),
+            asr_chunk_fallback_duration_sec=max(
+                30,
+                int(
+                    raw.get(
+                        "asr_chunk_fallback_duration_sec",
+                        defaults["asr_chunk_fallback_duration_sec"],
+                    )
+                ),
+            ),
+            asr_chunk_oom_fallback=bool(
+                raw.get("asr_chunk_oom_fallback", defaults["asr_chunk_oom_fallback"])
+            ),
         )
 
     def get_llm_config(self) -> LLMConfig:
@@ -391,7 +569,9 @@ class JSONConfigManager:
             api_key=str(raw.get("api_key", defaults["api_key"])),
             model_id=str(raw.get("model_id", defaults["model_id"])),
             temperature=float(raw.get("temperature", defaults["temperature"])),
-            context_window_size=int(raw.get("context_window_size", defaults["context_window_size"])),
+            context_window_size=int(
+                raw.get("context_window_size", defaults["context_window_size"])
+            ),
             extra_headers=raw.get("extra_headers", defaults.get("extra_headers")),
         )
 
@@ -408,7 +588,9 @@ class JSONConfigManager:
         defaults = DEFAULT_SETTINGS["cors"]
         return CORSConfig(
             allow_origins=str(raw.get("allow_origins", defaults["allow_origins"])),
-            allow_credentials=bool(raw.get("allow_credentials", defaults["allow_credentials"])),
+            allow_credentials=bool(
+                raw.get("allow_credentials", defaults["allow_credentials"])
+            ),
             allow_methods=str(raw.get("allow_methods", defaults["allow_methods"])),
             allow_headers=str(raw.get("allow_headers", defaults["allow_headers"])),
         )
@@ -419,30 +601,102 @@ class JSONConfigManager:
         return SummarizationConfig(
             mode=str(raw.get("mode", defaults["mode"])),
             auto_chunk_min_audio_duration_sec=int(
-                raw.get("auto_chunk_min_audio_duration_sec", defaults["auto_chunk_min_audio_duration_sec"])
+                raw.get(
+                    "auto_chunk_min_audio_duration_sec",
+                    defaults["auto_chunk_min_audio_duration_sec"],
+                )
             ),
             auto_chunk_min_transcript_lines=int(
-                raw.get("auto_chunk_min_transcript_lines", defaults["auto_chunk_min_transcript_lines"])
+                raw.get(
+                    "auto_chunk_min_transcript_lines",
+                    defaults["auto_chunk_min_transcript_lines"],
+                )
             ),
-            chunk_target_duration_sec=int(raw.get("chunk_target_duration_sec", defaults["chunk_target_duration_sec"])),
-            chunk_min_duration_sec=int(raw.get("chunk_min_duration_sec", defaults["chunk_min_duration_sec"])),
-            chunk_max_duration_sec=int(raw.get("chunk_max_duration_sec", defaults["chunk_max_duration_sec"])),
-            boundary_jump_sec=int(raw.get("boundary_jump_sec", defaults["boundary_jump_sec"])),
+            chunk_target_duration_sec=int(
+                raw.get(
+                    "chunk_target_duration_sec", defaults["chunk_target_duration_sec"]
+                )
+            ),
+            chunk_min_duration_sec=int(
+                raw.get("chunk_min_duration_sec", defaults["chunk_min_duration_sec"])
+            ),
+            chunk_max_duration_sec=int(
+                raw.get("chunk_max_duration_sec", defaults["chunk_max_duration_sec"])
+            ),
+            boundary_jump_sec=int(
+                raw.get("boundary_jump_sec", defaults["boundary_jump_sec"])
+            ),
             prev_tail_timestamp_lines_m=int(
-                raw.get("prev_tail_timestamp_lines_m", defaults["prev_tail_timestamp_lines_m"])
+                raw.get(
+                    "prev_tail_timestamp_lines_m",
+                    defaults["prev_tail_timestamp_lines_m"],
+                )
             ),
-            prev_summary_tail_chars_j=int(raw.get("prev_summary_tail_chars_j", defaults["prev_summary_tail_chars_j"])),
-            llm_call_retry_max=int(raw.get("llm_call_retry_max", defaults["llm_call_retry_max"])),
+            prev_summary_tail_chars_j=int(
+                raw.get(
+                    "prev_summary_tail_chars_j", defaults["prev_summary_tail_chars_j"]
+                )
+            ),
+            llm_call_retry_max=int(
+                raw.get("llm_call_retry_max", defaults["llm_call_retry_max"])
+            ),
             fallback_to_standard_on_agent_error=bool(
-                raw.get("fallback_to_standard_on_agent_error", defaults["fallback_to_standard_on_agent_error"])
+                raw.get(
+                    "fallback_to_standard_on_agent_error",
+                    defaults["fallback_to_standard_on_agent_error"],
+                )
             ),
-            chunk_prompt_file=str(raw.get("chunk_prompt_file", defaults["chunk_prompt_file"])),
-            max_agent_value_chars=int(raw.get("max_agent_value_chars", defaults["max_agent_value_chars"])),
-            chunk_debug_dump_enabled=bool(raw.get("chunk_debug_dump_enabled", defaults["chunk_debug_dump_enabled"])),
-            chunk_debug_dump_dir=str(raw.get("chunk_debug_dump_dir", defaults["chunk_debug_dump_dir"])),
-            enable_agent_pipeline=bool(raw.get("enable_agent_pipeline", defaults["enable_agent_pipeline"])),
+            chunk_prompt_file=str(
+                raw.get("chunk_prompt_file", defaults["chunk_prompt_file"])
+            ),
+            max_agent_value_chars=int(
+                raw.get("max_agent_value_chars", defaults["max_agent_value_chars"])
+            ),
+            chunk_debug_dump_enabled=bool(
+                raw.get(
+                    "chunk_debug_dump_enabled", defaults["chunk_debug_dump_enabled"]
+                )
+            ),
+            chunk_debug_dump_dir=str(
+                raw.get("chunk_debug_dump_dir", defaults["chunk_debug_dump_dir"])
+            ),
+            enable_agent_pipeline=bool(
+                raw.get("enable_agent_pipeline", defaults["enable_agent_pipeline"])
+            ),
             transcript_chunk_emit_duration_sec=int(
-                raw.get("transcript_chunk_emit_duration_sec", defaults["transcript_chunk_emit_duration_sec"])
+                raw.get(
+                    "transcript_chunk_emit_duration_sec",
+                    defaults["transcript_chunk_emit_duration_sec"],
+                )
+            ),
+        )
+
+    def get_storage_config(self) -> StorageConfig:
+        raw = self.get_raw_config().get("storage", {})
+        defaults = DEFAULT_SETTINGS["storage"]
+        return StorageConfig(
+            max_total_mb=float(raw.get("max_total_mb", defaults["max_total_mb"])),
+            retention_completed_sec=int(
+                raw.get("retention_completed_sec", defaults["retention_completed_sec"])
+            ),
+            retention_failed_sec=int(
+                raw.get("retention_failed_sec", defaults["retention_failed_sec"])
+            ),
+            cleanup_interval_sec=int(
+                raw.get("cleanup_interval_sec", defaults["cleanup_interval_sec"])
+            ),
+            base_dir=str(raw.get("base_dir", defaults["base_dir"])),
+        )
+
+    def get_observability_config(self) -> ObservabilityConfig:
+        raw = self.get_raw_config().get("observability", {})
+        defaults = DEFAULT_SETTINGS["observability"]
+        return ObservabilityConfig(
+            enabled=bool(raw.get("enabled", defaults["enabled"])),
+            otlp_endpoint=str(raw.get("otlp_endpoint", defaults["otlp_endpoint"])),
+            service_name=str(raw.get("service_name", defaults["service_name"])),
+            trace_sample_rate=float(
+                raw.get("trace_sample_rate", defaults["trace_sample_rate"])
             ),
         )
 
@@ -477,6 +731,14 @@ class Settings:
     def summarization(self) -> SummarizationConfig:
         return self._manager.get_summarization_config()
 
+    @property
+    def storage(self) -> StorageConfig:
+        return self._manager.get_storage_config()
+
+    @property
+    def observability(self) -> ObservabilityConfig:
+        return self._manager.get_observability_config()
+
 
 _config_manager: JSONConfigManager | None = None
 _config: Settings | None = None
@@ -499,7 +761,7 @@ def get_config() -> Settings:
 config = get_config()
 
 
-def to_llm_config(settings: Settings) -> "LLMConfigDataclass":
+def to_llm_config(settings: Settings) -> LLMConfigDataclass:
     from src.main.python.sheng_wen.llm.llm import LLMConfig as LLMConfigDataclass
 
     llm_cfg = settings.llm
@@ -512,5 +774,3 @@ def to_llm_config(settings: Settings) -> "LLMConfigDataclass":
         provider=llm_cfg.provider,
         extra_headers=llm_cfg.extra_headers,
     )
-
-

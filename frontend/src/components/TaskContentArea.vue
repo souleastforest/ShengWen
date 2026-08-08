@@ -21,6 +21,9 @@ interface Props {
   task: Task
   activeTab: 'summary' | 'transcript'
   compiledMarkdown: string
+  showFullMultipartSummary: boolean
+  multipartPage: number
+  multipartPageCount: number
   summaryHighlightRequest?: SummaryHighlightRequest | null
   headingJumpRequest?: { id: string; requestId: number } | null
   topic: string
@@ -38,6 +41,9 @@ const emit = defineEmits<{
   'update:editing-topic-value': [value: string]
   'update-markdown-headings': [headings: MarkdownHeadingItem[]]
   'update-active-heading-id': [headingId: string]
+  'expand-multipart-summary': []
+  'collapse-multipart-summary': []
+  'change-multipart-page': [page: number]
 }>()
 
 const isCompleted = computed(() => props.task.status === TaskStatus.COMPLETED)
@@ -502,7 +508,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="contentScrollRef" class="flex-1 overflow-y-auto overflow-x-auto p-4 md:p-8 pt-16 md:pt-20 custom-scrollbar">
+  <div ref="contentScrollRef" class="min-h-0 flex-1 overflow-y-auto overflow-x-auto p-4 md:p-8 pt-16 md:pt-20 custom-scrollbar">
     <div class="max-w-4xl mx-auto">
       <!-- 错误状态 -->
       <div v-if="isFailed" class="bg-red-50 border border-red-100 p-6 rounded-2xl mb-6">
@@ -545,9 +551,46 @@ onBeforeUnmount(() => {
             class="prose prose-sm md:prose-base prose-slate prose-headings:font-bold prose-a:text-blue-600 hover:prose-a:underline prose-img:rounded-xl max-w-none px-8 py-8 ss-shared-prose markdown-theme-container"
             :data-theme="currentThemeId"
           >
-            <div v-if="task.summary" data-summary-content v-html="compiledMarkdown"></div>
+            <div v-if="task.summary && compiledMarkdown" data-summary-content v-html="compiledMarkdown"></div>
+            <p v-else-if="task.summary" class="text-slate-400 italic">正在加载总结预览...</p>
             <p v-else class="text-slate-400 italic">暂无总结内容</p>
           </article>
+          <div v-if="task.has_parts && task.summary && !showFullMultipartSummary" class="border-t border-slate-100 px-8 py-4">
+            <button
+              type="button"
+              class="text-sm font-medium text-blue-600 hover:text-blue-700"
+              @click="emit('expand-multipart-summary')"
+            >
+              展开完整分P总结
+            </button>
+            <span class="ml-2 text-xs text-slate-400">按页加载分P总结，每页 10 个 P</span>
+          </div>
+          <div v-else-if="task.has_parts && task.summary && showFullMultipartSummary" class="flex items-center justify-between gap-3 border-t border-slate-100 px-8 py-3 text-sm">
+            <button
+              type="button"
+              class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="multipartPage <= 0"
+              @click="emit('change-multipart-page', multipartPage - 1)"
+            >
+              上一页
+            </button>
+            <span class="text-xs text-slate-500">第 {{ multipartPage + 1 }} / {{ multipartPageCount }} 页</span>
+            <button
+              type="button"
+              class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="multipartPage >= multipartPageCount - 1"
+              @click="emit('change-multipart-page', multipartPage + 1)"
+            >
+              下一页
+            </button>
+            <button
+              type="button"
+              class="text-xs text-slate-500 hover:text-slate-700"
+              @click="emit('collapse-multipart-summary')"
+            >
+              收起
+            </button>
+          </div>
         </div>
 
         <!-- 转录文本 Tab -->

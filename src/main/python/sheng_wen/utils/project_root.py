@@ -2,7 +2,6 @@
 项目根目录工具
 """
 
-import os
 from pathlib import Path
 
 

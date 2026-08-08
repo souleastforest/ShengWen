@@ -1,15 +1,27 @@
 import json
 import os
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
+from typing import List, Optional, Dict, Any
+
+from loguru import logger
 from sqlalchemy import create_engine, Column, String, Float, Integer, Text, DateTime, Enum as SQLEnum, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
+
 from .config.settings import config
-from .utils.logger import logger
 
 Base = declarative_base()
+
+
+def _format_utc_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
 
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
@@ -18,6 +30,7 @@ class TaskStatus(str, Enum):
     TRANSCRIBING = "TRANSCRIBING"
     SUMMARIZING = "SUMMARIZING"
     COMPLETED = "COMPLETED"
+    PARTIAL = "PARTIAL"
     FAILED = "FAILED"
 
 class TaskModel(Base):
@@ -26,8 +39,8 @@ class TaskModel(Base):
     id = Column(String, primary_key=True)
     video_url = Column(String, nullable=False)
     status = Column(SQLEnum(TaskStatus), default=TaskStatus.PENDING)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    latest_modified_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    latest_modified_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     progress = Column(Float, default=0.0)
     title = Column(String, nullable=True)
     transcript = Column(Text, nullable=True)
@@ -48,8 +61,8 @@ class TaskModel(Base):
             "id": self.id,
             "video_url": self.video_url,
             "status": self.status.value if isinstance(self.status, TaskStatus) else self.status,
-            "created_at": self.created_at.isoformat() + 'Z' if self.created_at else None,
-            "latest_modified_at": self.latest_modified_at.isoformat() + 'Z' if self.latest_modified_at else None,
+            "created_at": _format_utc_timestamp(self.created_at),
+            "latest_modified_at": _format_utc_timestamp(self.latest_modified_at),
             "progress": self.progress,
             "title": self.title,
             "transcript": self.transcript,
@@ -174,8 +187,8 @@ class TaskDB:
                     id=task_data.get("id", task_id),
                     video_url=task_data["video_url"],
                     status=TaskStatus(task_data.get("status", "PENDING")),
-                    created_at=datetime.fromisoformat(task_data["created_at"]) if task_data.get("created_at") else datetime.utcnow(),
-                    latest_modified_at=datetime.fromisoformat(task_data["latest_modified_at"]) if task_data.get("latest_modified_at") else datetime.fromisoformat(task_data["created_at"]) if task_data.get("created_at") else datetime.utcnow(),
+                    created_at=datetime.fromisoformat(task_data["created_at"]) if task_data.get("created_at") else datetime.now(timezone.utc),
+                    latest_modified_at=datetime.fromisoformat(task_data["latest_modified_at"]) if task_data.get("latest_modified_at") else datetime.fromisoformat(task_data["created_at"]) if task_data.get("created_at") else datetime.now(timezone.utc),
                     progress=task_data.get("progress", 0.0),
                     title=task_data.get("title"),
                     transcript=task_data.get("transcript"),
@@ -242,7 +255,7 @@ class TaskDB:
                     if "latest_modified_at" in task_data_copy and isinstance(task_data_copy["latest_modified_at"], str):
                         task_data_copy["latest_modified_at"] = datetime.fromisoformat(task_data_copy["latest_modified_at"])
                     if "latest_modified_at" not in task_data_copy:
-                        task_data_copy["latest_modified_at"] = task_data_copy.get("created_at", datetime.utcnow())
+                        task_data_copy["latest_modified_at"] = task_data_copy.get("created_at", datetime.now(timezone.utc))
                     
                     # 确保 'id' 不在 task_data_copy 中，因为它已经作为关键字参数传递
                     task_data_copy.pop('id', None)
@@ -310,7 +323,7 @@ class TaskDB:
             task.update(updates)
             # 进度更新频繁，不纳入“最新修改时间”；其他字段更新都视为一次修改。
             if any(key != "progress" for key in updates.keys()):
-                task["latest_modified_at"] = datetime.utcnow()
+                task["latest_modified_at"] = datetime.now(timezone.utc)
             self.save_task(task_id, task)
             return task
         return None
@@ -348,4 +361,3 @@ db = TaskDB(
     file_path=config.database.json_file_path,
     sqlite_path=config.database.sqlite_path,
 )
-

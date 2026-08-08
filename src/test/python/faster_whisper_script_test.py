@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 from faster_whisper import WhisperModel
 import os
 import time
@@ -10,12 +12,12 @@ def test_faster_whisper(audio_path, model_size="small", device="cpu", compute_ty
         print(f"错误：文件 {audio_path} 不存在")
         return
 
-    print(f"--- 测试配置 ---")
+    print("--- 测试配置 ---")
     print(f"模型大小: {model_size}")
     print(f"运行设备: {device}")
     print(f"计算类型: {compute_type}")
     print(f"音频路径: {audio_path}")
-    print(f"----------------")
+    print("----------------")
 
     start_time = time.time()
     
@@ -33,7 +35,7 @@ def test_faster_whisper(audio_path, model_size="small", device="cpu", compute_ty
 
     print(f"检测到语言: {info.language} (置信度: {info.language_probability:.2f})")
     print(f"音频总时长: {info.duration:.2f}s")
-    print(f"--- 转录结果 ---")
+    print("--- 转录结果 ---")
 
     results = []
     for segment in segments:
@@ -48,7 +50,7 @@ def test_faster_whisper(audio_path, model_size="small", device="cpu", compute_ty
     transcribe_time = time.time() - transcribe_start
     total_time = time.time() - start_time
 
-    print(f"----------------")
+    print("----------------")
     print(f"转录耗时: {transcribe_time:.2f}s")
     print(f"实时率 (RTF): {transcribe_time / info.duration:.4f} (越小越快)")
     print(f"总耗时: {total_time:.2f}s")
@@ -67,7 +69,8 @@ if __name__ == "__main__":
                     test_file = os.path.join(root, file)
                     found_test_file = True
                     break
-            if found_test_file: break
+            if found_test_file:
+                break
 
     if not found_test_file and not os.path.exists(test_file):
         # 尝试使用 icons 目录下的视频文件进行测试

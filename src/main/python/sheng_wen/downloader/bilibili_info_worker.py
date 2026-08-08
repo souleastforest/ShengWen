@@ -1,10 +1,10 @@
 import asyncio
-import os
-from typing import Any, Dict
+from typing import Any
+
 import yt_dlp
+from loguru import logger
 
 from ..worker import Worker
-from ..utils.logger import logger
 
 
 class BilibiliInfoWorker(Worker):

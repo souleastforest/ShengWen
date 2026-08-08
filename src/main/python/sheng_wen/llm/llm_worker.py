@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
-from ..api import notify_task_update
+from loguru import logger
+
 from ..config.settings import config
 from ..summarization.chunked_summarizer import ChunkedSummarizer
 from ..summarization.chunker import count_timestamp_lines, split_transcript_into_chunks
-from ..utils.logger import logger
 from ..worker import TaskCancelledError, Worker
 from .llm import LLM, LLMError, LLMMessage
 
@@ -46,10 +47,61 @@ class LLMWorker(Worker):
             logger.error(f"[{self.name}] 加载提示文件时发生错误: {e}", exc_info=True)
             self.system_prompt = None
 
+    async def _process_multipart_resummarize(self, payload: dict[str, Any]) -> None:
+        from ..task_parts import get_task_parts, update_task_part
+
+        task_id = str(payload.get("task_id") or "")
+        parts = get_task_parts(task_id)
+        for part in parts:
+            index = int(part["part_index"])
+            transcript = str(part.get("transcript") or "")
+            if not transcript.strip():
+                update_task_part(task_id, index, {"status": "FAILED", "error_message": "该分P没有可用转录文本"})
+                continue
+            update_task_part(task_id, index, {"status": "SUMMARIZING", "progress": 0, "error_message": None, "summary": None})
+            temp_file = os.path.join("temp", "{}_p{}_re.txt".format(task_id, index + 1))
+            output_file = os.path.join("temp", "{}_p{}_re_summary.md".format(task_id, index + 1))
+            os.makedirs("temp", exist_ok=True)
+            with open(temp_file, "w", encoding="utf-8") as file:
+                file.write(transcript)
+            try:
+                await self.process_task({
+                    "task_id": task_id,
+                    "intermediate_file_path": temp_file,
+                    "output_file": output_file,
+                    "summary_mode": payload.get("summary_mode") or "auto",
+                    "multipart_part": {"index": index, "title": part.get("title") or "", "duration": part.get("duration") or 0},
+                })
+            except Exception as error:
+                update_task_part(task_id, index, {"status": "FAILED", "error_message": str(error)})
+
+        refreshed = get_task_parts(task_id)
+        successful = [part for part in refreshed if part.get("status") == "COMPLETED" and part.get("summary")]
+        if not successful:
+            await self._mark_failed(task_id, "所有分P均无法重新生成总结")
+            return
+        overview_file = os.path.join("temp", "{}_overview_re.txt".format(task_id))
+        overview_output = os.path.join("temp", "{}_overview_re_summary.md".format(task_id))
+        with open(overview_file, "w", encoding="utf-8") as file:
+            file.write("请根据以下各分P总结生成整套视频的总体概览。\n\n")
+            file.write("\n\n".join("## P{}：{}\n\n{}".format(part["part_index"] + 1, part.get("title") or "", part["summary"]) for part in successful))
+        await self.process_task({
+            "task_id": task_id,
+            "intermediate_file_path": overview_file,
+            "output_file": overview_output,
+            "summary_mode": payload.get("summary_mode") or "auto",
+            "multipart_overview": True,
+        })
+
     async def process_task(self, payload: dict[str, Any]):
         intermediate_file_path = payload.get("intermediate_file_path")
         output_file = payload.get("output_file")
         task_id = str(payload.get("task_id") or "").strip() or None
+        multipart_part = payload.get("multipart_part")
+
+        if payload.get("multipart_resummarize") and task_id:
+            await self._process_multipart_resummarize(payload)
+            return
 
         if not intermediate_file_path or not output_file:
             await self._mark_failed(task_id, "payload 中缺少 'intermediate_file_path' 或 'output_file'")
@@ -66,6 +118,23 @@ class LLMWorker(Worker):
             return
         except Exception as e:
             await self._mark_failed(task_id, f"读取中间文件时出错: {e}")
+            return
+
+        if not transcript_text.strip():
+            empty_error = "转录文本为空，无法生成总结；已跳过 LLM 请求（可能是 ASR 未生成有效转录片段）。"
+            if multipart_part and task_id:
+                from ..task_parts import update_task_part
+                update_task_part(
+                    task_id,
+                    int(multipart_part["index"]),
+                    {
+                        "status": "FAILED",
+                        "progress": 0,
+                        "error_message": empty_error,
+                    },
+                )
+            else:
+                await self._mark_failed(task_id, empty_error)
             return
 
         task_data = None
@@ -154,6 +223,11 @@ class LLMWorker(Worker):
             await self._mark_failed(task_id, f"写入总结结果失败: {e}")
             return
 
+        if multipart_part and task_id:
+            from ..task_parts import update_task_part
+            update_task_part(task_id, int(multipart_part["index"]), {"status": "COMPLETED", "progress": 100, "summary": final_summary})
+            return
+
         if task_id:
             logger.info(
                 f"[LLMWorker] Finalizing task: task_id={task_id}, "
@@ -162,9 +236,19 @@ class LLMWorker(Worker):
 
             from ..db import db, TaskStatus
 
+            final_status = TaskStatus.COMPLETED
+            if payload.get("multipart_overview"):
+                from ..task_parts import get_task_parts
+                parts = get_task_parts(task_id)
+                separator = chr(10) * 2
+                sections = ["## P{}：{}{}{}".format(part["part_index"] + 1, part.get("title") or "", separator, part["summary"]) for part in parts if part.get("summary")]
+                final_summary = '# 总体概览' + separator + final_summary + separator + '# 分P总结' + separator + separator.join(sections)
+                if any(part["status"] == "FAILED" for part in parts):
+                    final_status = TaskStatus.PARTIAL
+
             update_data: dict[str, Any] = {
                 "summary": final_summary,
-                "status": TaskStatus.COMPLETED,
+                "status": final_status,
                 "progress": 100,
                 "summary_mode": mode_used,
                 "summary_meta": json.dumps(summary_meta, ensure_ascii=False) if summary_meta else None,

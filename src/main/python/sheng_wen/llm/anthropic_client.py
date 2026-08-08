@@ -48,9 +48,28 @@ class AnthropicClient(LLM):
             else:
                 anthropic_messages.append({"role": msg.role, "content": msg.content})
 
-        # Anthropic 要求至少一条 user 消息
-        if not anthropic_messages:
-            resp_callback(LLMResponseError("Anthropic 要求至少一条 user 消息。"))
+        # Anthropic/智谱兼容端点要求至少一条带有实际文本的 user 消息。
+        # 空字符串会被智谱返回为 1213“未正常接收到 prompt 参数”，
+        # 因此在发起网络请求前显式拦截，避免无意义重试和模糊错误。
+        has_non_empty_user = False
+        for msg in messages:
+            if msg.role != "user":
+                continue
+            content = msg.content
+            if isinstance(content, str):
+                has_non_empty_user = bool(content.strip())
+            elif isinstance(content, list):
+                has_non_empty_user = any(
+                    isinstance(item, dict) and str(item.get("text") or "").strip()
+                    for item in content
+                )
+            else:
+                has_non_empty_user = bool(content)
+            if has_non_empty_user:
+                break
+
+        if not anthropic_messages or not has_non_empty_user:
+            resp_callback(LLMResponseError("Anthropic 请求内容为空，已跳过请求。"))
             return
 
         model_id = self.config.model_id or "claude-sonnet-4-20250514"

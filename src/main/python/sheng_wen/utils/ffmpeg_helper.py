@@ -6,9 +6,9 @@ FFmpeg 工具模块 - 提供统一的 ffmpeg 配置和管理
 
 import os
 import shutil
-import stat
 from typing import Optional
-from ..utils.logger import logger
+
+from loguru import logger
 
 
 class FFmpegHelper:

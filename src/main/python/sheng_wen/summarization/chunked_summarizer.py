@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from loguru import logger
+
 from ..llm.llm import LLM, LLMError, LLMMessage
-from ..utils.logger import logger
 from ..worker import TaskCancelledError
 from .assembler import assemble_chunk_summaries
 from .chunker import TranscriptChunk, split_transcript_into_chunks, tail_timestamp_lines

@@ -68,7 +68,7 @@ const emit = defineEmits<{
               <!-- AI 总结下拉菜单 -->
               <div class="absolute left-0 top-full mt-2 w-44 bg-white border border-slate-200 rounded-xl shadow-lg opacity-0 invisible group-hover/summary:opacity-100 group-hover/summary:visible transition-all z-30 overflow-hidden">
                 <button
-                  v-if="selectedTask?.status === TaskStatus.COMPLETED || selectedTask?.status === TaskStatus.FAILED"
+                  v-if="(selectedTask?.status === TaskStatus.COMPLETED || selectedTask?.status === TaskStatus.FAILED) && selectedTask?.transcript"
                   @click="emit('reSummarize')"
                   class="w-full text-left flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors"
                 >

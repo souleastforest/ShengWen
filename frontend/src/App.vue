@@ -22,6 +22,7 @@ import Sidebar from './components/Sidebar.vue'
 import FloatingToolbar from './components/FloatingToolbar.vue'
 import TaskInfoModal from './components/TaskInfoModal.vue'
 import TaskContentArea from './components/TaskContentArea.vue'
+import TaskPartsPanel from './components/TaskPartsPanel.vue'
 import MermaidViewerModal from './components/MermaidViewerModal.vue'
 import SummaryImageWorkbenchModal from './components/SummaryImageWorkbenchModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
@@ -32,6 +33,11 @@ import ToastContainer from './components/ToastContainer.vue'
 const {
   tasks,
   selectedTask,
+  taskParts,
+  taskPartDetails,
+  loadingPartIndex,
+  fetchTaskPart,
+  retryFailedParts,
   videoUrl,
   selectedFile,
   localFilePath,
@@ -49,9 +55,17 @@ const {
   summarizationSettings,
   isUpdatingSummarizationSettings,
   isReadingBilibiliCookieFromBrowser,
+  modelPathValidationResult,
+  isValidatingModelPath,
+  vibevoiceServiceStatus,
+  isScanningVibeVoice,
+  isStartingVibeVoice,
+  isStoppingVibeVoice,
+  queues,
   submitTask,
   cancelSubmitting,
   selectTask,
+  fetchTaskFullContent,
   downloadContent,
   copyContent,
   isSidebarOpen,
@@ -61,6 +75,12 @@ const {
   updateTaskTopic,
   updateLlmSettings,
   updateTranscriptionSettings,
+  validateModelPath,
+  scanVibeVoiceServices,
+  startVibeVoiceService,
+  stopVibeVoiceService,
+  fetchVibeVoiceServiceStatus,
+  clearModelPathValidation,
   updateSummarizationSettings,
   testLlm,
   readBilibiliCookieFromBrowser,
@@ -428,9 +448,15 @@ const handleUpdateLlmSettingsAndTest = async (payload: {
 
 const handleUpdateTranscriptionSettings = async (payload: {
   device?: 'cpu' | 'cuda'
+  transcriber_type?: 'fast_whisper' | 'vibe_voice_asr'
   model_source?: 'auto_download' | 'manual_path'
   model_size?: 'tiny' | 'base' | 'small' | 'medium' | 'large'
   model_path?: string
+  vibevoice_language_model?: string
+  vibevoice_max_new_tokens?: number
+  vibevoice_dtype?: 'bfloat16' | 'float16'
+  vibevoice_inference_mode?: 'local' | 'api'
+  vibevoice_api_url?: string
   enable_bilibili_subtitle_fetch?: boolean
   bilibili_sessdata?: string
   clear_bilibili_sessdata?: boolean
@@ -453,6 +479,66 @@ const handleReadBilibiliCookieFromBrowser = async () => {
     }
   } catch (_e) {
     // 错误信息由 useTaskViewModel + Toast 统一处理
+  }
+}
+
+const handleValidateModelPath = async (request: {
+  path: string
+  transcriber_type: 'fast_whisper' | 'vibe_voice_asr'
+}) => {
+  try {
+    await validateModelPath(request)
+  } catch (_e) {
+    // error state is set in the composable
+  }
+}
+
+const handleScanVibeVoiceServices = async () => {
+  try {
+    const results = await scanVibeVoiceServices()
+    const available = results.find((item) => item.status === 'available')
+    if (available) {
+      success(`发现可用服务：${available.url}`)
+    } else if (results.length > 0) {
+      info('已扫描本地服务，但未发现可用实例')
+    } else {
+      info('未发现本地 VibeVoice 服务')
+    }
+    await fetchVibeVoiceServiceStatus()
+  } catch (_e) {
+    // 错误已在 composable 中处理
+  }
+}
+
+const handleStartVibeVoiceService = async (payload: {
+  model_path: string
+  port: number
+  dtype: string
+}) => {
+  try {
+    await startVibeVoiceService(payload.model_path, payload.port, payload.dtype)
+    await fetchVibeVoiceServiceStatus()
+    success('VibeVoice 服务已启动')
+  } catch (_e) {
+    // 错误信息由调用方或后续状态查询处理
+  }
+}
+
+const handleStopVibeVoiceService = async () => {
+  try {
+    await stopVibeVoiceService()
+    await fetchVibeVoiceServiceStatus()
+    success('VibeVoice 服务已停止')
+  } catch (_e) {
+    // 错误信息由调用方或后续状态查询处理
+  }
+}
+
+const handleFetchVibeVoiceServiceStatus = async () => {
+  try {
+    await fetchVibeVoiceServiceStatus()
+  } catch (_e) {
+    // 保持静默，避免打开设置时产生多余提示
   }
 }
 
@@ -679,14 +765,115 @@ renderer.code = ({ text, lang }) => {
 }
 marked.setOptions({ renderer })
 
-const compiledMarkdown = computed(() => {
-  if (!selectedTask.value?.summary) return ''
-  const cleanedSummary = stripDoubleBracePlaceholders(selectedTask.value.summary)
-  const html = marked.parse(cleanedSummary) as string
-  return postProcessCompiledMarkdown(html, {
-    videoUrl: selectedTask.value.video_url || '',
+// Defer large summary compilation so the multipart preview stays interactive.
+const compiledMarkdown = ref('')
+const showFullMultipartSummary = ref(false)
+const multipartPage = ref(0)
+const multipartPageSize = 10
+let markdownCompileTimer: ReturnType<typeof setTimeout> | null = null
+let markdownCompileGeneration = 0
+
+const getMultipartOverview = (summary: string) => {
+  const marker = summary.search(/^#\s*分P总结.*$/m)
+  if (marker > 0) return summary.slice(0, marker).trim()
+  return summary.slice(0, 12000).trim()
+}
+
+const getMultipartPages = (summary: string) => {
+  const marker = summary.search(/^#\s*分P总结.*$/m)
+  if (marker < 0) return [summary]
+  const body = summary.slice(marker)
+  const matches = Array.from(body.matchAll(/^##\s+P\d+[:：].*$/gm))
+  if (!matches.length) return [body.trim()]
+  const sections = matches.map((match, index) => {
+    const start = match.index ?? 0
+    const nextMatch = matches[index + 1]
+    const end = nextMatch?.index ?? body.length
+    return body.slice(start, end).trim()
   })
+  const pages: string[] = []
+  for (let index = 0; index < sections.length; index += multipartPageSize) {
+    pages.push(`# 分P总结\\n\\n${sections.slice(index, index + multipartPageSize).join('\\n\\n')}`)
+  }
+  return pages
+}
+
+const multipartPageCount = computed(() => {
+  const summary = selectedTask.value?.summary
+  if (!summary || !selectedTask.value?.has_parts) return 0
+  return getMultipartPages(summary).length
 })
+
+const scheduleMarkdownCompile = () => {
+  markdownCompileGeneration += 1
+  const generation = markdownCompileGeneration
+  if (markdownCompileTimer) {
+    clearTimeout(markdownCompileTimer)
+    markdownCompileTimer = null
+  }
+
+  compiledMarkdown.value = ''
+  const task = selectedTask.value
+  if (!task?.summary) return
+
+  markdownCompileTimer = setTimeout(() => {
+    markdownCompileTimer = null
+    if (generation !== markdownCompileGeneration || selectedTask.value?.id !== task.id) return
+
+    const summary = task.summary
+    if (!summary) return
+    let previewSummary = summary
+    if (task.has_parts) {
+      if (!showFullMultipartSummary.value) {
+        previewSummary = getMultipartOverview(summary)
+      } else {
+        const pages = getMultipartPages(summary)
+        previewSummary = pages[multipartPage.value] || pages[0] || ''
+      }
+    }
+    const cleanedSummary = stripDoubleBracePlaceholders(previewSummary)
+    const html = marked.parse(cleanedSummary) as string
+    compiledMarkdown.value = postProcessCompiledMarkdown(html, {
+      videoUrl: task.video_url || '',
+    })
+  }, 120)
+}
+
+watch(
+  [() => selectedTask.value?.id, () => selectedTask.value?.summary, showFullMultipartSummary, multipartPage],
+  scheduleMarkdownCompile,
+  { immediate: true },
+)
+
+watch(
+  () => selectedTask.value?.id,
+  () => {
+    showFullMultipartSummary.value = false
+    multipartPage.value = 0
+  },
+)
+
+const expandMultipartSummary = async () => {
+  multipartPage.value = 0
+  if (selectedTask.value) {
+    try {
+      await fetchTaskFullContent(selectedTask.value.id)
+    } catch (error) {
+      console.error('Failed to load full multipart summary:', error)
+      return
+    }
+  }
+  showFullMultipartSummary.value = true
+}
+
+const collapseMultipartSummary = () => {
+  showFullMultipartSummary.value = false
+  multipartPage.value = 0
+}
+
+const changeMultipartPage = (page: number) => {
+  multipartPage.value = Math.max(0, Math.min(page, Math.max(0, multipartPageCount.value - 1)))
+}
 
 const topic = computed(() => {
   if (selectedTask.value?.topic) return selectedTask.value.topic
@@ -741,12 +928,24 @@ watch(
       :summarizationSettings="summarizationSettings"
       :isUpdatingSummarizationSettings="isUpdatingSummarizationSettings"
       :isReadingBilibiliCookieFromBrowser="isReadingBilibiliCookieFromBrowser"
+      :modelPathValidationResult="modelPathValidationResult"
+      :isValidatingModelPath="isValidatingModelPath"
+      :vibevoiceServiceStatus="vibevoiceServiceStatus"
+      :isScanningVibeVoice="isScanningVibeVoice"
+      :isStartingVibeVoice="isStartingVibeVoice"
+      :isStoppingVibeVoice="isStoppingVibeVoice"
+      :clearModelPathValidation="clearModelPathValidation"
       @close="isSettingsModalOpen = false"
       @updateLlmSettings="handleUpdateLlmSettings"
       @updateLlmSettingsAndTest="handleUpdateLlmSettingsAndTest"
       @testLlm="handleTestLlm"
       @updateTranscriptionSettings="handleUpdateTranscriptionSettings"
       @readBilibiliCookieFromBrowser="handleReadBilibiliCookieFromBrowser"
+      @validateModelPath="handleValidateModelPath"
+      @scanVibeVoiceServices="handleScanVibeVoiceServices"
+      @startVibeVoiceService="handleStartVibeVoiceService"
+      @stopVibeVoiceService="handleStopVibeVoiceService"
+      @fetchVibeVoiceServiceStatus="handleFetchVibeVoiceServiceStatus"
       @updateSummarizationSettings="handleUpdateSummarizationSettings"
     />
 
@@ -765,6 +964,7 @@ watch(
       v-model:isSidebarOpen="isSidebarOpen"
       :isLocalClient="isLocalClient"
       :tasks="tasks"
+      :queues="queues"
       :selectedTask="selectedTask"
       :isSubmitting="isSubmitting"
       :llmProviders="llmProviders"
@@ -811,10 +1011,20 @@ watch(
         />
 
         <!-- 内容滚动区 -->
+        <TaskPartsPanel
+          :parts="taskParts"
+          :part-details="taskPartDetails"
+          :loading-part-index="loadingPartIndex"
+          @expand="(partIndex) => selectedTask && fetchTaskPart(selectedTask.id, partIndex)"
+          @retry="retryFailedParts(selectedTask.id)"
+        />
         <TaskContentArea
           :task="selectedTask"
           :active-tab="activeTab"
           :compiled-markdown="compiledMarkdown"
+          :show-full-multipart-summary="showFullMultipartSummary"
+          :multipart-page="multipartPage"
+          :multipart-page-count="multipartPageCount"
           :summary-highlight-request="summaryHighlightRequest"
           :heading-jump-request="headingJumpRequest"
           :topic="topic"
@@ -827,6 +1037,9 @@ watch(
           @update:editing-topic-value="(val) => editingTopicValue = val"
           @update-markdown-headings="handleMarkdownHeadingsUpdate"
           @update-active-heading-id="handleActiveHeadingIdUpdate"
+          @expand-multipart-summary="expandMultipartSummary"
+          @collapse-multipart-summary="collapseMultipartSummary"
+          @change-multipart-page="changeMultipartPage"
         />
       </template>
 
@@ -918,4 +1131,3 @@ watch(
 /* 移动端点击高亮优化 */
 html, body { -webkit-tap-highlight-color: transparent; }
 </style>
-

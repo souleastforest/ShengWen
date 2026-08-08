@@ -8,13 +8,23 @@
     "prompt_file": "src/main/python/sheng_wen/prompt.md"
   },
   "whisper": {
+    "transcriber_type": "fast_whisper",
     "model_source": "auto_download",
     "model_path": null,
     "model_size": "tiny",
     "device": "cpu",
     "enable_bilibili_subtitle_fetch": true,
     "bilibili_sessdata": "",
-    "faster_whisper_model_path": null
+    "faster_whisper_model_path": null,
+    "vibevoice_language_model": "Qwen/Qwen2.5-7B",
+    "vibevoice_max_new_tokens": 8192,
+    "vibevoice_dtype": "bfloat16",
+    "vibevoice_inference_mode": "local",
+    "vibevoice_api_url": "",
+    "asr_chunk_threshold_sec": 600,
+    "asr_chunk_duration_sec": 360,
+    "asr_chunk_fallback_duration_sec": 180,
+    "asr_chunk_oom_fallback": true
   },
   "llm": {
     "provider": "openai_compatible",
@@ -53,5 +63,18 @@
     "chunk_debug_dump_dir": "temp/chunk_debug",
     "enable_agent_pipeline": false,
     "transcript_chunk_emit_duration_sec": 600
+  },
+  "storage": {
+    "max_total_mb": 2048,
+    "retention_completed_sec": 86400,
+    "retention_failed_sec": 7200,
+    "cleanup_interval_sec": 600,
+    "base_dir": "temp"
+  },
+  "observability": {
+    "enabled": false,
+    "otlp_endpoint": "",
+    "service_name": "sheng-wen",
+    "trace_sample_rate": 1.0
   }
 }

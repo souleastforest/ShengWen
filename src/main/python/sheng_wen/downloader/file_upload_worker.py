@@ -2,8 +2,9 @@ import asyncio
 import os
 from typing import Any
 
+from loguru import logger
+
 from ..worker import Worker
-from ..utils.logger import logger
 from ..utils.media import (
     AUDIO_MEDIA_EXTENSIONS,
     VIDEO_MEDIA_EXTENSIONS,

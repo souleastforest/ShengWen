@@ -4,7 +4,8 @@ from dataclasses import asdict, dataclass
 from threading import Lock
 from typing import Any
 
-from ..utils.logger import logger
+from loguru import logger
+
 from .llm import LLMConfig
 
 

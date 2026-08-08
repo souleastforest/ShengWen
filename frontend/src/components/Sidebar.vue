@@ -32,8 +32,10 @@ import {
   type LLMProvider,
   type LLMSettings,
   type TranscriptionSettings,
-  type SummarizationSettings
+  type SummarizationSettings,
+  type QueueSnapshot
 } from '../types'
+import { getQueueInfo as resolveQueueInfo } from '../utils/queueStatus'
 import ThemeSelector from './ThemeSelector.vue'
 
 const videoUrl = defineModel<string>('videoUrl', { required: true })
@@ -46,6 +48,7 @@ const isSidebarOpen = defineModel<boolean>('isSidebarOpen', { required: true })
 const props = defineProps<{
   isLocalClient: boolean
   tasks: Task[]
+  queues?: QueueSnapshot[]
   selectedTask: Task | null
   isSubmitting: boolean
   llmProviders: LLMProvider[]
@@ -408,6 +411,7 @@ const getStatusLabel = (status: TaskStatus) => {
   switch (status) {
     case TaskStatus.COMPLETED: return '完成'
     case TaskStatus.FAILED: return '失败'
+    case TaskStatus.PARTIAL: return '部分完成'
     case TaskStatus.PENDING: return '等待中'
     case TaskStatus.DOWNLOADING: return '下载中'
     case TaskStatus.UPLOADING: return '上传中'
@@ -418,15 +422,17 @@ const getStatusLabel = (status: TaskStatus) => {
 }
 
 const getTaskStatusLabel = (task: Task) => {
-  if (task.status !== TaskStatus.SUMMARIZING) {
-    return getStatusLabel(task.status)
+  const base = getStatusLabel(task.status)
+  const total = Number(task.part_count || 0)
+  const done = Number(task.part_completed || 0)
+  const failed = Number(task.part_failed || 0)
+  if (total > 0 && (task.status === TaskStatus.PARTIAL || task.status === TaskStatus.COMPLETED || task.status === TaskStatus.DOWNLOADING || task.status === TaskStatus.TRANSCRIBING || task.status === TaskStatus.SUMMARIZING)) {
+    return failed > 0 ? base + ' (' + done + '/' + total + '，失败 ' + failed + ')' : base + ' (' + done + '/' + total + ')'
   }
-  const total = Number(task.summary_chunk_total || 0)
-  const done = Number(task.summary_chunk_done || 0)
-  if (total > 0) {
-    return `总结中 (${Math.min(done, total)}/${total})`
-  }
-  return '总结中'
+  if (task.status !== TaskStatus.SUMMARIZING) return base
+  const summaryTotal = Number(task.summary_chunk_total || 0)
+  const summaryDone = Number(task.summary_chunk_done || 0)
+  return summaryTotal > 0 ? '总结中 (' + Math.min(summaryDone, summaryTotal) + '/' + summaryTotal + ')' : base
 }
 
 const getTaskProgress = (task: Task) => {
@@ -444,15 +450,28 @@ const getStatusClass = (status: TaskStatus) => {
   switch (status) {
     case TaskStatus.COMPLETED: return 'text-emerald-600 bg-emerald-50'
     case TaskStatus.FAILED: return 'text-red-600 bg-red-50'
+    case TaskStatus.PARTIAL: return 'text-amber-600 bg-amber-50'
     case TaskStatus.PENDING: return 'text-slate-400 bg-slate-50'
     default: return 'text-blue-600 bg-blue-50'
   }
 }
 
+// 在队列快照中查找任务排队信息（waiting_task_ids 中则排队，active 不算排队）
+const getQueueInfo = (task: Task) => resolveQueueInfo(task.id, props.queues ?? [])
+
+const getQueueBadgeText = (task: Task): string | null => {
+  const info = getQueueInfo(task)
+  if (!info || !info.queued) return null
+  return `排队中 (${info.queueName} #${info.position})`
+}
+
+const isTaskQueued = (task: Task): boolean => Boolean(getQueueInfo(task)?.queued)
+
 const getStatusIcon = (status: TaskStatus) => {
   switch (status) {
     case TaskStatus.COMPLETED: return PhCheckCircle
     case TaskStatus.FAILED: return PhXCircle
+    case TaskStatus.PARTIAL: return PhInfo
     case TaskStatus.PENDING: return PhClock
     default: return PhSpinner
   }
@@ -522,6 +541,7 @@ const statusOptions: Array<{ value: 'all' | TaskStatus, label: string }> = [
   { value: TaskStatus.SUMMARIZING, label: '总结中' },
   { value: TaskStatus.COMPLETED, label: '完成' },
   { value: TaskStatus.FAILED, label: '失败' },
+  { value: TaskStatus.PARTIAL, label: '部分完成' },
 ]
 
 const managedResults = computed<ManagedTaskResult[]>(() => {
@@ -1276,7 +1296,11 @@ watch(() => props.summarizationSettings, (settings) => {
                          selectedTask?.id === task.id ? 'border-blue-200 bg-blue-50/60 ring-1 ring-primary/20 shadow-sm' : 'border-transparent hover:bg-white hover:border-gray-100']"
               >
                 <div class="flex justify-between items-start mb-1">
-                  <span :class="['text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1', getStatusClass(task.status)]">
+                  <span v-if="isTaskQueued(task)" class="text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1 text-amber-600 bg-amber-50">
+                    <PhClock :size="12" />
+                    {{ getQueueBadgeText(task) }}
+                  </span>
+                  <span v-else :class="['text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1', getStatusClass(task.status)]">
                     <component :is="getStatusIcon(task.status)" :size="12" :class="task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED && task.status !== TaskStatus.PENDING ? 'animate-spin' : ''" />
                     {{ getTaskStatusLabel(task) }}
                   </span>
@@ -1303,7 +1327,7 @@ watch(() => props.summarizationSettings, (settings) => {
                 <div class="text-sm font-medium text-slate-700 truncate" :title="resolveTaskTopic(task)">
                   {{ resolveTaskTopic(task) }}
                 </div>
-                <div v-if="task.status === TaskStatus.DOWNLOADING || task.status === TaskStatus.UPLOADING || task.status === TaskStatus.TRANSCRIBING || task.status === TaskStatus.SUMMARIZING" class="w-full bg-blue-100 h-1 rounded-full mt-2 overflow-hidden">
+                <div v-if="!isTaskQueued(task) && (task.status === TaskStatus.DOWNLOADING || task.status === TaskStatus.UPLOADING || task.status === TaskStatus.TRANSCRIBING || task.status === TaskStatus.SUMMARIZING)" class="w-full bg-blue-100 h-1 rounded-full mt-2 overflow-hidden">
                   <div
                     class="bg-blue-500 h-full rounded-full"
                     :class="{ 'transition-all duration-500': shouldAnimateMap[task.id] }"

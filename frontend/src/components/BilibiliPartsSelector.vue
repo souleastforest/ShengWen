@@ -224,7 +224,7 @@ watch(() => props.isOpen, (newVal) => {
                   </div>
                   <div>
                     <div class="text-sm font-medium text-slate-800">合并为一个任务</div>
-                    <div class="text-xs text-slate-500 mt-0.5">将所有分P的字幕按时间戳拼接成一个完整转录</div>
+                    <div class="text-xs text-slate-500 mt-0.5">一个任务，按分P顺序处理并生成分P总结和总体概览</div>
                   </div>
                 </label>
                 <label

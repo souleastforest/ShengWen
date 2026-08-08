@@ -1,7 +1,8 @@
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import type {
   Task,
+  TaskPart,
   CreateTaskRequest,
   SummaryMode,
   LLMProvider,
@@ -15,7 +16,13 @@ import type {
   BilibiliVideoInfo,
   BilibiliPartsConfig,
   LocalPathCheckResult,
-  LocalFolderScanResult
+  LocalFolderScanResult,
+  ModelPathValidationRequest,
+  ModelPathValidationResult,
+  VibeVoiceServiceScanResult,
+  VibeVoiceServiceStatus,
+  QueueSnapshot,
+  QueueResponse,
 } from '../types'
 
 // 传统复制方法（兼容非安全上下文，如局域网 HTTP）
@@ -134,7 +141,11 @@ export function useTaskViewModel() {
   
   // --- UI State ---
   const tasks = ref<Task[]>([])
+  const queues = ref<QueueSnapshot[]>([])
   const selectedTask = ref<Task | null>(null)
+  const taskParts = ref<TaskPart[]>([])
+  const taskPartDetails = ref<Record<number, TaskPart>>({})
+  const loadingPartIndex = ref<number | null>(null)
   const videoUrl = ref('')
   const selectedFile = ref<File | null>(null)
   const localFilePath = ref('')
@@ -152,27 +163,61 @@ export function useTaskViewModel() {
   const summarizationSettings = ref<SummarizationSettings | null>(null)
   const isUpdatingSummarizationSettings = ref(false)
   const isReadingBilibiliCookieFromBrowser = ref(false)
+  const modelPathValidationResult = ref<ModelPathValidationResult | null>(null)
+  const isValidatingModelPath = ref(false)
+  const vibevoiceInferenceMode = ref<'local' | 'api'>(
+    transcriptionSettings.value?.vibevoice_inference_mode || 'local'
+  )
+  const vibevoiceApiUrl = ref(
+    transcriptionSettings.value?.vibevoice_api_url || ''
+  )
+  const vibevoiceServiceStatus = ref<VibeVoiceServiceStatus | null>(null)
+  const isScanningVibeVoice = ref(false)
+  const isStartingVibeVoice = ref(false)
+  const isStoppingVibeVoice = ref(false)
+
+  const clearModelPathValidation = () => {
+    modelPathValidationResult.value = null
+  }
+
+  watch(transcriptionSettings, (settings) => {
+    if (!settings) return
+    vibevoiceInferenceMode.value = settings.vibevoice_inference_mode || 'local'
+    vibevoiceApiUrl.value = settings.vibevoice_api_url || ''
+  })
 
   let ws: WebSocket | null = null
   let submitAbortController: AbortController | null = null
+  let taskPartsRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
   // --- Actions ---
   const fetchTasks = async () => {
     try {
-      const response = await axios.get(`${apiBaseUrl}/tasks/`)
+      const response = await axios.get(apiBaseUrl + "/tasks/")
       tasks.value = response.data
       
       // Sync selected task details
       if (selectedTask.value) {
         const current = tasks.value.find(t => t.id === selectedTask.value?.id)
         if (current) {
-          // Merge updates
+          // Merge updates so detail fields and part statistics are not lost.
           selectedTask.value = { ...selectedTask.value, ...current }
+          scheduleTaskPartsRefresh(current.id)
         }
       }
     } catch (err) {
       console.error('Failed to fetch tasks:', err)
       error.value = '获取任务列表失败'
+    }
+  }
+
+  const fetchQueueSnapshot = async () => {
+    try {
+      const response = await axios.get<QueueResponse>(apiBaseUrl + "/tasks/queue")
+      queues.value = response.data?.queues ?? []
+    } catch (err) {
+      // 队列快照为辅助信息：失败时保留上一次快照，不影响任务列表主流程
+      console.error('Failed to fetch queue snapshot:', err)
     }
   }
 
@@ -301,16 +346,120 @@ export function useTaskViewModel() {
     isSubmitting.value = false
   }
 
-  const selectTask = async (task: Task) => {
+  const fetchTaskFullContent = async (taskId: string) => {
+    const response = await axios.get(`${apiBaseUrl}/tasks/${taskId}?include_content=true`)
+    if (selectedTask.value?.id === taskId) {
+      selectedTask.value = { ...selectedTask.value, ...response.data }
+    }
+    return response.data as Task
+  }
+
+  const fetchTaskParts = async (taskId: string) => {
+    const response = await axios.get(apiBaseUrl + "/tasks/" + taskId + "/parts")
+    if (selectedTask.value?.id === taskId) {
+      taskParts.value = response.data
+    }
+    return response.data as TaskPart[]
+  }
+
+  const fetchTaskPart = async (taskId: string, partIndex: number) => {
+    const cached = taskPartDetails.value[partIndex]
+    if (cached?.task_id === taskId && (cached.transcript !== undefined || cached.summary !== undefined)) {
+      return cached
+    }
+
+    loadingPartIndex.value = partIndex
     try {
-      const response = await axios.get(`${apiBaseUrl}/tasks/${task.id}`)
-      selectedTask.value = response.data
-      if (selectedTask.value?.status === 'PENDING' || selectedTask.value?.status === 'DOWNLOADING' || selectedTask.value?.status === 'TRANSCRIBING' || selectedTask.value?.status === 'SUMMARIZING') {
-        activeTab.value = 'summary'
+      const response = await axios.get(
+        apiBaseUrl + "/tasks/" + taskId + "/parts/" + partIndex,
+      )
+      const detail = response.data as TaskPart
+      if (selectedTask.value?.id === taskId) {
+        taskPartDetails.value = {
+          ...taskPartDetails.value,
+          [partIndex]: detail,
+        }
       }
-    } catch (err) {
-      console.error('Failed to fetch task details:', err)
-      error.value = '获取任务详情失败'
+      return detail
+    } finally {
+      if (loadingPartIndex.value === partIndex) {
+        loadingPartIndex.value = null
+      }
+    }
+  }
+
+  const scheduleTaskPartsRefresh = (taskId: string) => {
+    if (!selectedTask.value || selectedTask.value.id !== taskId || !selectedTask.value.has_parts) {
+      return
+    }
+    if (taskPartsRefreshTimer) {
+      clearTimeout(taskPartsRefreshTimer)
+    }
+    taskPartsRefreshTimer = setTimeout(() => {
+      taskPartsRefreshTimer = null
+      fetchTaskParts(taskId).catch(err => {
+        console.error('Failed to refresh task parts:', err)
+      })
+    }, 400)
+  }
+
+  const selectTask = (task: Task) => {
+    // Show lightweight metadata immediately. Preserve already loaded content when
+    // WebSocket reconnects or the same task is selected again.
+    const current = selectedTask.value
+    const preserveLoadedContent = current?.id === task.id
+      && (current.summary !== undefined || current.transcript !== undefined)
+    selectedTask.value = preserveLoadedContent ? current : task
+    if (!preserveLoadedContent) {
+      taskParts.value = []
+      taskPartDetails.value = {}
+      loadingPartIndex.value = null
+    }
+    if (task.status === 'PENDING' || task.status === 'DOWNLOADING' || task.status === 'TRANSCRIBING' || task.status === 'SUMMARIZING') {
+      activeTab.value = 'summary'
+    }
+
+    void (async () => {
+      try {
+        const detailPromise = axios.get(`${apiBaseUrl}/tasks/${task.id}?include_content=false`)
+        const partsPromise = task.has_parts
+          ? fetchTaskParts(task.id)
+          : Promise.resolve([] as TaskPart[])
+        const [response] = await Promise.all([detailPromise, partsPromise])
+        if (selectedTask.value?.id !== task.id) return
+        const data = response.data as Task
+        // 轻量详情响应不含转录原文（transcript 为 null）；若此前已通过
+        // “原文”tab/复制等路径加载过完整内容，保留已加载的 transcript。
+        const prevTranscript = selectedTask.value.transcript
+        if (prevTranscript != null && data.transcript == null) {
+          data.transcript = prevTranscript
+        }
+        selectedTask.value = data
+      } catch (err) {
+        console.error('Failed to fetch task details:', err)
+        if (selectedTask.value?.id === task.id) {
+          error.value = '获取任务详情失败'
+        }
+      }
+    })()
+  }
+
+  // 选中任务后详情接口只返回轻量内容（transcript 被后端剥离为 null）。
+  // 用户切换到“原文”tab 时按需加载完整内容（含转录原文）。
+  watch(activeTab, (tab) => {
+    if (tab !== 'transcript') return
+    const task = selectedTask.value
+    if (!task || task.transcript != null) return
+    fetchTaskFullContent(task.id).catch((err) => {
+      console.error('Failed to load full content for transcript tab:', err)
+    })
+  })
+
+  const retryFailedParts = async (taskId: string) => {
+    await axios.post(apiBaseUrl + "/tasks/" + taskId + "/retry-failed-parts")
+    const current = selectedTask.value
+    if (current && current.id === taskId) {
+      await selectTask(current)
     }
   }
 
@@ -345,11 +494,11 @@ export function useTaskViewModel() {
       console.log('WebSocket connected')
       // Fetch latest state on reconnection to sync any missed updates
       fetchTasks()
+      fetchQueueSnapshot()
       // Also refresh the selected task details if one is selected
-      if (selectedTask.value) {
-        selectTask(selectedTask.value).catch(err => {
-          console.error('Failed to refresh selected task:', err)
-        })
+      const currentTask = selectedTask.value
+      if (currentTask) {
+        selectTask(currentTask)
       }
     }
     
@@ -359,14 +508,20 @@ export function useTaskViewModel() {
         const updatedTask = data.task
         const index = tasks.value.findIndex(t => t.id === updatedTask.id)
         if (index !== -1) {
-          tasks.value[index] = updatedTask
+          tasks.value[index] = { ...tasks.value[index], ...updatedTask }
         } else {
           tasks.value.unshift(updatedTask)
         }
-        
+
         if (selectedTask.value?.id === updatedTask.id) {
-          // Merge updates to preserve details that might not be in the broadcast
+          // Merge updates to preserve details that might not be in the broadcast.
           selectedTask.value = { ...selectedTask.value, ...updatedTask }
+          scheduleTaskPartsRefresh(updatedTask.id)
+        }
+
+        // 可选字段：后端广播的队列快照（旧版本无该字段时忽略，向后兼容）
+        if (Array.isArray(data.queues)) {
+          queues.value = data.queues as QueueSnapshot[]
         }
       } else if (data.type === 'progress_update') {
         const { task_id, progress } = data
@@ -442,6 +597,7 @@ export function useTaskViewModel() {
 
   const updateTranscriptionSettings = async (payload: UpdateTranscriptionSettingsRequest) => {
     isUpdatingTranscriptionSettings.value = true
+    error.value = null
     try {
       const response = await axios.put(`${apiBaseUrl}/transcription/settings`, payload)
       transcriptionSettings.value = response.data
@@ -457,6 +613,73 @@ export function useTaskViewModel() {
     } finally {
       isUpdatingTranscriptionSettings.value = false
     }
+  }
+
+  const validateModelPath = async (request: ModelPathValidationRequest): Promise<ModelPathValidationResult> => {
+    isValidatingModelPath.value = true
+    modelPathValidationResult.value = null
+    try {
+      const response = await axios.post(`${apiBaseUrl}/transcription/settings/validate-model-path`, request)
+      modelPathValidationResult.value = response.data
+      return response.data as ModelPathValidationResult
+    } catch (err) {
+      console.error('Failed to validate model path:', err)
+      const result: ModelPathValidationResult = {
+        valid: false,
+        message: axios.isAxiosError(err) && err.response?.data?.detail
+          ? String(err.response.data.detail)
+          : '验证请求失败',
+        resolved_path: request.path,
+        missing_files: [],
+        has_processor_config: false,
+        details: {},
+      }
+      modelPathValidationResult.value = result
+      throw err
+    } finally {
+      isValidatingModelPath.value = false
+    }
+  }
+
+  const scanVibeVoiceServices = async (): Promise<VibeVoiceServiceScanResult[]> => {
+    isScanningVibeVoice.value = true
+    try {
+      const response = await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-scan`)
+      return response.data as VibeVoiceServiceScanResult[]
+    } catch (err) {
+      console.error('Failed to scan VibeVoice services:', err)
+      return []
+    } finally {
+      isScanningVibeVoice.value = false
+    }
+  }
+
+  const startVibeVoiceService = async (modelPath: string, port: number, dtype: string): Promise<void> => {
+    isStartingVibeVoice.value = true
+    try {
+      await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-service/start`, {
+        model_path: modelPath,
+        port,
+        dtype,
+      })
+    } finally {
+      isStartingVibeVoice.value = false
+    }
+  }
+
+  const stopVibeVoiceService = async (): Promise<void> => {
+    isStoppingVibeVoice.value = true
+    try {
+      await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-service/stop`)
+    } finally {
+      isStoppingVibeVoice.value = false
+    }
+  }
+
+  const fetchVibeVoiceServiceStatus = async (): Promise<VibeVoiceServiceStatus> => {
+    const response = await axios.get(`${apiBaseUrl}/transcription/settings/vibevoice-service/status`)
+    vibevoiceServiceStatus.value = response.data
+    return response.data as VibeVoiceServiceStatus
   }
 
   const testLlm = async () => {
@@ -640,6 +863,8 @@ export function useTaskViewModel() {
   // --- Lifecycle ---
   onMounted(() => {
     fetchTasks()
+    fetchQueueSnapshot()
+
     fetchLlmProviders()
     fetchLlmSettings()
     fetchTranscriptionSettings()
@@ -651,12 +876,21 @@ export function useTaskViewModel() {
     if (ws) {
       ws.close()
     }
+    if (taskPartsRefreshTimer) {
+      clearTimeout(taskPartsRefreshTimer)
+      taskPartsRefreshTimer = null
+    }
   })
 
   return {
     // State
     tasks,
+    queues,
+    fetchQueueSnapshot,
     selectedTask,
+    taskParts,
+    taskPartDetails,
+    loadingPartIndex,
     videoUrl,
     selectedFile,
     localFilePath,
@@ -670,11 +904,24 @@ export function useTaskViewModel() {
     llmProviders,
     llmSettings,
     isUpdatingLlmSettings,
+    fetchTaskParts,
+    fetchTaskPart,
+    fetchTaskFullContent,
+    retryFailedParts,
+
     transcriptionSettings,
     isUpdatingTranscriptionSettings,
     summarizationSettings,
     isUpdatingSummarizationSettings,
     isReadingBilibiliCookieFromBrowser,
+    modelPathValidationResult,
+    isValidatingModelPath,
+    vibevoiceInferenceMode,
+    vibevoiceApiUrl,
+    vibevoiceServiceStatus,
+    isScanningVibeVoice,
+    isStartingVibeVoice,
+    isStoppingVibeVoice,
 
     // Actions
     submitTask,
@@ -688,6 +935,12 @@ export function useTaskViewModel() {
     updateLlmSettings,
     fetchTranscriptionSettings,
     updateTranscriptionSettings,
+    validateModelPath,
+    scanVibeVoiceServices,
+    startVibeVoiceService,
+    stopVibeVoiceService,
+    fetchVibeVoiceServiceStatus,
+    clearModelPathValidation,
     fetchSummarizationSettings,
     updateSummarizationSettings,
     testLlm,
@@ -700,6 +953,16 @@ export function useTaskViewModel() {
     isBilibiliUrl,
     downloadContent,
     copyContent: async (type: 'summary' | 'transcript') => {
+      if (!selectedTask.value) return false
+
+      // 轻量详情不包含转录原文（transcript 为 null），复制前先按需加载完整内容。
+      if (type === 'transcript' && selectedTask.value.transcript == null) {
+        try {
+          await fetchTaskFullContent(selectedTask.value.id)
+        } catch (err) {
+          console.error('Failed to load transcript before copy:', err)
+        }
+      }
       if (!selectedTask.value) return false
 
       // 直接使用当前 selectedTask 的数据，与 compiledMarkdown 保持一致
@@ -757,7 +1020,7 @@ export function useTaskViewModel() {
         // No need to do more, WS will update the status
       } catch (err) {
         console.error('Failed to re-summarize task:', err)
-        error.value = '重新总结失败'
+        error.value = axios.isAxiosError(err) ? err.response?.data?.detail || "重新总结失败" : "重新总结失败"
       }
     },
     reTranscribe: async (taskId: string) => {

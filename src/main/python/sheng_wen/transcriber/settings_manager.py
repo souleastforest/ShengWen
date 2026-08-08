@@ -7,7 +7,8 @@ import subprocess
 from threading import Lock
 from typing import Any, Literal
 
-from ..utils.logger import logger
+from loguru import logger
+
 from .transcriber import get_transcriber
 
 
@@ -30,7 +31,9 @@ def _read_bilibili_cookie_from_browser() -> tuple[str, str]:
     try:
         import browser_cookie3  # type: ignore
     except ImportError:
-        logger.warning("[TranscriptionSettingsManager] browser_cookie3 未安装，无法从浏览器读取 Cookie")
+        logger.warning(
+            "[TranscriptionSettingsManager] browser_cookie3 未安装，无法从浏览器读取 Cookie"
+        )
         return "", ""
 
     for browser_key, browser_name in browsers_to_try:
@@ -44,17 +47,24 @@ def _read_bilibili_cookie_from_browser() -> tuple[str, str]:
                 if cookie.name == "SESSDATA" and cookie.value:
                     sessdata = _sanitize_cookie_value(cookie.value)
                     if sessdata:
-                        logger.info(f"[TranscriptionSettingsManager] 成功从 {browser_name} 读取 B 站 Cookie")
+                        logger.info(
+                            f"[TranscriptionSettingsManager] 成功从 {browser_name} 读取 B 站 Cookie"
+                        )
                         return sessdata, browser_name
         except PermissionError:
             # 浏览器正在运行时会触发此错误，跳过该浏览器
-            logger.debug(f"[TranscriptionSettingsManager] {browser_name} 正在运行，跳过读取")
+            logger.debug(
+                f"[TranscriptionSettingsManager] {browser_name} 正在运行，跳过读取"
+            )
             continue
         except Exception as e:
-            logger.debug(f"[TranscriptionSettingsManager] 从 {browser_name} 读取失败: {e}")
+            logger.debug(
+                f"[TranscriptionSettingsManager] 从 {browser_name} 读取失败: {e}"
+            )
             continue
 
     return "", ""
+
 
 _CUDA_DLL_PATTERN = re.compile(
     r"(cublas(?:Lt)?64_(\d+)\.dll|cudart64_(\d+)\.dll|cudnn64(?:_\d+)?\.dll)",
@@ -119,66 +129,68 @@ def _detect_cuda_support() -> dict[str, Any]:
     reason = "unknown"
     message = "CUDA 状态未知。"
 
+    # ctranslate2 is the authoritative CUDA source for faster-whisper
+    try:
+        import ctranslate2  # type: ignore
+
+        ctranslate2_installed = True
+        ctranslate2_cuda_device_count = int(ctranslate2.get_cuda_device_count())
+        if ctranslate2_cuda_device_count > 0:
+            cuda_available = True
+            reason = "ok"
+            message = f"CUDA 可用（CTranslate2 检测到 {ctranslate2_cuda_device_count} 张 GPU），可使用 GPU 转录。"
+        elif not has_nvidia_gpu:
+            reason = "no_gpu"
+            message = "未检测到 NVIDIA 显卡（或驱动未正确安装）。"
+        else:
+            reason = "ct2_no_cuda_device"
+            message = "检测到 NVIDIA 显卡，但 CTranslate2 未检测到可用 CUDA 设备。建议更新显卡驱动，或先切回 CPU。"
+    except Exception as e:
+        error_text = str(e)
+        if isinstance(e, ModuleNotFoundError):
+            if has_nvidia_gpu:
+                reason = "ct2_missing"
+                message = (
+                    "检测到 NVIDIA 显卡，但缺少 CTranslate2（fast-whisper 依赖）。"
+                    "\n可处理步骤：执行 `pip install ctranslate2` 后重启应用。"
+                )
+            else:
+                reason = "no_gpu"
+                message = "未检测到 NVIDIA 显卡（或驱动未正确安装）。"
+        else:
+            missing_dll, cuda_major = _extract_missing_cuda_runtime_dll(error_text)
+            reason = "ct2_cuda_runtime_unavailable"
+            if missing_dll:
+                message = (
+                    "检测到 CUDA 环境，但 fast-whisper CUDA 运行时不可用。"
+                    f"\n缺少运行库：{missing_dll}"
+                    f"\n{_build_cuda_fix_message(missing_dll, cuda_major)}"
+                )
+            else:
+                message = (
+                    "检测到 CUDA 环境，但 fast-whisper CUDA 运行时不可用。"
+                    f"\n原始错误：{error_text}"
+                    "\n可处理步骤：先切换到 CPU；随后检查 CUDA Runtime 与驱动版本，并重启后重试。"
+                )
+
+    # torch is supplementary — only enriches diagnostics when available
     try:
         import torch  # type: ignore
 
         torch_installed = True
         torch_cuda_built = bool(getattr(torch.version, "cuda", None))
-        cuda_available = bool(torch.cuda.is_available())
-
-        if cuda_available:
-            try:
-                import ctranslate2  # type: ignore
-
-                ctranslate2_installed = True
-                ctranslate2_cuda_device_count = int(ctranslate2.get_cuda_device_count())
-                if ctranslate2_cuda_device_count > 0:
-                    reason = "ok"
-                    message = f"CUDA 可用（CTranslate2 检测到 {ctranslate2_cuda_device_count} 张 GPU），可使用 GPU 转录。"
-                else:
-                    cuda_available = False
-                    reason = "ct2_no_cuda_device"
-                    message = "检测到 PyTorch CUDA 可用，但 CTranslate2 未检测到可用 CUDA 设备。建议更新显卡驱动，或先切回 CPU。"
-            except Exception as e:
-                cuda_available = False
-                error_text = str(e)
-                if isinstance(e, ModuleNotFoundError):
-                    reason = "ct2_missing"
-                    message = (
-                        "检测到 CUDA 环境，但缺少 CTranslate2（fast-whisper 依赖）。"
-                        "\n可处理步骤：执行 `pip install ctranslate2` 后重启应用。"
-                    )
-                else:
-                    missing_dll, cuda_major = _extract_missing_cuda_runtime_dll(error_text)
-                    reason = "ct2_cuda_runtime_unavailable"
-                    if missing_dll:
-                        message = (
-                            "检测到 CUDA 环境，但 fast-whisper CUDA 运行时不可用。"
-                            f"\n缺少运行库：{missing_dll}"
-                            f"\n{_build_cuda_fix_message(missing_dll, cuda_major)}"
-                        )
-                    else:
-                        message = (
-                            "检测到 CUDA 环境，但 fast-whisper CUDA 运行时不可用。"
-                            f"\n原始错误：{error_text}"
-                            "\n可处理步骤：先切换到 CPU；随后检查 CUDA Runtime 与驱动版本，并重启后重试。"
-                        )
-        elif not has_nvidia_gpu:
-            reason = "no_gpu"
-            message = "未检测到 NVIDIA 显卡（或驱动未正确安装）。"
-        elif not torch_cuda_built:
-            reason = "torch_cpu_only"
-            message = "检测到 NVIDIA 显卡，但当前 PyTorch 为 CPU 版本（未启用 CUDA）。"
-        else:
-            reason = "cuda_runtime_unavailable"
-            message = "检测到 NVIDIA 显卡，且 PyTorch 支持 CUDA，但当前 CUDA 运行时不可用（可能是驱动/运行库问题）。"
+        if not cuda_available and has_nvidia_gpu:
+            if not torch_cuda_built:
+                reason = "torch_cpu_only"
+                message = "检测到 NVIDIA 显卡，CTranslate2 未检测到可用 CUDA 设备，且当前 PyTorch 为 CPU 版本（未启用 CUDA）。"
+            elif bool(torch.cuda.is_available()):
+                reason = "ct2_no_cuda_device"
+                message = "检测到 PyTorch CUDA 可用，但 CTranslate2 未检测到可用 CUDA 设备。建议更新显卡驱动，或先切回 CPU。"
+            else:
+                reason = "cuda_runtime_unavailable"
+                message = "检测到 NVIDIA 显卡，且 PyTorch 支持 CUDA，但当前 CUDA 运行时不可用（可能是驱动/运行库问题）。"
     except Exception:
-        if has_nvidia_gpu:
-            reason = "torch_missing"
-            message = "检测到 NVIDIA 显卡，但未安装 PyTorch（或环境中不可导入）。"
-        else:
-            reason = "no_gpu"
-            message = "未检测到 NVIDIA 显卡（或驱动未正确安装）。"
+        pass
 
     return {
         "cuda_available": cuda_available,
@@ -197,7 +209,9 @@ def _sanitize_cookie_value(value: str | None) -> str:
 
 
 def _read_env_bilibili_sessdata() -> str:
-    return _sanitize_cookie_value(os.getenv("BILIBILI_SESSDATA") or os.getenv("SESSDATA"))
+    return _sanitize_cookie_value(
+        os.getenv("BILIBILI_SESSDATA") or os.getenv("SESSDATA")
+    )
 
 
 def _mask_cookie_value(value: str) -> str:
@@ -210,6 +224,9 @@ def _mask_cookie_value(value: str) -> str:
 
 VALID_MODEL_SIZES = {"tiny", "base", "small", "medium", "large"}
 VALID_MODEL_SOURCES = {"auto_download", "manual_path"}
+VALID_TRANSCRIBER_TYPES = {"fast_whisper", "vibe_voice_asr"}
+VALID_VIBEVOICE_DTYPES = {"bfloat16", "float16"}
+VALID_VIBEVOICE_INFERENCE_MODES = {"local", "api"}
 REQUIRED_MANUAL_MODEL_FILES = (
     "config.json",
     "model.bin",
@@ -236,6 +253,36 @@ def _normalize_model_source(value: str | None, fallback: str = "auto_download") 
     return fallback
 
 
+def _normalize_transcriber_type(
+    value: str | None, fallback: str = "fast_whisper"
+) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in VALID_TRANSCRIBER_TYPES:
+        return normalized
+    return fallback
+
+
+def _normalize_vibevoice_language_model(value: str | None) -> str:
+    return _sanitize_model_path(value) or "Qwen/Qwen2.5-7B"
+
+
+def _normalize_vibevoice_max_new_tokens(value: int | str | None) -> int:
+    try:
+        return max(1, int(value or 8192))
+    except (TypeError, ValueError):
+        return 8192
+
+
+def _normalize_vibevoice_dtype(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in VALID_VIBEVOICE_DTYPES else "bfloat16"
+
+
+def _normalize_vibevoice_inference_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in VALID_VIBEVOICE_INFERENCE_MODES else "local"
+
+
 def _validate_manual_model_dir(model_path: str) -> tuple[bool, str, str]:
     resolved = _sanitize_model_path(model_path)
     if not resolved:
@@ -246,7 +293,16 @@ def _validate_manual_model_dir(model_path: str) -> tuple[bool, str, str]:
     if not os.path.isdir(abs_path):
         return (False, f"模型路径不是目录: {abs_path}", abs_path)
 
-    missing = [name for name in REQUIRED_MANUAL_MODEL_FILES if not os.path.isfile(os.path.join(abs_path, name))]
+    missing = [
+        name
+        for name in REQUIRED_MANUAL_MODEL_FILES
+        if not os.path.isfile(os.path.join(abs_path, name))
+        # vocabulary.json is an acceptable alternative to vocabulary.txt
+        and not (
+            name == "vocabulary.txt"
+            and os.path.isfile(os.path.join(abs_path, "vocabulary.json"))
+        )
+    ]
     if missing:
         return (
             False,
@@ -254,6 +310,24 @@ def _validate_manual_model_dir(model_path: str) -> tuple[bool, str, str]:
             abs_path,
         )
     return (True, "模型目录校验通过。", abs_path)
+
+
+def _validate_model_dir_for_transcriber(
+    transcriber_type: str, model_path: str
+) -> tuple[bool, str, str, list[str]]:
+    if transcriber_type == "vibe_voice_asr":
+        from .vibevoice_model_validator import validate_vibevoice_model_path
+
+        result = validate_vibevoice_model_path(model_path)
+        return (
+            result.valid,
+            result.message,
+            result.resolved_path,
+            ["config.json", "model.safetensors|pytorch_model.bin"],
+        )
+
+    valid, message, resolved_path = _validate_manual_model_dir(model_path)
+    return valid, message, resolved_path, list(REQUIRED_MANUAL_MODEL_FILES)
 
 
 class TranscriptionSettingsManager:
@@ -267,24 +341,48 @@ class TranscriptionSettingsManager:
         model_path: str | None = None,
         initial_enable_bilibili_subtitle_fetch: bool = True,
         initial_bilibili_sessdata: str = "",
+        transcriber_type: str = "fast_whisper",
+        vibevoice_language_model: str = "Qwen/Qwen2.5-7B",
+        vibevoice_max_new_tokens: int = 8192,
+        vibevoice_dtype: str = "bfloat16",
+        vibevoice_inference_mode: str = "local",
+        vibevoice_api_url: str = "",
     ):
         self._lock = Lock()
         self._device = initial_device
         self._model_size = _normalize_model_size(model_size, fallback="tiny")
-        self._model_source = _normalize_model_source(model_source, fallback="auto_download")
+        self._model_source = _normalize_model_source(
+            model_source, fallback="auto_download"
+        )
+        self._transcriber_type = _normalize_transcriber_type(
+            transcriber_type, fallback="fast_whisper"
+        )
         self._model_path = _sanitize_model_path(model_path)
         if self._model_source == "auto_download" and self._model_path:
             # 兼容旧配置：曾填写过 model_path 时默认沿用手动模式。
             self._model_source = "manual_path"
         self._enable_bilibili_subtitle_fetch = initial_enable_bilibili_subtitle_fetch
         self._bilibili_sessdata = _sanitize_cookie_value(initial_bilibili_sessdata)
+        self._vibevoice_language_model = _normalize_vibevoice_language_model(
+            vibevoice_language_model
+        )
+        self._vibevoice_max_new_tokens = _normalize_vibevoice_max_new_tokens(
+            vibevoice_max_new_tokens
+        )
+        self._vibevoice_dtype = _normalize_vibevoice_dtype(vibevoice_dtype)
+        self._vibevoice_inference_mode = _normalize_vibevoice_inference_mode(
+            vibevoice_inference_mode
+        )
+        self._vibevoice_api_url = str(vibevoice_api_url or "").strip().rstrip("/")
         self._transcriber_worker: Any = None
 
     def bind_transcriber_worker(self, worker: Any) -> None:
         with self._lock:
             self._transcriber_worker = worker
 
-    def resolve_bilibili_sessdata(self, task_override_sessdata: str | None = None) -> tuple[str, str]:
+    def resolve_bilibili_sessdata(
+        self, task_override_sessdata: str | None = None
+    ) -> tuple[str, str]:
         task_override = _sanitize_cookie_value(task_override_sessdata)
         if task_override:
             return task_override, "task"
@@ -307,6 +405,12 @@ class TranscriptionSettingsManager:
             model_source = self._model_source
             model_size = self._model_size
             model_path = self._model_path
+            transcriber_type = self._transcriber_type
+            vibevoice_language_model = self._vibevoice_language_model
+            vibevoice_max_new_tokens = self._vibevoice_max_new_tokens
+            vibevoice_dtype = self._vibevoice_dtype
+            vibevoice_inference_mode = self._vibevoice_inference_mode
+            vibevoice_api_url = self._vibevoice_api_url
 
         sessdata, source = self.resolve_bilibili_sessdata()
         cuda_diag = _detect_cuda_support()
@@ -314,7 +418,12 @@ class TranscriptionSettingsManager:
         devices = ["cpu"]
         if cuda_available:
             devices.append("cuda")
-        manual_valid, manual_message, manual_resolved_path = _validate_manual_model_dir(model_path)
+        (
+            manual_valid,
+            manual_message,
+            manual_resolved_path,
+            required_model_files,
+        ) = _validate_model_dir_for_transcriber(transcriber_type, model_path)
         model_path_valid = manual_valid if model_source == "manual_path" else True
         model_path_message = (
             manual_message
@@ -323,28 +432,51 @@ class TranscriptionSettingsManager:
         )
 
         return {
+            "transcriber_type": transcriber_type,
             "device": current_device,
             "model_source": model_source,
             "model_size": model_size,
             "model_path": model_path,
             "model_path_valid": model_path_valid,
             "model_path_message": model_path_message,
-            "model_path_resolved": manual_resolved_path if model_source == "manual_path" else "",
-            "required_model_files": list(REQUIRED_MANUAL_MODEL_FILES),
+            "model_path_resolved": manual_resolved_path
+            if model_source == "manual_path"
+            else "",
+            "required_model_files": (
+                required_model_files
+                if transcriber_type == "vibe_voice_asr"
+                else list(REQUIRED_MANUAL_MODEL_FILES)
+            ),
             "cuda_available": cuda_available,
             "available_devices": devices,
             "has_nvidia_gpu": bool(cuda_diag["has_nvidia_gpu"]),
             "torch_installed": bool(cuda_diag["torch_installed"]),
             "torch_cuda_built": bool(cuda_diag["torch_cuda_built"]),
             "ctranslate2_installed": bool(cuda_diag["ctranslate2_installed"]),
-            "ctranslate2_cuda_device_count": int(cuda_diag["ctranslate2_cuda_device_count"]),
+            "ctranslate2_cuda_device_count": int(
+                cuda_diag["ctranslate2_cuda_device_count"]
+            ),
             "cuda_reason": str(cuda_diag["cuda_reason"]),
             "cuda_message": str(cuda_diag["cuda_message"]),
             "enable_bilibili_subtitle_fetch": enable_bilibili_subtitle_fetch,
             "has_bilibili_sessdata": bool(sessdata),
             "bilibili_cookie_source": source,
             "bilibili_sessdata_masked": _mask_cookie_value(sessdata),
+            "vibevoice_language_model": vibevoice_language_model,
+            "vibevoice_max_new_tokens": vibevoice_max_new_tokens,
+            "vibevoice_dtype": vibevoice_dtype,
+            "vibevoice_inference_mode": vibevoice_inference_mode,
+            "vibevoice_api_url": vibevoice_api_url,
         }
+
+    def get_active_transcriber_type(self) -> str:
+        with self._lock:
+            if (
+                self._transcriber_type == "vibe_voice_asr"
+                and self._vibevoice_inference_mode == "api"
+            ):
+                return "vibe_voice_api"
+            return self._transcriber_type
 
     def _build_transcriber_kwargs(
         self,
@@ -352,7 +484,32 @@ class TranscriptionSettingsManager:
         model_source: str,
         model_size: str,
         model_path: str,
-    ) -> dict[str, str]:
+        transcriber_type: str = "fast_whisper",
+        vibevoice_language_model: str = "Qwen/Qwen2.5-7B",
+        vibevoice_max_new_tokens: int = 8192,
+        vibevoice_dtype: str = "bfloat16",
+        vibevoice_inference_mode: str = "local",
+        vibevoice_api_url: str = "",
+    ) -> dict[str, Any]:
+        if transcriber_type == "vibe_voice_asr":
+            if vibevoice_inference_mode == "api":
+                if not vibevoice_api_url:
+                    raise ValueError("VibeVoice API 模式需要填写推理服务地址。")
+                return {
+                    "api_url": vibevoice_api_url,
+                    "max_new_tokens": vibevoice_max_new_tokens,
+                }
+            resolved = _sanitize_model_path(model_path)
+            if not resolved:
+                raise ValueError("VibeVoice-ASR 需要指定本地模型目录路径。")
+            return {
+                "model_path": resolved,
+                "device": device,
+                "language_model_pretrained_name": vibevoice_language_model,
+                "max_new_tokens": vibevoice_max_new_tokens,
+                "dtype": vibevoice_dtype,
+            }
+
         kwargs: dict[str, str] = {
             "device": device,
             "compute_type": "int8_float16" if device == "cuda" else "int8",
@@ -366,24 +523,38 @@ class TranscriptionSettingsManager:
             kwargs["model_size"] = model_size
         return kwargs
 
-    def build_transcriber_kwargs(self) -> dict[str, str]:
+    def build_transcriber_kwargs(self) -> dict[str, Any]:
         with self._lock:
             return self._build_transcriber_kwargs(
                 device=self._device,
                 model_source=self._model_source,
                 model_size=self._model_size,
                 model_path=self._model_path,
+                transcriber_type=self._transcriber_type,
+                vibevoice_language_model=self._vibevoice_language_model,
+                vibevoice_max_new_tokens=self._vibevoice_max_new_tokens,
+                vibevoice_dtype=self._vibevoice_dtype,
+                vibevoice_inference_mode=self._vibevoice_inference_mode,
+                vibevoice_api_url=self._vibevoice_api_url,
             )
 
     def update_settings(
         self,
         device: str | None = None,
         model_source: Literal["auto_download", "manual_path"] | str | None = None,
-        model_size: Literal["tiny", "base", "small", "medium", "large"] | str | None = None,
+        model_size: Literal["tiny", "base", "small", "medium", "large"]
+        | str
+        | None = None,
         model_path: str | None = None,
         enable_bilibili_subtitle_fetch: bool | None = None,
         bilibili_sessdata: str | None = None,
         clear_bilibili_sessdata: bool | None = None,
+        transcriber_type: str | None = None,
+        vibevoice_language_model: str | None = None,
+        vibevoice_max_new_tokens: int | None = None,
+        vibevoice_dtype: str | None = None,
+        vibevoice_inference_mode: str | None = None,
+        vibevoice_api_url: str | None = None,
     ) -> dict[str, Any]:
         if (
             device is None
@@ -393,6 +564,12 @@ class TranscriptionSettingsManager:
             and enable_bilibili_subtitle_fetch is None
             and bilibili_sessdata is None
             and clear_bilibili_sessdata is None
+            and transcriber_type is None
+            and vibevoice_language_model is None
+            and vibevoice_max_new_tokens is None
+            and vibevoice_dtype is None
+            and vibevoice_inference_mode is None
+            and vibevoice_api_url is None
         ):
             raise ValueError("至少需要更新一个配置项")
 
@@ -401,6 +578,12 @@ class TranscriptionSettingsManager:
             current_model_source = self._model_source
             current_model_size = self._model_size
             current_model_path = self._model_path
+            current_transcriber_type = self._transcriber_type
+            current_vibevoice_language_model = self._vibevoice_language_model
+            current_vibevoice_max_new_tokens = self._vibevoice_max_new_tokens
+            current_vibevoice_dtype = self._vibevoice_dtype
+            current_vibevoice_inference_mode = self._vibevoice_inference_mode
+            current_vibevoice_api_url = self._vibevoice_api_url
             worker_for_rebuild = self._transcriber_worker
 
         next_device = current_device
@@ -427,25 +610,114 @@ class TranscriptionSettingsManager:
         if model_path is not None:
             next_model_path = _sanitize_model_path(model_path)
 
-        if next_device == "cuda":
-            cuda_diag = _detect_cuda_support()
-            if not bool(cuda_diag["cuda_available"]):
-                raise ValueError(str(cuda_diag["cuda_message"]))
+        next_transcriber_type = current_transcriber_type
+        if transcriber_type is not None:
+            normalized_type = str(transcriber_type or "").strip().lower()
+            if normalized_type not in VALID_TRANSCRIBER_TYPES:
+                raise ValueError(
+                    "transcriber_type 仅支持 fast_whisper 或 vibe_voice_asr"
+                )
+            next_transcriber_type = normalized_type
 
-        if next_model_source == "manual_path":
-            valid, message, _ = _validate_manual_model_dir(next_model_path)
-            if not valid:
-                raise ValueError(message)
+        next_vibevoice_language_model = current_vibevoice_language_model
+        if vibevoice_language_model is not None:
+            next_vibevoice_language_model = _sanitize_model_path(
+                vibevoice_language_model
+            )
+            if not next_vibevoice_language_model:
+                raise ValueError("VibeVoice 语言模型不能为空。")
 
+        next_vibevoice_max_new_tokens = current_vibevoice_max_new_tokens
+        if vibevoice_max_new_tokens is not None:
+            try:
+                next_vibevoice_max_new_tokens = int(vibevoice_max_new_tokens)
+            except (TypeError, ValueError) as e:
+                raise ValueError("VibeVoice 最大生成 Token 数必须是正整数。") from e
+            if next_vibevoice_max_new_tokens < 1:
+                raise ValueError("VibeVoice 最大生成 Token 数必须大于 0。")
+
+        next_vibevoice_dtype = current_vibevoice_dtype
+        if vibevoice_dtype is not None:
+            next_vibevoice_dtype = str(vibevoice_dtype or "").strip().lower()
+            if next_vibevoice_dtype not in VALID_VIBEVOICE_DTYPES:
+                raise ValueError("VibeVoice 数据类型仅支持 bfloat16 或 float16")
+
+        next_vibevoice_inference_mode = current_vibevoice_inference_mode
+        if vibevoice_inference_mode is not None:
+            next_vibevoice_inference_mode = str(
+                vibevoice_inference_mode or ""
+            ).strip().lower()
+            if next_vibevoice_inference_mode not in VALID_VIBEVOICE_INFERENCE_MODES:
+                raise ValueError("VibeVoice 推理模式仅支持 local 或 api")
+
+        next_vibevoice_api_url = current_vibevoice_api_url
+        if vibevoice_api_url is not None:
+            next_vibevoice_api_url = str(vibevoice_api_url or "").strip().rstrip("/")
+
+        # Compute changes BEFORE validation so we only validate fields that
+        # are actually changing (the frontend sends the full form on every save).
         device_changed = next_device != current_device
         model_source_changed = next_model_source != current_model_source
         model_size_changed = next_model_size != current_model_size
         model_path_changed = next_model_path != current_model_path
+        transcriber_type_changed = next_transcriber_type != current_transcriber_type
+        vibevoice_language_model_changed = (
+            next_vibevoice_language_model != current_vibevoice_language_model
+        )
+        vibevoice_max_new_tokens_changed = (
+            next_vibevoice_max_new_tokens != current_vibevoice_max_new_tokens
+        )
+        vibevoice_dtype_changed = next_vibevoice_dtype != current_vibevoice_dtype
+        vibevoice_inference_mode_changed = (
+            next_vibevoice_inference_mode != current_vibevoice_inference_mode
+        )
+        vibevoice_api_url_changed = next_vibevoice_api_url != current_vibevoice_api_url
+
+        if (
+            device_changed
+            and next_device == "cuda"
+            and not (
+                next_transcriber_type == "vibe_voice_asr"
+                and next_vibevoice_inference_mode == "api"
+            )
+        ):
+            cuda_diag = _detect_cuda_support()
+            if not bool(cuda_diag["cuda_available"]):
+                raise ValueError(str(cuda_diag["cuda_message"]))
+
+        if (
+            (
+                model_path_changed
+                or model_source_changed
+                or transcriber_type_changed
+            )
+            and next_model_source == "manual_path"
+            and next_model_path
+        ):
+            valid, message, _, _ = _validate_model_dir_for_transcriber(
+                next_transcriber_type, next_model_path
+            )
+            if not valid:
+                raise ValueError(message)
+
+        if (
+            next_transcriber_type == "vibe_voice_asr"
+            and next_vibevoice_inference_mode == "api"
+            and not next_vibevoice_api_url
+        ):
+            raise ValueError("VibeVoice API 模式需要填写推理服务地址。")
+
         should_rebuild = bool(worker_for_rebuild) and (
             device_changed
             or model_source_changed
             or model_size_changed
             or model_path_changed
+            or transcriber_type_changed
+            or vibevoice_language_model_changed
+            or vibevoice_max_new_tokens_changed
+            or vibevoice_dtype_changed
+            or vibevoice_inference_mode_changed
+            or vibevoice_api_url_changed
         )
 
         transcriber = None
@@ -459,8 +731,22 @@ class TranscriptionSettingsManager:
                     model_source=next_model_source,
                     model_size=next_model_size,
                     model_path=next_model_path,
+                    transcriber_type=next_transcriber_type,
+                    vibevoice_language_model=next_vibevoice_language_model,
+                    vibevoice_max_new_tokens=next_vibevoice_max_new_tokens,
+                    vibevoice_dtype=next_vibevoice_dtype,
+                    vibevoice_inference_mode=next_vibevoice_inference_mode,
+                    vibevoice_api_url=next_vibevoice_api_url,
                 )
-                transcriber = get_transcriber("fast_whisper", **transcriber_kwargs)
+                active_transcriber_type = (
+                    "vibe_voice_api"
+                    if next_transcriber_type == "vibe_voice_asr"
+                    and next_vibevoice_inference_mode == "api"
+                    else next_transcriber_type
+                )
+                transcriber = get_transcriber(
+                    active_transcriber_type, **transcriber_kwargs
+                )
                 logger.info("[TranscriptionSettingsManager] 转录器实例重建完成。")
             except Exception as e:
                 raise ValueError(f"切换转录配置失败: {e}") from e
@@ -470,24 +756,40 @@ class TranscriptionSettingsManager:
             self._model_source = next_model_source
             self._model_size = next_model_size
             self._model_path = next_model_path
+            self._transcriber_type = next_transcriber_type
+            self._vibevoice_language_model = next_vibevoice_language_model
+            self._vibevoice_max_new_tokens = next_vibevoice_max_new_tokens
+            self._vibevoice_dtype = next_vibevoice_dtype
+            self._vibevoice_inference_mode = next_vibevoice_inference_mode
+            self._vibevoice_api_url = next_vibevoice_api_url
 
             if transcriber is not None and self._transcriber_worker is not None:
                 self._transcriber_worker.update_transcriber(transcriber)
                 logger.info(
                     "[TranscriptionSettingsManager] 已更新转录配置: "
-                    f"device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
+                    f"transcriber_type={self._transcriber_type}, device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
                 )
             elif (
-                (device_changed or model_source_changed or model_size_changed or model_path_changed)
-                and self._transcriber_worker is None
-            ):
+                device_changed
+                or model_source_changed
+                or model_size_changed
+                or model_path_changed
+                or transcriber_type_changed
+                or vibevoice_language_model_changed
+                or vibevoice_max_new_tokens_changed
+                or vibevoice_dtype_changed
+                or vibevoice_inference_mode_changed
+                or vibevoice_api_url_changed
+            ) and self._transcriber_worker is None:
                 logger.info(
                     "[TranscriptionSettingsManager] 已保存转录配置（worker 尚未初始化，将在首次任务时生效）: "
-                    f"device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
+                    f"transcriber_type={self._transcriber_type}, device={self._device}, model_source={self._model_source}, model_size={self._model_size}"
                 )
 
             if enable_bilibili_subtitle_fetch is not None:
-                self._enable_bilibili_subtitle_fetch = bool(enable_bilibili_subtitle_fetch)
+                self._enable_bilibili_subtitle_fetch = bool(
+                    enable_bilibili_subtitle_fetch
+                )
                 logger.info(
                     "[TranscriptionSettingsManager] 已更新字幕直取开关: "
                     f"enable_bilibili_subtitle_fetch={self._enable_bilibili_subtitle_fetch}"
@@ -536,11 +838,16 @@ class TranscriptionSettingsManager:
     def get_runtime_state(self) -> dict[str, Any]:
         with self._lock:
             return {
+                "transcriber_type": self._transcriber_type,
                 "device": self._device,
                 "model_source": self._model_source,
                 "model_size": self._model_size,
                 "model_path": self._model_path,
                 "enable_bilibili_subtitle_fetch": self._enable_bilibili_subtitle_fetch,
                 "bilibili_sessdata": self._bilibili_sessdata,
+                "vibevoice_language_model": self._vibevoice_language_model,
+                "vibevoice_max_new_tokens": self._vibevoice_max_new_tokens,
+                "vibevoice_dtype": self._vibevoice_dtype,
+                "vibevoice_inference_mode": self._vibevoice_inference_mode,
+                "vibevoice_api_url": self._vibevoice_api_url,
             }
-
