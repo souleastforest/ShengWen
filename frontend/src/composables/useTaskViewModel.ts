@@ -414,7 +414,14 @@ export function useTaskViewModel() {
           : Promise.resolve([] as TaskPart[])
         const [response] = await Promise.all([detailPromise, partsPromise])
         if (selectedTask.value?.id !== task.id) return
-        selectedTask.value = response.data
+        const data = response.data as Task
+        // 轻量详情响应不含转录原文（transcript 为 null）；若此前已通过
+        // “原文”tab/复制等路径加载过完整内容，保留已加载的 transcript。
+        const prevTranscript = selectedTask.value.transcript
+        if (prevTranscript != null && data.transcript == null) {
+          data.transcript = prevTranscript
+        }
+        selectedTask.value = data
       } catch (err) {
         console.error('Failed to fetch task details:', err)
         if (selectedTask.value?.id === task.id) {
@@ -423,6 +430,17 @@ export function useTaskViewModel() {
       }
     })()
   }
+
+  // 选中任务后详情接口只返回轻量内容（transcript 被后端剥离为 null）。
+  // 用户切换到“原文”tab 时按需加载完整内容（含转录原文）。
+  watch(activeTab, (tab) => {
+    if (tab !== 'transcript') return
+    const task = selectedTask.value
+    if (!task || task.transcript != null) return
+    fetchTaskFullContent(task.id).catch((err) => {
+      console.error('Failed to load full content for transcript tab:', err)
+    })
+  })
 
   const retryFailedParts = async (taskId: string) => {
     await axios.post(apiBaseUrl + "/tasks/" + taskId + "/retry-failed-parts")
@@ -913,6 +931,16 @@ export function useTaskViewModel() {
     isBilibiliUrl,
     downloadContent,
     copyContent: async (type: 'summary' | 'transcript') => {
+      if (!selectedTask.value) return false
+
+      // 轻量详情不包含转录原文（transcript 为 null），复制前先按需加载完整内容。
+      if (type === 'transcript' && selectedTask.value.transcript == null) {
+        try {
+          await fetchTaskFullContent(selectedTask.value.id)
+        } catch (err) {
+          console.error('Failed to load transcript before copy:', err)
+        }
+      }
       if (!selectedTask.value) return false
 
       // 直接使用当前 selectedTask 的数据，与 compiledMarkdown 保持一致
