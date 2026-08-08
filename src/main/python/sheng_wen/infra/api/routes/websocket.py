@@ -47,7 +47,18 @@ async def notify_task_update(task_id: str, task_data: dict = None):
                 "latest_modified_at"
             ].isoformat()
 
-        message = json.dumps({"type": "task_update", "task": task_data})
+        # 附带 4 个 worker 的队列快照（向后兼容：旧客户端忽略多余字段）。
+        queues = []
+        try:
+            from src.main.python.sheng_wen.api import get_queue_snapshots
+
+            queues = await get_queue_snapshots()
+        except Exception as e:
+            logger.warning(f"[WebSocket] 获取队列快照失败，本次消息不含 queues: {e}")
+
+        message = json.dumps(
+            {"type": "task_update", "task": task_data, "queues": queues}
+        )
         await manager.broadcast(message)
     else:
         logger.warning(f"[WebSocket] Task not found for broadcast: task_id={task_id}")

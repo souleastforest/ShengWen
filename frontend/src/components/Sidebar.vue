@@ -32,8 +32,10 @@ import {
   type LLMProvider,
   type LLMSettings,
   type TranscriptionSettings,
-  type SummarizationSettings
+  type SummarizationSettings,
+  type QueueSnapshot
 } from '../types'
+import { getQueueInfo as resolveQueueInfo } from '../utils/queueStatus'
 import ThemeSelector from './ThemeSelector.vue'
 
 const videoUrl = defineModel<string>('videoUrl', { required: true })
@@ -46,6 +48,7 @@ const isSidebarOpen = defineModel<boolean>('isSidebarOpen', { required: true })
 const props = defineProps<{
   isLocalClient: boolean
   tasks: Task[]
+  queues?: QueueSnapshot[]
   selectedTask: Task | null
   isSubmitting: boolean
   llmProviders: LLMProvider[]
@@ -452,6 +455,17 @@ const getStatusClass = (status: TaskStatus) => {
     default: return 'text-blue-600 bg-blue-50'
   }
 }
+
+// 在队列快照中查找任务排队信息（waiting_task_ids 中则排队，active 不算排队）
+const getQueueInfo = (task: Task) => resolveQueueInfo(task.id, props.queues ?? [])
+
+const getQueueBadgeText = (task: Task): string | null => {
+  const info = getQueueInfo(task)
+  if (!info || !info.queued) return null
+  return `排队中 (${info.queueName} #${info.position})`
+}
+
+const isTaskQueued = (task: Task): boolean => Boolean(getQueueInfo(task)?.queued)
 
 const getStatusIcon = (status: TaskStatus) => {
   switch (status) {
@@ -1282,7 +1296,11 @@ watch(() => props.summarizationSettings, (settings) => {
                          selectedTask?.id === task.id ? 'border-blue-200 bg-blue-50/60 ring-1 ring-primary/20 shadow-sm' : 'border-transparent hover:bg-white hover:border-gray-100']"
               >
                 <div class="flex justify-between items-start mb-1">
-                  <span :class="['text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1', getStatusClass(task.status)]">
+                  <span v-if="isTaskQueued(task)" class="text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1 text-amber-600 bg-amber-50">
+                    <PhClock :size="12" />
+                    {{ getQueueBadgeText(task) }}
+                  </span>
+                  <span v-else :class="['text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1', getStatusClass(task.status)]">
                     <component :is="getStatusIcon(task.status)" :size="12" :class="task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED && task.status !== TaskStatus.PENDING ? 'animate-spin' : ''" />
                     {{ getTaskStatusLabel(task) }}
                   </span>
@@ -1309,7 +1327,7 @@ watch(() => props.summarizationSettings, (settings) => {
                 <div class="text-sm font-medium text-slate-700 truncate" :title="resolveTaskTopic(task)">
                   {{ resolveTaskTopic(task) }}
                 </div>
-                <div v-if="task.status === TaskStatus.DOWNLOADING || task.status === TaskStatus.UPLOADING || task.status === TaskStatus.TRANSCRIBING || task.status === TaskStatus.SUMMARIZING" class="w-full bg-blue-100 h-1 rounded-full mt-2 overflow-hidden">
+                <div v-if="!isTaskQueued(task) && (task.status === TaskStatus.DOWNLOADING || task.status === TaskStatus.UPLOADING || task.status === TaskStatus.TRANSCRIBING || task.status === TaskStatus.SUMMARIZING)" class="w-full bg-blue-100 h-1 rounded-full mt-2 overflow-hidden">
                   <div
                     class="bg-blue-500 h-full rounded-full"
                     :class="{ 'transition-all duration-500': shouldAnimateMap[task.id] }"

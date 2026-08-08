@@ -6,18 +6,24 @@ from typing import Any, NamedTuple, Coroutine
 
 from loguru import logger
 
+
 class TaskCancelledError(Exception):
     """任务被外部取消（例如用户删除任务）。"""
+
     pass
+
 
 class Task(NamedTuple):
     """表示一个待由工作单元处理的任务。"""
+
     payload: Any
+
 
 class Worker(ABC):
     """
     一个抽象基类，用于表示从队列中处理任务的工作单元。
     """
+
     def __init__(self, name: str):
         self.name = name
         self._task_queue = asyncio.Queue()
@@ -45,10 +51,80 @@ class Worker(ABC):
             return False
         try:
             from .db import db
+
             return db.get_task(task_id) is None
         except Exception:
             # 避免 DB 异常影响 worker 主循环，保守地按“未删除”处理。
             return False
+
+    def _extract_active_task_id(self) -> str | None:
+        """
+        提取正在处理的任务 id。
+
+        优先使用显式跟踪的 _active_task_id（与取消/停止逻辑共享同一语义）；
+        兜底从进行中的 _active_process_task 协程参数中提取。
+        """
+        if self._active_task_id:
+            return self._active_task_id
+        process_task = self._active_process_task
+        if process_task is None:
+            return None
+        try:
+            coro = process_task.get_coro()
+            if coro is None:
+                return None
+            frame = getattr(coro, "cr_frame", None)
+            if frame is None:
+                return None
+            # asyncio.create_task(self.process_task(payload)) 场景
+            payload = frame.f_locals.get("payload")
+            task_id = self._extract_task_id(payload)
+            if task_id:
+                return task_id
+            # asyncio.to_thread(self.process_task, payload) 场景
+            args = frame.f_locals.get("args")
+            if args:
+                for arg in args:
+                    task_id = self._extract_task_id(arg)
+                    if task_id:
+                        return task_id
+        except Exception:
+            pass
+        return None
+
+    def snapshot(self) -> dict:
+        """
+        返回当前队列与活动任务的快照（供 GET /tasks/queue 与 WS 广播使用）。
+
+        Returns:
+            {
+                "name": 队列名,
+                "active_task_id": 正在处理的任务 id 或 None,
+                "waiting_task_ids": 按 FIFO 顺序（先到先执行）的待处理任务 id 列表,
+                "queue_size": 待处理任务数量,
+            }
+        """
+        try:
+            waiting_ids: list[str] = []
+            queue_ref = self._task_queue._queue  # deque[Task]，迭代顺序即 FIFO
+            for queued_task in queue_ref:
+                task_id = self._extract_task_id(queued_task.payload)
+                if task_id:
+                    waiting_ids.append(task_id)
+            return {
+                "name": self.name,
+                "active_task_id": self._extract_active_task_id(),
+                "waiting_task_ids": waiting_ids,
+                "queue_size": len(waiting_ids),
+            }
+        except Exception as e:
+            logger.warning(f"[{self.name}] 生成队列快照失败，返回安全默认值: {e}")
+            return {
+                "name": self.name,
+                "active_task_id": None,
+                "waiting_task_ids": [],
+                "queue_size": 0,
+            }
 
     def _submit_coro(self, coro: Coroutine) -> None:
         """
@@ -108,7 +184,9 @@ class Worker(ABC):
             return
         task = Task(payload=payload)
         await self._task_queue.put(task)
-        logger.info(f"[{self.name}] 任务已添加到队列。队列大小: {self._task_queue.qsize()}")
+        logger.info(
+            f"[{self.name}] 任务已添加到队列。队列大小: {self._task_queue.qsize()}"
+        )
 
     def cancel_task(self, task_id: str) -> dict[str, int | bool]:
         """
@@ -182,7 +260,9 @@ class Worker(ABC):
                         # 智能调度：检查 process_task 是同步还是异步
                         if inspect.iscoroutinefunction(self.process_task):
                             # 异步任务以子任务方式执行，便于按 task_id 精准取消
-                            self._active_process_task = asyncio.create_task(self.process_task(task.payload))
+                            self._active_process_task = asyncio.create_task(
+                                self.process_task(task.payload)
+                            )
                             await self._active_process_task
                         else:
                             # 同步任务在线程中执行，避免阻塞事件循环
@@ -193,11 +273,17 @@ class Worker(ABC):
                             )
                             await self._active_process_task
 
-                        logger.info(f"[{self.name}] 任务处理完毕。队列大小: {self._task_queue.qsize()}")
+                        logger.info(
+                            f"[{self.name}] 任务处理完毕。队列大小: {self._task_queue.qsize()}"
+                        )
                     except asyncio.CancelledError:
-                        logger.info(f"[{self.name}] 任务被取消: {task_id or '<unknown>'}")
+                        logger.info(
+                            f"[{self.name}] 任务被取消: {task_id or '<unknown>'}"
+                        )
                     except Exception as e:
-                        logger.error(f"[{self.name}] 处理任务时出错: {e}", exc_info=True)
+                        logger.error(
+                            f"[{self.name}] 处理任务时出错: {e}", exc_info=True
+                        )
                     finally:
                         self._active_task_id = None
                         self._active_process_task = None
@@ -216,9 +302,9 @@ class Worker(ABC):
     def process_task(self, payload: Any):
         """
         处理单个任务的具体逻辑。
-        
+
         必须由子类实现。
-        
+
         此方法可以被实现为同步 (`def`) 或异步 (`async def`)。
         - 如果是同步的，它将在一个独立的线程中被执行，以避免阻塞事件循环。
         - 如果是异步的，它将在主事件循环中被直接 `await`。
@@ -269,7 +355,9 @@ class Worker(ABC):
                 except asyncio.CancelledError:
                     pass
                 except asyncio.TimeoutError:
-                    logger.warning(f"[{self.name}] 强制取消后仍未退出，可能存在阻塞中的后台线程。")
+                    logger.warning(
+                        f"[{self.name}] 强制取消后仍未退出，可能存在阻塞中的后台线程。"
+                    )
             except asyncio.CancelledError:
                 pass
             finally:

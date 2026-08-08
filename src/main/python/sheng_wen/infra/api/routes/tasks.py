@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from urllib.request import Request as UrlRequest
@@ -22,10 +23,62 @@ from src.main.python.sheng_wen.infra.api.routes.schemas import (
 )
 from src.main.python.sheng_wen.infra.api.routes.websocket import notify_task_update
 from src.main.python.sheng_wen.utils.media import build_transcriber_payload
-from src.main.python.sheng_wen.task_parts import delete_task_parts, get_task_part, get_task_parts, get_task_part_stats, init_task_parts, reset_failed_parts
+from src.main.python.sheng_wen.task_parts import (
+    delete_task_parts,
+    get_task_part,
+    get_task_parts,
+    get_task_part_stats,
+    init_task_parts,
+    reset_failed_parts,
+)
 
 
 router = APIRouter(prefix="/tasks")
+
+
+# ---- 幂等去重（内存 TTL）：5 秒内同一 video_url 重复提交直接返回已创建任务 ----
+_TASK_SUBMIT_DEDUP_TTL_SECONDS = 5.0
+_task_submit_dedup: dict[str, tuple[str, float]] = {}
+
+
+def _dedup_now() -> float:
+    """去重时钟（独立函数便于测试打桩）。"""
+    return time.time()
+
+
+def _check_task_submit_dedup(video_url: str) -> dict | None:
+    """5 秒内同一 video_url 已创建且任务仍存在时，返回该任务；否则 None。"""
+    if not video_url:
+        return None
+    entry = _task_submit_dedup.get(video_url)
+    if entry is None:
+        return None
+    task_id, created_ts = entry
+    if _dedup_now() - created_ts >= _TASK_SUBMIT_DEDUP_TTL_SECONDS:
+        _task_submit_dedup.pop(video_url, None)
+        return None
+    task = db.get_task(task_id)
+    if task is None:
+        # 任务已被删除，窗口提前失效
+        _task_submit_dedup.pop(video_url, None)
+        return None
+    return task
+
+
+def _record_task_submit(video_url: str, task_id: str) -> None:
+    """记录最近一次任务提交，用于 5 秒内去重。"""
+    if not video_url:
+        return
+    _task_submit_dedup[video_url] = (task_id, _dedup_now())
+    # 顺带清理过期条目，避免字典无限增长
+    if len(_task_submit_dedup) > 1024:
+        expired = [
+            url
+            for url, (_, ts) in _task_submit_dedup.items()
+            if _dedup_now() - ts >= _TASK_SUBMIT_DEDUP_TTL_SECONDS
+        ]
+        for url in expired:
+            _task_submit_dedup.pop(url, None)
 
 
 async def _get_bilibili_video_title_and_parts(video_url: str) -> tuple[str, list]:
@@ -69,7 +122,6 @@ async def _get_bilibili_video_title_and_parts(video_url: str) -> tuple[str, list
     return (title, parts)
 
 
-
 def _with_part_stats(task_data: dict):
     stats = get_task_part_stats(str(task_data.get("id") or ""))
     if stats.get("has_parts"):
@@ -80,9 +132,26 @@ def _with_part_stats(task_data: dict):
 
 @router.post("/", response_model=Task, status_code=201)
 async def create_task(task_in: TaskCreate, request: Request):
-    if not task_in.bilibili_parts and deps._is_bilibili_video_url(str(task_in.video_url)):
+    is_separate_parts = bool(
+        task_in.bilibili_parts and task_in.bilibili_parts.mode == "separate"
+    )
+    # 幂等去重：5 秒内同一 URL 重复提交直接返回已创建任务（多分P separate 模式跳过）。
+    if not is_separate_parts:
+        existing_task = _check_task_submit_dedup(str(task_in.video_url))
+        if existing_task is not None:
+            logger.info(
+                f"检测到 5 秒内重复提交同一 URL，返回已创建任务: "
+                f"{existing_task.get('id')} ({str(task_in.video_url)})"
+            )
+            return _with_part_stats(existing_task)
+
+    if not task_in.bilibili_parts and deps._is_bilibili_video_url(
+        str(task_in.video_url)
+    ):
         try:
-            _, parts_info = await _get_bilibili_video_title_and_parts(str(task_in.video_url))
+            _, parts_info = await _get_bilibili_video_title_and_parts(
+                str(task_in.video_url)
+            )
         except Exception as e:
             logger.warning(f"获取 B 站分P信息失败: {e}")
             raise HTTPException(
@@ -162,7 +231,9 @@ async def create_task(task_in: TaskCreate, request: Request):
     merge_parts_info = []
     if task_in.bilibili_parts and task_in.bilibili_parts.mode == "merge":
         try:
-            _, merge_parts_info = await _get_bilibili_video_title_and_parts(str(task_in.video_url))
+            _, merge_parts_info = await _get_bilibili_video_title_and_parts(
+                str(task_in.video_url)
+            )
         except Exception as e:
             logger.warning(f"获取合并模式分P信息失败: {e}")
 
@@ -183,15 +254,22 @@ async def create_task(task_in: TaskCreate, request: Request):
         "summary_meta": None,
     }
     db.save_task(task_id, task_data)
+    _record_task_submit(str(task_in.video_url), task_id)
 
     if task_in.bilibili_parts and task_in.bilibili_parts.mode == "merge":
         part_map = {int(part.get("index", -1)): part for part in merge_parts_info}
-        init_task_parts(task_id, [
-            {"index": index, "cid": part_map.get(index, {}).get("cid"),
-             "title": part_map.get(index, {}).get("title") or f"P{index + 1}",
-             "duration": part_map.get(index, {}).get("duration", 0)}
-            for index in task_in.bilibili_parts.indices
-        ])
+        init_task_parts(
+            task_id,
+            [
+                {
+                    "index": index,
+                    "cid": part_map.get(index, {}).get("cid"),
+                    "title": part_map.get(index, {}).get("title") or f"P{index + 1}",
+                    "duration": part_map.get(index, {}).get("duration", 0),
+                }
+                for index in task_in.bilibili_parts.indices
+            ],
+        )
 
     task_payload = {
         "task_id": task_id,
@@ -230,10 +308,25 @@ async def list_tasks():
     return lightweight_tasks
 
 
+@router.get("/queue")
+async def get_task_queues():
+    """返回 4 个固定 worker 的队列快照（排队可视化；纯新增，兼容旧客户端）。
+
+    注意：必须注册在 /{task_id} 之前，否则 /queue 会被当作 task_id 匹配。
+    """
+    from src.main.python.sheng_wen.api import get_queue_snapshots
+
+    queues = await get_queue_snapshots()
+    return {
+        "queues": queues,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
 def _summary_overview(summary: str) -> str:
     marker = re.search(r"^#\s*分P总结.*$", summary, re.MULTILINE)
     if marker and marker.start() > 0:
-        return summary[:marker.start()].strip()
+        return summary[: marker.start()].strip()
     return summary[:12000].strip()
 
 
@@ -273,25 +366,45 @@ async def get_task_part_route(task_id: str, part_index: int):
 
 
 @router.post("/{task_id}/retry-failed-parts", response_model=Task)
-async def retry_failed_parts(task_id: str, request: Request, payload: dict | None = None):
+async def retry_failed_parts(
+    task_id: str, request: Request, payload: dict | None = None
+):
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     parts = get_task_parts(task_id)
-    failed_indices = {part["part_index"] for part in parts if part["status"] == "FAILED"}
-    requested_indices = (payload or {}).get("part_indices") or (payload or {}).get("indices")
+    failed_indices = {
+        part["part_index"] for part in parts if part["status"] == "FAILED"
+    }
+    requested_indices = (payload or {}).get("part_indices") or (payload or {}).get(
+        "indices"
+    )
     if requested_indices is None:
         indices = sorted(failed_indices)
     else:
-        indices = sorted({int(index) for index in requested_indices if int(index) in failed_indices})
+        indices = sorted(
+            {int(index) for index in requested_indices if int(index) in failed_indices}
+        )
     if not parts or not indices:
         raise HTTPException(status_code=409, detail="当前没有失败的分P")
     reset_failed_parts(task_id, indices)
     from src.main.python.sheng_wen.task_updater import update_and_notify
-    await update_and_notify(task_id, {"status": TaskStatus.PENDING, "progress": 0.0, "error_message": None})
+
+    await update_and_notify(
+        task_id, {"status": TaskStatus.PENDING, "progress": 0.0, "error_message": None}
+    )
     worker_factory = deps.get_worker_factory(request, "get_downloader_worker")
     worker = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
-    await worker.add_task({"task_id": task_id, "video_url": str(task.get("video_url") or ""), "quality": "audio_only", "summary_mode": task.get("summary_mode") or "auto", "bilibili_parts": {"mode": "merge", "indices": indices}, "multipart_batch": True})
+    await worker.add_task(
+        {
+            "task_id": task_id,
+            "video_url": str(task.get("video_url") or ""),
+            "quality": "audio_only",
+            "summary_mode": task.get("summary_mode") or "auto",
+            "bilibili_parts": {"mode": "merge", "indices": indices},
+            "multipart_batch": True,
+        }
+    )
     return _with_part_stats(db.get_task(task_id))
 
 
@@ -348,11 +461,13 @@ async def re_summarize_task(
 
     multipart_parts = get_task_parts(task_id)
     if multipart_parts:
-        await worker.add_task({
-            "task_id": task_id,
-            "summary_mode": resolved_summary_mode,
-            "multipart_resummarize": True,
-        })
+        await worker.add_task(
+            {
+                "task_id": task_id,
+                "summary_mode": resolved_summary_mode,
+                "multipart_resummarize": True,
+            }
+        )
         return _with_part_stats(db.get_task(task_id))
 
     temp_file = os.path.join("temp", f"{task_id}_re.txt")

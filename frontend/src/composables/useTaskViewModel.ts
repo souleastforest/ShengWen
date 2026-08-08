@@ -21,6 +21,8 @@ import type {
   ModelPathValidationResult,
   VibeVoiceServiceScanResult,
   VibeVoiceServiceStatus,
+  QueueSnapshot,
+  QueueResponse,
 } from '../types'
 
 // 传统复制方法（兼容非安全上下文，如局域网 HTTP）
@@ -139,6 +141,7 @@ export function useTaskViewModel() {
   
   // --- UI State ---
   const tasks = ref<Task[]>([])
+  const queues = ref<QueueSnapshot[]>([])
   const selectedTask = ref<Task | null>(null)
   const taskParts = ref<TaskPart[]>([])
   const taskPartDetails = ref<Record<number, TaskPart>>({})
@@ -205,6 +208,16 @@ export function useTaskViewModel() {
     } catch (err) {
       console.error('Failed to fetch tasks:', err)
       error.value = '获取任务列表失败'
+    }
+  }
+
+  const fetchQueueSnapshot = async () => {
+    try {
+      const response = await axios.get<QueueResponse>(apiBaseUrl + "/tasks/queue")
+      queues.value = response.data?.queues ?? []
+    } catch (err) {
+      // 队列快照为辅助信息：失败时保留上一次快照，不影响任务列表主流程
+      console.error('Failed to fetch queue snapshot:', err)
     }
   }
 
@@ -481,6 +494,7 @@ export function useTaskViewModel() {
       console.log('WebSocket connected')
       // Fetch latest state on reconnection to sync any missed updates
       fetchTasks()
+      fetchQueueSnapshot()
       // Also refresh the selected task details if one is selected
       const currentTask = selectedTask.value
       if (currentTask) {
@@ -503,6 +517,11 @@ export function useTaskViewModel() {
           // Merge updates to preserve details that might not be in the broadcast.
           selectedTask.value = { ...selectedTask.value, ...updatedTask }
           scheduleTaskPartsRefresh(updatedTask.id)
+        }
+
+        // 可选字段：后端广播的队列快照（旧版本无该字段时忽略，向后兼容）
+        if (Array.isArray(data.queues)) {
+          queues.value = data.queues as QueueSnapshot[]
         }
       } else if (data.type === 'progress_update') {
         const { task_id, progress } = data
@@ -844,6 +863,7 @@ export function useTaskViewModel() {
   // --- Lifecycle ---
   onMounted(() => {
     fetchTasks()
+    fetchQueueSnapshot()
 
     fetchLlmProviders()
     fetchLlmSettings()
@@ -865,6 +885,8 @@ export function useTaskViewModel() {
   return {
     // State
     tasks,
+    queues,
+    fetchQueueSnapshot,
     selectedTask,
     taskParts,
     taskPartDetails,

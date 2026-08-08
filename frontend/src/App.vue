@@ -61,6 +61,7 @@ const {
   isScanningVibeVoice,
   isStartingVibeVoice,
   isStoppingVibeVoice,
+  queues,
   submitTask,
   cancelSubmitting,
   selectTask,
@@ -963,6 +964,7 @@ watch(
       v-model:isSidebarOpen="isSidebarOpen"
       :isLocalClient="isLocalClient"
       :tasks="tasks"
+      :queues="queues"
       :selectedTask="selectedTask"
       :isSubmitting="isSubmitting"
       :llmProviders="llmProviders"

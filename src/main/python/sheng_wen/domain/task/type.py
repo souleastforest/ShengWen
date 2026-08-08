@@ -12,6 +12,7 @@ class TaskStatus(str, Enum):
     TRANSCRIBING = "TRANSCRIBING"
     SUMMARIZING = "SUMMARIZING"
     COMPLETED = "COMPLETED"
+    PARTIAL = "PARTIAL"
     FAILED = "FAILED"
 
 
@@ -90,4 +91,3 @@ class TaskState:
                 safe[field_name] = defaults.get(field_name)
         safe = {field_name: safe.get(field_name) for field_name in cls._FIELDS}
         return cls(**safe)
-

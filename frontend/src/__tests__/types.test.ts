@@ -5,10 +5,11 @@ import type {
   ModelPathValidationResult,
   TranscriptionSettings,
   UpdateTranscriptionSettingsRequest,
+  QueueResponse,
 } from '../types'
 
 describe('VibeVoice runtime values for typed shapes', () => {
-  it('exposes the expected task status constants', () => {
+  it('exposes the expected task status constants (8 values, 与后端一致)', () => {
     expect(TaskStatus).toEqual({
       PENDING: 'PENDING',
       DOWNLOADING: 'DOWNLOADING',
@@ -17,7 +18,42 @@ describe('VibeVoice runtime values for typed shapes', () => {
       SUMMARIZING: 'SUMMARIZING',
       COMPLETED: 'COMPLETED',
       FAILED: 'FAILED',
+      PARTIAL: 'PARTIAL',
     })
+  })
+
+  it('matches the queue snapshot contract shape', () => {
+    const response: QueueResponse = {
+      queues: [
+        {
+          name: 'VideoDownloaderWorker',
+          active_task_id: null,
+          queue_size: 0,
+          waiting_task_ids: [],
+        },
+        {
+          name: 'TranscriberWorker',
+          active_task_id: 'task-9',
+          queue_size: 2,
+          waiting_task_ids: ['task-1', 'task-2'],
+        },
+      ],
+      timestamp: '2026-08-08T00:00:00Z',
+    }
+
+    expect(response.queues[0]).toEqual({
+      name: 'VideoDownloaderWorker',
+      active_task_id: null,
+      queue_size: 0,
+      waiting_task_ids: [],
+    })
+    expect(response.queues[1]).toEqual({
+      name: 'TranscriberWorker',
+      active_task_id: 'task-9',
+      queue_size: 2,
+      waiting_task_ids: ['task-1', 'task-2'],
+    })
+    expect(Object.keys(response)).toEqual(['queues', 'timestamp'])
   })
 
   it('matches the VibeVoice-related transcription settings fields', () => {

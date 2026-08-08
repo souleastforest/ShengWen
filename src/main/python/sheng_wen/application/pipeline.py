@@ -24,6 +24,7 @@ class Pipeline:
         self._bus = event_bus
         self._worker_factories: dict[str, Callable[[], Awaitable[Any]]] = {}
         self._subscription_ids: list[str] = []
+        self._started = False
 
     def register_worker_factory(
         self, name: str, factory: Callable[[], Awaitable[Any]]
@@ -32,16 +33,29 @@ class Pipeline:
         self._worker_factories[name] = factory
 
     async def start(self) -> None:
-        """Subscribe to task lifecycle events."""
+        """Subscribe to task lifecycle events.
+
+        幂等：主应用（ShengWen-app.py）与挂载子应用（api.py）各自的 lifespan
+        都会调用本方法，重复订阅会导致同一 TASK_CREATED 事件被派发多次
+        （任务重复入队、文件任务被二次处理误标 FAILED）。
+        """
+        if self._started:
+            logger.debug("[Pipeline] Already started, skip")
+            return
         sub_id = self._bus.subscribe(TASK_CREATED, self._on_task_created)
         self._subscription_ids.append(sub_id)
+        self._started = True
         logger.info("[Pipeline] Subscribed to TASK_CREATED")
 
     async def stop(self) -> None:
         """Unsubscribe from all events."""
+        if not self._started:
+            logger.debug("[Pipeline] Not started, skip")
+            return
         for sub_id in self._subscription_ids:
             self._bus.unsubscribe(TASK_CREATED, sub_id)
         self._subscription_ids.clear()
+        self._started = False
         logger.info("[Pipeline] Stopped")
 
     async def _on_task_created(self, payload: Any) -> None:

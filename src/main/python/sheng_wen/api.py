@@ -10,6 +10,7 @@ from loguru import logger
 from src.main.python.sheng_wen.application.events.bus import AsyncioEventBus
 from src.main.python.sheng_wen.application.pipeline import Pipeline
 from src.main.python.sheng_wen.config.settings import config, get_config_manager
+from src.main.python.sheng_wen.db import db
 from src.main.python.sheng_wen.infra.api.error_handler import register_error_handlers
 from src.main.python.sheng_wen.infra.api.routes.bilibili import (
     router as bilibili_router,
@@ -83,6 +84,13 @@ pipeline = Pipeline(event_bus)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 启动前恢复上次异常中断遗留的中间态任务（标记为 FAILED），再启动流水线。
+    try:
+        recovered = db.recover_interrupted_tasks()
+        if recovered:
+            logger.info(f"[Lifespan] 已恢复 {recovered} 个中断任务（标记为失败）")
+    except Exception as e:
+        logger.warning(f"[Lifespan] 恢复中断任务失败: {e}")
     await pipeline.start()
     yield
     await pipeline.stop()
@@ -217,6 +225,47 @@ async def get_file_upload_worker():
     file_upload_worker.start()
     _sync_worker_state()
     return file_upload_worker
+
+
+# 4 个固定队列名（与前端排队语义严格一致，顺序不可变）
+QUEUE_SNAPSHOT_WORKERS = [
+    ("VideoDownloaderWorker", "downloader_worker"),
+    ("FileUploadWorker", "file_upload_worker"),
+    ("TranscriberWorker", "transcriber_worker"),
+    ("LLMWorker", "llm_worker"),
+]
+
+
+def _empty_queue_snapshot(name: str) -> dict:
+    return {
+        "name": name,
+        "active_task_id": None,
+        "waiting_task_ids": [],
+        "queue_size": 0,
+    }
+
+
+async def get_queue_snapshots() -> list[dict]:
+    """
+    返回 4 个固定 worker 队列的快照。
+
+    仅读取已实例化的 worker（懒加载工厂不会在此触发）；
+    未实例化的 worker 返回全空快照。
+    """
+    snapshots = []
+    for queue_name, attr_name in QUEUE_SNAPSHOT_WORKERS:
+        worker = globals().get(attr_name)
+        if worker is None:
+            snapshots.append(_empty_queue_snapshot(queue_name))
+            continue
+        try:
+            snap = worker.snapshot()
+            snap["name"] = queue_name  # 以固定队列名为准
+        except Exception as e:
+            logger.warning(f"[queue_snapshot] 获取 {queue_name} 快照失败: {e}")
+            snap = _empty_queue_snapshot(queue_name)
+        snapshots.append(snap)
+    return snapshots
 
 
 async def stop_all_workers():

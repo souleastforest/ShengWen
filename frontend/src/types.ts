@@ -27,6 +27,18 @@ export interface TaskPart {
 export type TaskStatus = typeof TaskStatus[keyof typeof TaskStatus];
 export type SummaryMode = 'standard' | 'agent' | 'auto';
 
+export interface QueueSnapshot {
+  name: string;
+  active_task_id: string | null;
+  queue_size: number;
+  waiting_task_ids: string[];
+}
+
+export interface QueueResponse {
+  queues: QueueSnapshot[];
+  timestamp: string;
+}
+
 export interface Task {
   id: string;
   video_url: string;
