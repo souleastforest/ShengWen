@@ -1,5 +1,4 @@
 import asyncio
-from types import SimpleNamespace
 
 from src.main.python.sheng_wen.llm.anthropic_client import AnthropicClient
 from src.main.python.sheng_wen.llm.llm import LLMConfig, LLMMessage, LLMResponseError
@@ -39,7 +38,10 @@ def test_anthropic_client_rejects_empty_user_before_network_call():
     received = []
     asyncio.run(
         client.response(
-            [LLMMessage(role="system", content="system"), LLMMessage(role="user", content="  ")],
+            [
+                LLMMessage(role="system", content="system"),
+                LLMMessage(role="user", content="  "),
+            ],
             received.append,
             stream=False,
         )
@@ -51,7 +53,9 @@ def test_anthropic_client_rejects_empty_user_before_network_call():
     assert not fake.messages.called
 
 
-def test_llm_worker_marks_empty_multipart_part_failed_without_parent_failure(tmp_path, monkeypatch):
+def test_llm_worker_marks_empty_multipart_part_failed_without_parent_failure(
+    tmp_path, monkeypatch
+):
     transcript_path = tmp_path / "empty-part.txt"
     output_path = tmp_path / "summary-part.md"
     transcript_path.write_text("", encoding="utf-8")
@@ -61,6 +65,7 @@ def test_llm_worker_marks_empty_multipart_part_failed_without_parent_failure(tmp
         updates.append((task_id, part_index, values))
 
     import src.main.python.sheng_wen.task_parts as task_parts_module
+
     monkeypatch.setattr(task_parts_module, "update_task_part", record_update)
 
     fake = type("FakeLLM", (), {"called": False})()

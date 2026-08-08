@@ -40,6 +40,8 @@ class Task(BaseModel):
     summary_chunk_total: Optional[int] = None
     summary_chunk_done: Optional[int] = None
     summary_meta: Optional[str] = None
+    audio_downloaded: Optional[bool] = None
+    audio_missing_reason: Optional[str] = None
     part_count: Optional[int] = None
     part_completed: Optional[int] = None
     part_failed: Optional[int] = None

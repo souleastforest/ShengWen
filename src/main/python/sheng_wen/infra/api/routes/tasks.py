@@ -619,6 +619,60 @@ async def re_transcribe_task(
     return db.get_task(task_id)
 
 
+@router.post("/{task_id}/re-download", response_model=Task)
+async def re_download_task(task_id: str, request: Request):
+    """
+    重新下载音频（媒体文件已被回收清理等场景）。
+
+    校验矩阵：404 任务不存在 / 400 file:// 本地任务 / 409 无转录引导 re-transcribe /
+    409 本地已有媒体文件；合法时置为 DOWNLOADING 并派发 re_download_only 下载任务。
+    """
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    video_url = str(task.get("video_url") or "")
+    if not video_url or video_url.startswith("file://"):
+        raise HTTPException(status_code=400, detail="本地文件任务无需重新下载。")
+
+    if not task.get("transcript"):
+        raise HTTPException(
+            status_code=409, detail="任务没有转录内容，请使用重新转录。"
+        )
+
+    if deps._resolve_local_media_file(task_id, task):
+        raise HTTPException(
+            status_code=409, detail="本地已有可用的媒体文件，请使用重新转录。"
+        )
+
+    prev_status = str(task.get("status") or TaskStatus.PENDING.value)
+    from src.main.python.sheng_wen.task_updater import update_and_notify
+
+    await update_and_notify(
+        task_id,
+        {
+            "status": TaskStatus.DOWNLOADING,
+            "audio_downloaded": False,
+            "audio_missing_reason": None,
+            "error_message": None,
+        },
+    )
+
+    worker_factory = deps.get_worker_factory(request, "get_downloader_worker")
+    downloader_w = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
+    await downloader_w.add_task(
+        {
+            "task_id": task_id,
+            "video_url": video_url,
+            "quality": "audio_only",
+            "summary_mode": task.get("summary_mode") or "auto",
+            "re_download_only": True,
+            "restore_status": prev_status,
+        }
+    )
+    return db.get_task(task_id)
+
+
 @router.delete("/{task_id}", status_code=204)
 async def delete_task(task_id: str, request: Request):
     task = db.get_task(task_id)

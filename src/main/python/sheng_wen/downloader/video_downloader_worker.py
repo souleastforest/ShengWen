@@ -544,6 +544,8 @@ class VideoDownloaderWorker(Worker):
                 "summary_chunk_total": None,
                 "summary_chunk_done": None,
                 "summary_meta": None,
+                "audio_downloaded": False,
+                "audio_missing_reason": "subtitle_only",
             }
             summary_mode = str(payload.get("summary_mode") or "").strip().lower()
             if summary_mode in {"auto", "standard", "agent"}:
@@ -660,6 +662,8 @@ class VideoDownloaderWorker(Worker):
                 "summary_chunk_total": None,
                 "summary_chunk_done": None,
                 "summary_meta": None,
+                "audio_downloaded": False,
+                "audio_missing_reason": "subtitle_only",
             }
             summary_mode = str(payload.get("summary_mode") or "").strip().lower()
             if summary_mode in {"auto", "standard", "agent"}:
@@ -677,16 +681,21 @@ class VideoDownloaderWorker(Worker):
                 raise TaskCancelledError(f"任务已取消，停止派发总结: {task_id}")
             if payload.get("multipart_part"):
                 from ..task_parts import update_task_part
+
                 part_index = int(payload["multipart_part"]["index"])
                 next_payload["output_file"] = os.path.join(
                     self.output_dir, f"{task_id}_p{part_index + 1}_summary.md"
                 )
-                update_task_part(task_id, part_index, {
-                    "status": "SUMMARIZING",
-                    "progress": 100,
-                    "transcript": merged_transcript,
-                    "audio_duration": total_duration,
-                })
+                update_task_part(
+                    task_id,
+                    part_index,
+                    {
+                        "status": "SUMMARIZING",
+                        "progress": 100,
+                        "transcript": merged_transcript,
+                        "audio_duration": total_duration,
+                    },
+                )
                 asyncio.run(self.summary_worker.process_task(next_payload))
             else:
                 self._submit_coro(self.summary_worker.add_task(next_payload))
@@ -729,7 +738,6 @@ class VideoDownloaderWorker(Worker):
                 f"[{self.name}] B 站作者信息写入失败（仅提示，不影响流程）: {e}"
             )
 
-
     @staticmethod
     def _selected_bilibili_playlist_items(payload: Dict[str, Any]) -> str | None:
         parts_config = payload.get("bilibili_parts")
@@ -751,9 +759,10 @@ class VideoDownloaderWorker(Worker):
 
         return ",".join(part_numbers) or None
 
-
     @staticmethod
-    def _resolve_downloaded_video_paths(ydl: Any, info_dict: Dict[str, Any]) -> List[str]:
+    def _resolve_downloaded_video_paths(
+        ydl: Any, info_dict: Dict[str, Any]
+    ) -> List[str]:
         entries = info_dict.get("entries") if isinstance(info_dict, dict) else None
         candidates = entries if isinstance(entries, list) else [info_dict]
         paths = []
@@ -780,7 +789,11 @@ class VideoDownloaderWorker(Worker):
             part = parts.get(index)
             if part and part.get("status") == "COMPLETED":
                 continue
-            part = part or {"part_index": index, "title": f"P{index + 1}", "duration": 0}
+            part = part or {
+                "part_index": index,
+                "title": f"P{index + 1}",
+                "duration": 0,
+            }
             child_payload = dict(payload)
             child_payload.update(
                 {
@@ -794,15 +807,29 @@ class VideoDownloaderWorker(Worker):
                 }
             )
             logger.info(
-                f"[{self.name}] 开始处理多P任务 {task_id}: "
-                f"P{index + 1}/{len(indices)}"
+                f"[{self.name}] 开始处理多P任务 {task_id}: P{index + 1}/{len(indices)}"
             )
             self.process_task(child_payload)
-            updated = next((item for item in get_task_parts(task_id) if item["part_index"] == index), None)
+            updated = next(
+                (
+                    item
+                    for item in get_task_parts(task_id)
+                    if item["part_index"] == index
+                ),
+                None,
+            )
             if updated and updated.get("status") != "COMPLETED":
                 from ..task_parts import update_task_part
+
                 parent = db.get_task(task_id) or {}
-                update_task_part(task_id, index, {"status": "FAILED", "error_message": parent.get("error_message") or "该分P处理失败"})
+                update_task_part(
+                    task_id,
+                    index,
+                    {
+                        "status": "FAILED",
+                        "error_message": parent.get("error_message") or "该分P处理失败",
+                    },
+                )
 
         parts = get_task_parts(task_id)
         completed = [part for part in parts if part["status"] == "COMPLETED"]
@@ -830,7 +857,9 @@ class VideoDownloaderWorker(Worker):
                 summary_blocks.append(
                     f"## P{part['part_index'] + 1}：{title}\n\n{part['summary']}"
                 )
-            total_duration += float(part.get("audio_duration") or part.get("duration") or 0)
+            total_duration += float(
+                part.get("audio_duration") or part.get("duration") or 0
+            )
 
         failed_labels = ", ".join(f"P{part['part_index'] + 1}" for part in failed)
         transcript_path = os.path.join(self.output_dir, f"{task_id}_multipart.txt")
@@ -843,7 +872,9 @@ class VideoDownloaderWorker(Worker):
                 "audio_duration": total_duration,
                 "progress": 95.0,
                 "status": TaskStatus.SUMMARIZING,
-                "error_message": f"部分分P处理失败：{failed_labels}" if failed else None,
+                "error_message": f"部分分P处理失败：{failed_labels}"
+                if failed
+                else None,
             },
         )
         if self.summary_worker is None:
@@ -856,7 +887,9 @@ class VideoDownloaderWorker(Worker):
             )
             return
 
-        overview_path = os.path.join(self.output_dir, f"{task_id}_multipart_overview.txt")
+        overview_path = os.path.join(
+            self.output_dir, f"{task_id}_multipart_overview.txt"
+        )
         with open(overview_path, "w", encoding="utf-8") as file:
             file.write(
                 "请先给出整套视频的总体概览，再按分P分别总结。\n\n"
@@ -867,14 +900,15 @@ class VideoDownloaderWorker(Worker):
                 {
                     "task_id": task_id,
                     "intermediate_file_path": overview_path,
-                    "output_file": os.path.join(self.output_dir, f"{task_id}_summary.md"),
+                    "output_file": os.path.join(
+                        self.output_dir, f"{task_id}_summary.md"
+                    ),
                     "summary_mode": payload.get("summary_mode") or "auto",
                     "multipart_overview": True,
                     "multipart_failed": [part["part_index"] for part in failed],
                 }
             )
         )
-
 
     def process_task(self, payload: Any):
         """
@@ -891,7 +925,12 @@ class VideoDownloaderWorker(Worker):
             return
         if payload.get("multipart_part"):
             from ..task_parts import update_task_part
-            update_task_part(str(task_id), int(payload["multipart_part"]["index"]), {"status": "DOWNLOADING", "progress": 0, "error_message": None})
+
+            update_task_part(
+                str(task_id),
+                int(payload["multipart_part"]["index"]),
+                {"status": "DOWNLOADING", "progress": 0, "error_message": None},
+            )
 
         if not video_url:
             error_msg = "任务负载中缺少 'video_url'"
@@ -912,7 +951,9 @@ class VideoDownloaderWorker(Worker):
             if task_id and self.is_task_cancelled(task_id):
                 raise TaskCancelledError(f"任务已取消，跳过下载: {task_id}")
 
-            if self._try_process_with_bilibili_subtitle(payload):
+            if not payload.get(
+                "re_download_only"
+            ) and self._try_process_with_bilibili_subtitle(payload):
                 return
         except TaskCancelledError as e:
             logger.info(f"[{self.name}] {e}")
@@ -977,7 +1018,9 @@ class VideoDownloaderWorker(Worker):
             multipart_part = payload.get("multipart_part")
             if multipart_part and task_id:
                 part_index = int(multipart_part.get("index", 0)) + 1
-                ydl_opts["outtmpl"] = os.path.join(self.output_dir, f"{task_id}_p{part_index}.%(ext)s")
+                ydl_opts["outtmpl"] = os.path.join(
+                    self.output_dir, f"{task_id}_p{part_index}.%(ext)s"
+                )
             selected_playlist_items = self._selected_bilibili_playlist_items(payload)
             parts_config = payload.get("bilibili_parts")
             if (
@@ -1037,6 +1080,33 @@ class VideoDownloaderWorker(Worker):
             if task_id and self.is_task_cancelled(task_id):
                 raise TaskCancelledError(f"任务已取消，停止后续处理: {task_id}")
 
+            # re-download 专用分支：下载成功即恢复原状态，不派发后续 worker
+            if payload.get("re_download_only"):
+                if task_id:
+                    from ..db import TaskStatus
+                    from ..task_updater import update_and_notify
+
+                    updates = {
+                        "audio_downloaded": True,
+                        "audio_missing_reason": None,
+                        "error_message": None,
+                    }
+                    restore_status = payload.get("restore_status")
+                    if restore_status:
+                        try:
+                            updates["status"] = TaskStatus(str(restore_status).upper())
+                        except ValueError:
+                            logger.warning(
+                                f"[{self.name}] 无效的恢复状态 '{restore_status}'，"
+                                f"保持当前状态"
+                            )
+                    self._submit_coro(update_and_notify(task_id, updates))
+                logger.info(
+                    f"[{self.name}] re-download 完成: task_id={task_id}, "
+                    f"恢复状态: {payload.get('restore_status')}, video={video_path}"
+                )
+                return
+
             if task_id and self._is_bilibili_url(str(video_url)):
                 self._submit_coro(
                     self._resolve_and_save_bilibili_author(task_id, str(video_url))
@@ -1052,7 +1122,14 @@ class VideoDownloaderWorker(Worker):
                 from ..task_updater import update_and_notify
 
                 self._submit_coro(
-                    update_and_notify(task_id, {"status": TaskStatus.TRANSCRIBING})
+                    update_and_notify(
+                        task_id,
+                        {
+                            "status": TaskStatus.TRANSCRIBING,
+                            "audio_downloaded": True,
+                            "audio_missing_reason": None,
+                        },
+                    )
                 )
 
             if self.next_worker:
@@ -1087,8 +1164,10 @@ class VideoDownloaderWorker(Worker):
             logger.error(f"[{self.name}] 下载视频时出错: {e}", exc_info=True)
             if payload.get("multipart_part"):
                 from ..task_parts import update_task_part
+
                 update_task_part(
-                    str(task_id), int(payload["multipart_part"]["index"]),
+                    str(task_id),
+                    int(payload["multipart_part"]["index"]),
                     {"status": "FAILED", "error_message": str(e)},
                 )
                 return

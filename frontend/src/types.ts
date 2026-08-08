@@ -27,6 +27,13 @@ export interface TaskPart {
 export type TaskStatus = typeof TaskStatus[keyof typeof TaskStatus];
 export type SummaryMode = 'standard' | 'agent' | 'auto';
 
+/**
+ * 音频缺失原因（与后端 storage 回收 / 字幕直取逻辑保持一致）：
+ * - subtitle_only: 任务未下载音频，直接使用了 B 站字幕进行转录
+ * - reclaimed: 任务媒体文件已被存储回收器清理
+ */
+export type AudioMissingReason = 'subtitle_only' | 'reclaimed';
+
 export interface QueueSnapshot {
   name: string;
   active_task_id: string | null;
@@ -64,6 +71,8 @@ export interface Task {
   summary_chunk_total?: number;
   summary_chunk_done?: number;
   summary_meta?: string;
+  audio_downloaded?: boolean;
+  audio_missing_reason?: AudioMissingReason;
 }
 
 export interface CreateTaskRequest {

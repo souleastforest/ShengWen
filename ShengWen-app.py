@@ -20,6 +20,10 @@ from src.main.python.sheng_wen.db import TaskStatus, db as task_db
 from src.main.python.sheng_wen.version import APP_VERSION
 import src.main.python.sheng_wen.api as api_module
 from src.main.python.sheng_wen.config.settings import config
+from src.main.python.sheng_wen.domain.storage.reclaimer_loop import (
+    start_storage_reclaimer,
+    stop_storage_reclaimer,
+)
 from datetime import datetime
 import uuid
 
@@ -204,6 +208,9 @@ async def lifespan(app: FastAPI):
             f"--- [Lifespan] 检测到 {recovered_count} 个中断任务，已自动标记为 FAILED（可手动重试） ---"
         )
 
+    # 启动存储回收器：先做存量音频状态回填，再启动周期循环
+    await start_storage_reclaimer()
+
     # 启动事件总线 Pipeline（订阅 TASK_CREATED 等事件）
     await api_module.pipeline.start()
 
@@ -218,6 +225,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown logic
+    await stop_storage_reclaimer()
     await api_module.pipeline.stop()
     await api_module.stop_all_workers()
 

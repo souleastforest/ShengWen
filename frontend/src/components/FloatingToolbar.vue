@@ -3,6 +3,7 @@ import { PhSparkle, PhArticle, PhCaretDown, PhArrowClockwise, PhCopy, PhDownload
 import { TaskStatus, type Task, type MarkdownHeadingItem } from '../types'
 import FloatingToolbarShell from './FloatingToolbarShell.vue'
 import FloatingToolbarChapterNav from './FloatingToolbarChapterNav.vue'
+import { canReDownloadAudio } from '../utils/audioStatus'
 
 const activeTab = defineModel<string>('activeTab', { required: true })
 
@@ -16,6 +17,7 @@ defineProps<{
 const emit = defineEmits<{
   reSummarize: []
   reTranscribe: []
+  reDownload: []
   copySummary: []
   copyTranscript: []
   downloadMarkdown: []
@@ -132,6 +134,14 @@ const emit = defineEmits<{
                 >
                   <PhArrowClockwise :size="14" />
                   重新转录原文
+                </button>
+                <button
+                  v-if="selectedTask && canReDownloadAudio(selectedTask)"
+                  @click="emit('reDownload')"
+                  class="w-full text-left flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors"
+                >
+                  <PhDownloadSimple :size="14" />
+                  重新下载音频
                 </button>
                 <button
                   @click="emit('copyTranscript')"

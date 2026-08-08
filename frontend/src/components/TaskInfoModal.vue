@@ -1,12 +1,26 @@
 <script setup lang="ts">
-import { PhInfo, PhX, PhArrowSquareOut } from '@phosphor-icons/vue'
+import { computed } from 'vue'
+import { PhInfo, PhX, PhArrowSquareOut, PhDownloadSimple } from '@phosphor-icons/vue'
 import { TaskStatus, type Task } from '../types'
+import { getAudioStatusInfo, canReDownloadAudio } from '../utils/audioStatus'
 
 const show = defineModel<boolean>('show', { required: true })
 
-defineProps<{
+const props = defineProps<{
   selectedTask: Task | null
+  isRedownloading?: boolean
 }>()
+
+const emit = defineEmits<{
+  reDownload: []
+}>()
+
+const audioStatus = computed(() =>
+  getAudioStatusInfo(
+    props.selectedTask?.audio_downloaded,
+    props.selectedTask?.audio_missing_reason,
+  ),
+)
 
 const getStatusLabel = (status: TaskStatus) => {
   switch (status) {
@@ -59,6 +73,25 @@ const getStatusClass = (status: TaskStatus) => {
               <span :class="['px-2 py-0.5 rounded-full text-xs font-medium', getStatusClass(selectedTask.status)]">
                 {{ getStatusLabel(selectedTask.status) }}
               </span>
+            </div>
+
+            <div class="text-slate-500">音频状态</div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <span
+                :class="['px-2 py-0.5 rounded-full text-xs font-medium', audioStatus.badgeClass]"
+                :title="audioStatus.hint ?? undefined"
+              >
+                {{ audioStatus.label }}
+              </span>
+              <button
+                v-if="canReDownloadAudio(selectedTask)"
+                :disabled="isRedownloading"
+                @click="emit('reDownload')"
+                class="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium"
+              >
+                <PhDownloadSimple :size="14" />
+                {{ isRedownloading ? '重新下载中...' : '重新下载' }}
+              </button>
             </div>
 
             <div class="text-slate-500">视频 URL</div>

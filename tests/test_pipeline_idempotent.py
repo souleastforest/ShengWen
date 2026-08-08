@@ -82,5 +82,7 @@ async def test_single_created_event_dispatches_once():
     await bus.publish(TASK_CREATED, {"task_id": "t1", "type": "fake"})
     await asyncio.sleep(0.01)
 
-    assert dispatched.count("t1") == 1, f"应只派发一次，实际 {len(dispatched)} 次: {dispatched}"
+    assert dispatched.count("t1") == 1, (
+        f"应只派发一次，实际 {len(dispatched)} 次: {dispatched}"
+    )
     await pipeline.stop()

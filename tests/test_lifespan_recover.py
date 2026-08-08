@@ -15,11 +15,25 @@ class _FakeDB:
         return self.recovered
 
 
+def _mock_reclaimer(monkeypatch):
+    """隔离存储回收器：避免 lifespan 对真实 DB/temp 目录产生副作用。"""
+
+    async def fake_start():
+        pass
+
+    async def fake_stop():
+        pass
+
+    monkeypatch.setattr(api_module, "start_storage_reclaimer", fake_start)
+    monkeypatch.setattr(api_module, "stop_storage_reclaimer", fake_stop)
+
+
 @pytest.mark.asyncio
 async def test_lifespan_calls_recover_before_pipeline_start(monkeypatch):
     """恢复中断任务应在 pipeline.start() 之前执行。"""
     fake_db = _FakeDB(recovered=2)
     monkeypatch.setattr(api_module, "db", fake_db)
+    _mock_reclaimer(monkeypatch)
 
     order = []
 
@@ -48,6 +62,7 @@ async def test_lifespan_survives_recover_exception(monkeypatch):
             raise RuntimeError("db down")
 
     monkeypatch.setattr(api_module, "db", _RaisingDB())
+    _mock_reclaimer(monkeypatch)
 
     started = []
 

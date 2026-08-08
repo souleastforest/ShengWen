@@ -2,7 +2,8 @@
 import { PhPencilSimple, PhCheck, PhX, PhArrowSquareOut } from '@phosphor-icons/vue'
 import type { Task } from '../types'
 import { formatDuration, formatTranscriptionDuration, formatConversionRatio, formatDateTime } from '../utils/formatters'
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, computed } from 'vue'
+import { getAudioStatusInfo } from '../utils/audioStatus'
 
 const props = defineProps<{
   task: Task
@@ -27,6 +28,11 @@ const startEditingTopic = () => {
     inputRef.value?.focus()
   })
 }
+
+// 仅展示：与 TaskInfoModal 共用同一文案映射，避免两处漂移
+const audioStatus = computed(() =>
+  getAudioStatusInfo(props.task.audio_downloaded, props.task.audio_missing_reason),
+)
 </script>
 
 <template>
@@ -127,6 +133,15 @@ const startEditingTopic = () => {
         </span>
         <span class="flex items-center">
           生成时间 <strong class="ml-1 text-slate-800 font-semibold">{{ formatDateTime(task.created_at) }}</strong>
+        </span>
+        <span class="flex items-center">
+          音频状态
+          <span
+            :class="['ml-1 px-2 py-0.5 rounded-full text-xs font-medium', audioStatus.badgeClass]"
+            :title="audioStatus.hint ?? undefined"
+          >
+            {{ audioStatus.label }}
+          </span>
         </span>
       </div>
     </div>

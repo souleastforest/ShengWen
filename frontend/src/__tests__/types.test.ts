@@ -6,6 +6,8 @@ import type {
   TranscriptionSettings,
   UpdateTranscriptionSettingsRequest,
   QueueResponse,
+  Task,
+  AudioMissingReason,
 } from '../types'
 
 describe('VibeVoice runtime values for typed shapes', () => {
@@ -165,5 +167,37 @@ describe('VibeVoice runtime values for typed shapes', () => {
       'has_processor_config',
       'details',
     ])
+  })
+
+  it('matches the audio status contract fields on Task (与后端 storage 回收字段一致)', () => {
+    const reclaimedTask: Task = {
+      id: 'task-1',
+      video_url: 'https://example.com/v.mp4',
+      status: 'COMPLETED',
+      progress: 1,
+      created_at: '2026-08-08T00:00:00Z',
+      audio_downloaded: false,
+      audio_missing_reason: 'reclaimed',
+    }
+
+    expect(reclaimedTask.audio_downloaded).toBe(false)
+    expect(reclaimedTask.audio_missing_reason).toBe('reclaimed')
+
+    // 字段为可选：未回填的旧任务不应报类型错误
+    const legacyTask: Task = {
+      id: 'task-2',
+      video_url: 'https://example.com/v2.mp4',
+      status: 'FAILED',
+      progress: 0,
+      created_at: '2026-08-01T00:00:00Z',
+    }
+    expect(legacyTask.audio_downloaded).toBeUndefined()
+    expect(legacyTask.audio_missing_reason).toBeUndefined()
+  })
+
+  it('AudioMissingReason 仅允许 subtitle_only / reclaimed 两个值', () => {
+    const subtitleOnly: AudioMissingReason = 'subtitle_only'
+    const reclaimed: AudioMissingReason = 'reclaimed'
+    expect([subtitleOnly, reclaimed]).toEqual(['subtitle_only', 'reclaimed'])
   })
 })

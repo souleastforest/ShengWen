@@ -11,6 +11,10 @@ from src.main.python.sheng_wen.application.events.bus import AsyncioEventBus
 from src.main.python.sheng_wen.application.pipeline import Pipeline
 from src.main.python.sheng_wen.config.settings import config, get_config_manager
 from src.main.python.sheng_wen.db import db
+from src.main.python.sheng_wen.domain.storage.reclaimer_loop import (
+    start_storage_reclaimer,
+    stop_storage_reclaimer,
+)
 from src.main.python.sheng_wen.infra.api.error_handler import register_error_handlers
 from src.main.python.sheng_wen.infra.api.routes.bilibili import (
     router as bilibili_router,
@@ -91,8 +95,11 @@ async def lifespan(app: FastAPI):
             logger.info(f"[Lifespan] 已恢复 {recovered} 个中断任务（标记为失败）")
     except Exception as e:
         logger.warning(f"[Lifespan] 恢复中断任务失败: {e}")
+    # 启动存储回收器：先做存量音频状态回填，再启动周期循环
+    await start_storage_reclaimer()
     await pipeline.start()
     yield
+    await stop_storage_reclaimer()
     await pipeline.stop()
     await stop_all_workers()
 

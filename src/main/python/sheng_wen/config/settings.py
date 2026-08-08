@@ -186,7 +186,7 @@ class SummarizationConfig:
 class StorageConfig:
     """Storage management configuration."""
 
-    max_total_mb: float = 2048
+    max_total_mb: float = 10240  # 10G
     retention_completed_sec: int = 86400  # 24h
     retention_failed_sec: int = 7200  # 2h
     cleanup_interval_sec: int = 600  # 10min
@@ -488,15 +488,10 @@ class JSONConfigManager:
         ).lower()
         if transcriber_type not in {"fast_whisper", "vibe_voice_asr"}:
             transcriber_type = str(defaults["transcriber_type"])
-        vibevoice_language_model = (
-            str(
-                raw.get(
-                    "vibevoice_language_model", defaults["vibevoice_language_model"]
-                )
-                or ""
-            ).strip()
-            or str(defaults["vibevoice_language_model"])
-        )
+        vibevoice_language_model = str(
+            raw.get("vibevoice_language_model", defaults["vibevoice_language_model"])
+            or ""
+        ).strip() or str(defaults["vibevoice_language_model"])
         vibevoice_max_new_tokens = max(
             1,
             int(
@@ -511,9 +506,7 @@ class JSONConfigManager:
         if vibevoice_dtype not in {"bfloat16", "float16"}:
             vibevoice_dtype = str(defaults["vibevoice_dtype"])
         vibevoice_inference_mode = str(
-            raw.get(
-                "vibevoice_inference_mode", defaults["vibevoice_inference_mode"]
-            )
+            raw.get("vibevoice_inference_mode", defaults["vibevoice_inference_mode"])
         ).lower()
         if vibevoice_inference_mode not in {"local", "api"}:
             vibevoice_inference_mode = str(defaults["vibevoice_inference_mode"])
@@ -541,10 +534,20 @@ class JSONConfigManager:
                 raw.get("vibevoice_api_url", defaults["vibevoice_api_url"]) or ""
             ).strip(),
             asr_chunk_threshold_sec=max(
-                60, int(raw.get("asr_chunk_threshold_sec", defaults["asr_chunk_threshold_sec"]))
+                60,
+                int(
+                    raw.get(
+                        "asr_chunk_threshold_sec", defaults["asr_chunk_threshold_sec"]
+                    )
+                ),
             ),
             asr_chunk_duration_sec=max(
-                30, int(raw.get("asr_chunk_duration_sec", defaults["asr_chunk_duration_sec"]))
+                30,
+                int(
+                    raw.get(
+                        "asr_chunk_duration_sec", defaults["asr_chunk_duration_sec"]
+                    )
+                ),
             ),
             asr_chunk_fallback_duration_sec=max(
                 30,

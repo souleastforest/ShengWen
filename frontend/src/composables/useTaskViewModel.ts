@@ -1038,6 +1038,19 @@ export function useTaskViewModel() {
         }
       }
     },
+    reDownloadAudio: async (taskId: string) => {
+      try {
+        await axios.post(`${apiBaseUrl}/tasks/${taskId}/re-download`)
+        // No need to do more, WS will update the status
+      } catch (err) {
+        console.error('Failed to re-download task audio:', err)
+        if (axios.isAxiosError(err) && err.response) {
+          error.value = err.response.data?.detail || '重新下载音频失败'
+        } else {
+          error.value = '重新下载音频失败'
+        }
+      }
+    },
     updateTaskTopic: async (taskId: string, newTopic: string) => {
       try {
         await axios.patch(`${apiBaseUrl}/tasks/${taskId}`, { topic: newTopic })

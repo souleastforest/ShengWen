@@ -72,6 +72,7 @@ const {
   deleteTask,
   reSummarize,
   reTranscribe,
+  reDownloadAudio,
   updateTaskTopic,
   updateLlmSettings,
   updateTranscriptionSettings,
@@ -98,6 +99,7 @@ const isSettingsModalOpen = ref(false)
 const isEditingTopic = ref(false)
 const editingTopicValue = ref('')
 const isTestingLlm = ref(false)
+const isRedownloading = ref(false)
 const summaryHighlightRequest = ref<{
   taskId: string
   keyword: string
@@ -351,6 +353,18 @@ const handleReTranscribe = (taskId: string) => {
   const { info } = useToast()
   info('正在重新转录原文...')
   reTranscribe(taskId)
+}
+
+// 重新下载音频：await 以便按钮 loading 防抖（reDownloadAudio 内部吞掉错误并写入 error）
+const handleReDownload = async (taskId: string) => {
+  const { info } = useToast()
+  info('正在重新下载音频...')
+  isRedownloading.value = true
+  try {
+    await reDownloadAudio(taskId)
+  } finally {
+    isRedownloading.value = false
+  }
 }
 
 const handleDownloadMarkdown = () => {
@@ -1000,6 +1014,7 @@ watch(
           :active-heading-id="activeHeadingId"
           @reSummarize="handleReSummarize(selectedTask.id)"
           @reTranscribe="handleReTranscribe(selectedTask.id)"
+          @reDownload="handleReDownload(selectedTask.id)"
           @copySummary="handleCopySummary"
           @copyTranscript="handleCopyTranscript"
           @downloadMarkdown="handleDownloadMarkdown"
@@ -1063,6 +1078,8 @@ watch(
     <TaskInfoModal
       v-model:show="showInfoModal"
       :selectedTask="selectedTask"
+      :isRedownloading="isRedownloading"
+      @reDownload="selectedTask && handleReDownload(selectedTask.id)"
     />
     
     <!-- Mermaid 查看器模态框 -->

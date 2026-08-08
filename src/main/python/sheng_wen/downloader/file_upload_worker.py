@@ -54,7 +54,10 @@ class FileUploadWorker(Worker):
         if task_id:
             from ..db import TaskStatus
             from ..task_updater import update_and_notify
-            await update_and_notify(task_id, {"status": TaskStatus.UPLOADING, "progress": 0.0})
+
+            await update_and_notify(
+                task_id, {"status": TaskStatus.UPLOADING, "progress": 0.0}
+            )
 
         try:
             # 获取文件大小
@@ -84,6 +87,7 @@ class FileUploadWorker(Worker):
                 progress = (i / upload_steps) * 100
                 if task_id:
                     from ..api import notify_progress_update
+
                     await notify_progress_update(task_id, progress)
                 await asyncio.sleep(0.05)  # 轻微延迟，让前端能看到进度
 
@@ -94,6 +98,7 @@ class FileUploadWorker(Worker):
             if file_path != final_path:
                 # 移动文件到最终位置
                 import shutil
+
                 shutil.move(file_path, final_path)
                 logger.info(f"[{self.name}] 文件已移动到: {final_path}")
             else:
@@ -104,7 +109,16 @@ class FileUploadWorker(Worker):
             if task_id:
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
-                await update_and_notify(task_id, {"title": title, "status": TaskStatus.TRANSCRIBING})
+
+                await update_and_notify(
+                    task_id,
+                    {
+                        "title": title,
+                        "status": TaskStatus.TRANSCRIBING,
+                        "audio_downloaded": True,
+                        "audio_missing_reason": None,
+                    },
+                )
 
             # 传递给下一个 Worker
             if self.next_worker:
@@ -127,4 +141,7 @@ class FileUploadWorker(Worker):
         """标记任务为失败状态并通知前端"""
         from ..db import TaskStatus
         from ..task_updater import update_and_notify
-        await update_and_notify(task_id, {"status": TaskStatus.FAILED, "error_message": error_msg})
+
+        await update_and_notify(
+            task_id, {"status": TaskStatus.FAILED, "error_message": error_msg}
+        )

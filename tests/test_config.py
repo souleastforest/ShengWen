@@ -3,8 +3,9 @@ from src.main.python.sheng_wen.config.settings import StorageConfig, Observabili
 
 def test_storage_config_defaults():
     cfg = StorageConfig()
-    assert cfg.max_total_mb == 2048
+    assert cfg.max_total_mb == 10240
     assert cfg.retention_completed_sec == 86400
+    assert cfg.retention_failed_sec == 7200
     assert cfg.cleanup_interval_sec == 600
 
 

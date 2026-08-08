@@ -5,7 +5,19 @@ from enum import Enum
 from typing import List, Optional, Dict, Any
 
 from loguru import logger
-from sqlalchemy import create_engine, Column, String, Float, Integer, Text, DateTime, Enum as SQLEnum, inspect, text
+from sqlalchemy import (
+    create_engine,
+    Column,
+    String,
+    Float,
+    Integer,
+    Text,
+    DateTime,
+    Boolean,
+    Enum as SQLEnum,
+    inspect,
+    text,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -23,6 +35,7 @@ def _format_utc_timestamp(value: datetime | None) -> str | None:
         value = value.astimezone(timezone.utc)
     return value.isoformat().replace("+00:00", "Z")
 
+
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
     DOWNLOADING = "DOWNLOADING"
@@ -33,9 +46,10 @@ class TaskStatus(str, Enum):
     PARTIAL = "PARTIAL"
     FAILED = "FAILED"
 
+
 class TaskModel(Base):
     __tablename__ = "tasks"
-    
+
     id = Column(String, primary_key=True)
     video_url = Column(String, nullable=False)
     status = Column(SQLEnum(TaskStatus), default=TaskStatus.PENDING)
@@ -55,12 +69,16 @@ class TaskModel(Base):
     summary_chunk_total = Column(Integer, nullable=True)
     summary_chunk_done = Column(Integer, nullable=True)
     summary_meta = Column(Text, nullable=True)
-    
+    audio_downloaded = Column(Boolean, nullable=True)
+    audio_missing_reason = Column(String, nullable=True)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
             "video_url": self.video_url,
-            "status": self.status.value if isinstance(self.status, TaskStatus) else self.status,
+            "status": self.status.value
+            if isinstance(self.status, TaskStatus)
+            else self.status,
             "created_at": _format_utc_timestamp(self.created_at),
             "latest_modified_at": _format_utc_timestamp(self.latest_modified_at),
             "progress": self.progress,
@@ -77,6 +95,8 @@ class TaskModel(Base):
             "summary_chunk_total": self.summary_chunk_total,
             "summary_chunk_done": self.summary_chunk_done,
             "summary_meta": self.summary_meta,
+            "audio_downloaded": self.audio_downloaded,
+            "audio_missing_reason": self.audio_missing_reason,
         }
 
 
@@ -98,7 +118,9 @@ class TaskDB:
             logger.info(f"Using SQLite database: {sqlite_path}")
             self._migrate_from_file_if_needed()
         except Exception as e:
-            logger.error(f"Failed to initialize SQLite: {e}. Falling back to JSON file storage.")
+            logger.error(
+                f"Failed to initialize SQLite: {e}. Falling back to JSON file storage."
+            )
             self.use_db = False
             self._load_from_file()
 
@@ -114,6 +136,8 @@ class TaskDB:
             has_summary_chunk_total = "summary_chunk_total" in columns
             has_summary_chunk_done = "summary_chunk_done" in columns
             has_summary_meta = "summary_meta" in columns
+            has_audio_downloaded = "audio_downloaded" in columns
+            has_audio_missing_reason = "audio_missing_reason" in columns
             if (
                 has_latest_modified_at
                 and has_author_name
@@ -122,32 +146,70 @@ class TaskDB:
                 and has_summary_chunk_total
                 and has_summary_chunk_done
                 and has_summary_meta
+                and has_audio_downloaded
+                and has_audio_missing_reason
             ):
                 return
 
             with self.engine.begin() as conn:
                 if not has_latest_modified_at:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN latest_modified_at DATETIME"))
-                    conn.execute(text("UPDATE tasks SET latest_modified_at = created_at WHERE latest_modified_at IS NULL"))
-                    logger.info("Database schema updated: added tasks.latest_modified_at")
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN latest_modified_at DATETIME")
+                    )
+                    conn.execute(
+                        text(
+                            "UPDATE tasks SET latest_modified_at = created_at WHERE latest_modified_at IS NULL"
+                        )
+                    )
+                    logger.info(
+                        "Database schema updated: added tasks.latest_modified_at"
+                    )
                 if not has_author_name:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN author_name VARCHAR"))
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN author_name VARCHAR")
+                    )
                     logger.info("Database schema updated: added tasks.author_name")
                 if not has_author_url:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN author_url VARCHAR"))
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN author_url VARCHAR")
+                    )
                     logger.info("Database schema updated: added tasks.author_url")
                 if not has_summary_mode:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN summary_mode VARCHAR"))
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN summary_mode VARCHAR")
+                    )
                     logger.info("Database schema updated: added tasks.summary_mode")
                 if not has_summary_chunk_total:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN summary_chunk_total INTEGER"))
-                    logger.info("Database schema updated: added tasks.summary_chunk_total")
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN summary_chunk_total INTEGER")
+                    )
+                    logger.info(
+                        "Database schema updated: added tasks.summary_chunk_total"
+                    )
                 if not has_summary_chunk_done:
-                    conn.execute(text("ALTER TABLE tasks ADD COLUMN summary_chunk_done INTEGER"))
-                    logger.info("Database schema updated: added tasks.summary_chunk_done")
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN summary_chunk_done INTEGER")
+                    )
+                    logger.info(
+                        "Database schema updated: added tasks.summary_chunk_done"
+                    )
                 if not has_summary_meta:
                     conn.execute(text("ALTER TABLE tasks ADD COLUMN summary_meta TEXT"))
                     logger.info("Database schema updated: added tasks.summary_meta")
+                if not has_audio_downloaded:
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN audio_downloaded BOOLEAN")
+                    )
+                    logger.info("Database schema updated: added tasks.audio_downloaded")
+                if not has_audio_missing_reason:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE tasks ADD COLUMN audio_missing_reason VARCHAR"
+                        )
+                    )
+                    logger.info(
+                        "Database schema updated: added tasks.audio_missing_reason"
+                    )
         except Exception as e:
             logger.error(f"Failed to ensure database schema: {e}")
 
@@ -155,14 +217,14 @@ class TaskDB:
         self._memory_db: Dict[str, str] = {}
         if os.path.exists(self.file_path):
             try:
-                with open(self.file_path, 'r', encoding='utf-8') as f:
+                with open(self.file_path, "r", encoding="utf-8") as f:
                     self._memory_db = json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load tasks from file: {e}")
 
     def _save_to_file(self):
         try:
-            with open(self.file_path, 'w', encoding='utf-8') as f:
+            with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(self._memory_db, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Failed to save tasks to file: {e}")
@@ -171,24 +233,32 @@ class TaskDB:
         """Migrate data from tasks.json to SQLite if file exists and DB is empty"""
         if not os.path.exists(self.file_path):
             return
-        
+
         session: Session = self.SessionLocal()
         try:
             count = session.query(TaskModel).count()
             if count > 0:
                 return  # Already has data, skip migration
-            
-            with open(self.file_path, 'r', encoding='utf-8') as f:
+
+            with open(self.file_path, "r", encoding="utf-8") as f:
                 file_data = json.load(f)
-            
+
             for task_id, task_json in file_data.items():
                 task_data = json.loads(task_json)
                 task = TaskModel(
                     id=task_data.get("id", task_id),
                     video_url=task_data["video_url"],
                     status=TaskStatus(task_data.get("status", "PENDING")),
-                    created_at=datetime.fromisoformat(task_data["created_at"]) if task_data.get("created_at") else datetime.now(timezone.utc),
-                    latest_modified_at=datetime.fromisoformat(task_data["latest_modified_at"]) if task_data.get("latest_modified_at") else datetime.fromisoformat(task_data["created_at"]) if task_data.get("created_at") else datetime.now(timezone.utc),
+                    created_at=datetime.fromisoformat(task_data["created_at"])
+                    if task_data.get("created_at")
+                    else datetime.now(timezone.utc),
+                    latest_modified_at=datetime.fromisoformat(
+                        task_data["latest_modified_at"]
+                    )
+                    if task_data.get("latest_modified_at")
+                    else datetime.fromisoformat(task_data["created_at"])
+                    if task_data.get("created_at")
+                    else datetime.now(timezone.utc),
                     progress=task_data.get("progress", 0.0),
                     title=task_data.get("title"),
                     transcript=task_data.get("transcript"),
@@ -205,9 +275,11 @@ class TaskDB:
                     summary_meta=task_data.get("summary_meta"),
                 )
                 session.add(task)
-            
+
             session.commit()
-            logger.info(f"Migrated {len(file_data)} tasks from {self.file_path} to database")
+            logger.info(
+                f"Migrated {len(file_data)} tasks from {self.file_path} to database"
+            )
         except Exception as e:
             session.rollback()
             logger.error(f"Failed to migrate data from file: {e}")
@@ -227,7 +299,9 @@ class TaskDB:
         if data.get("created_at"):
             data["created_at"] = datetime.fromisoformat(data["created_at"])
         if data.get("latest_modified_at"):
-            data["latest_modified_at"] = datetime.fromisoformat(data["latest_modified_at"])
+            data["latest_modified_at"] = datetime.fromisoformat(
+                data["latest_modified_at"]
+            )
         elif data.get("created_at"):
             data["latest_modified_at"] = data["created_at"]
         return data
@@ -248,18 +322,30 @@ class TaskDB:
                         setattr(task, key, value)
                 else:
                     task_data_copy = task_data.copy()
-                    if "status" in task_data_copy and isinstance(task_data_copy["status"], str):
+                    if "status" in task_data_copy and isinstance(
+                        task_data_copy["status"], str
+                    ):
                         task_data_copy["status"] = TaskStatus(task_data_copy["status"])
-                    if "created_at" in task_data_copy and isinstance(task_data_copy["created_at"], str):
-                        task_data_copy["created_at"] = datetime.fromisoformat(task_data_copy["created_at"])
-                    if "latest_modified_at" in task_data_copy and isinstance(task_data_copy["latest_modified_at"], str):
-                        task_data_copy["latest_modified_at"] = datetime.fromisoformat(task_data_copy["latest_modified_at"])
+                    if "created_at" in task_data_copy and isinstance(
+                        task_data_copy["created_at"], str
+                    ):
+                        task_data_copy["created_at"] = datetime.fromisoformat(
+                            task_data_copy["created_at"]
+                        )
+                    if "latest_modified_at" in task_data_copy and isinstance(
+                        task_data_copy["latest_modified_at"], str
+                    ):
+                        task_data_copy["latest_modified_at"] = datetime.fromisoformat(
+                            task_data_copy["latest_modified_at"]
+                        )
                     if "latest_modified_at" not in task_data_copy:
-                        task_data_copy["latest_modified_at"] = task_data_copy.get("created_at", datetime.now(timezone.utc))
-                    
+                        task_data_copy["latest_modified_at"] = task_data_copy.get(
+                            "created_at", datetime.now(timezone.utc)
+                        )
+
                     # 确保 'id' 不在 task_data_copy 中，因为它已经作为关键字参数传递
-                    task_data_copy.pop('id', None)
-                    
+                    task_data_copy.pop("id", None)
+
                     task = TaskModel(id=task_id, **task_data_copy)
                     session.add(task)
                 session.commit()
@@ -291,7 +377,9 @@ class TaskDB:
         if self.use_db:
             session: Session = self.SessionLocal()
             try:
-                tasks = session.query(TaskModel).order_by(TaskModel.created_at.desc()).all()
+                tasks = (
+                    session.query(TaskModel).order_by(TaskModel.created_at.desc()).all()
+                )
                 return [task.to_dict() for task in tasks]
             finally:
                 session.close()
@@ -355,6 +443,7 @@ class TaskDB:
                 updated += 1
 
         return updated
+
 
 # Global instance
 db = TaskDB(
