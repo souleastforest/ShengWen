@@ -25,7 +25,8 @@ export interface TaskPart {
 }
 
 export type TaskStatus = typeof TaskStatus[keyof typeof TaskStatus];
-// 'none'：仅转录原文，跳过 AI 总结（后端 summary_mode='none'）
+// summary_mode：UI 提交三态——'none'（仅转录）/ 'standard'（标准）/ 'agent'（Agent）。
+// 'auto' 为后端/历史任务兼容值（自动判定 standard/agent），UI 不再发送。
 export type SummaryMode = 'standard' | 'agent' | 'auto' | 'none';
 
 /**

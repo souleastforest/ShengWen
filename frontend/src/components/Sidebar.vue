@@ -43,7 +43,7 @@ const videoUrl = defineModel<string>('videoUrl', { required: true })
 const selectedFile = defineModel<File | null>('selectedFile', { default: null })
 const localFilePath = defineModel<string>('localFilePath', { default: '' })
 // const quality = defineModel<string>('quality', { required: true })
-const summaryMode = defineModel<SummaryMode>('summaryMode', { default: 'standard' })
+const summaryMode = defineModel<Exclude<SummaryMode, 'auto'>>('summaryMode', { default: 'none' })
 const isSidebarOpen = defineModel<boolean>('isSidebarOpen', { required: true })
 
 const props = defineProps<{
@@ -168,24 +168,13 @@ const triggerFileUpload = () => {
   fileInput.value?.click()
 }
 
-// 记住开启“仅转录原文”之前的模式，便于一键恢复
-const prevSummaryMode = ref<SummaryMode>('standard')
-
-const switchSummaryMode = (mode: SummaryMode) => {
-  summaryMode.value = mode
-  if (mode !== 'none') {
-    prevSummaryMode.value = mode
-  }
-}
-
-// “仅转录原文（跳过 AI 总结）”独立开关：开启后恢复之前的模式
-const toggleTranscriptOnly = () => {
-  if (summaryMode.value === 'none') {
-    summaryMode.value = prevSummaryMode.value
-  } else {
-    prevSummaryMode.value = summaryMode.value
-    summaryMode.value = 'none'
-  }
+// 模式 Tab 三态（仅转录 none / 标准 standard / Agent agent）的滑动 thumb 定位。
+// 显式 Record 映射（含后端/历史兼容值 auto），杜绝三元表达式枚举落空错位。
+const modeThumbClass: Record<SummaryMode, string> = {
+  none: 'left-1 bg-white shadow-sm',
+  standard: 'left-[calc(33.333%)] bg-white shadow-sm',
+  agent: 'left-[calc(66.667%)] agent-gradient shadow-[0_8px_24px_rgba(59,130,246,0.35)]',
+  auto: 'left-1 bg-white shadow-sm',
 }
 
 const handleSubmitAction = () => {
@@ -1258,10 +1247,8 @@ watch(() => props.summarizationSettings, (settings) => {
               <div class="relative">
                 <div class="relative flex bg-gray-100 p-1 rounded-2xl transition-all duration-200 overflow-visible">
                   <div
-                    class="absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-xl transition-all duration-300 ease-out"
-                    :class="summaryMode === 'standard'
-                      ? 'left-1 bg-white shadow-sm'
-                      : 'left-[calc(50%)] agent-gradient shadow-[0_8px_24px_rgba(59,130,246,0.35)]'"
+                    class="absolute top-1 bottom-1 w-[calc(33.333%-6px)] rounded-xl transition-all duration-300 ease-out"
+                    :class="modeThumbClass[summaryMode]"
                   ></div>
 
                   <div
@@ -1271,7 +1258,16 @@ watch(() => props.summarizationSettings, (settings) => {
 
                   <button
                     type="button"
-                    @click="switchSummaryMode('standard')"
+                    @click="summaryMode = 'none'"
+                    class="relative z-10 flex-1 px-3 py-2 rounded-xl text-xs font-medium transition-colors inline-flex items-center justify-center gap-1.5"
+                    :class="summaryMode === 'none' ? 'text-amber-700' : 'text-slate-500 hover:text-slate-700'"
+                  >
+                    <PhFileText :size="13" :weight="summaryMode === 'none' ? 'fill' : 'regular'" />
+                    <span>仅转录</span>
+                  </button>
+                  <button
+                    type="button"
+                    @click="summaryMode = 'standard'"
                     class="relative z-10 flex-1 px-3 py-2 rounded-xl text-xs font-medium transition-colors inline-flex items-center justify-center gap-1.5"
                     :class="summaryMode === 'standard' ? 'text-primary' : 'text-slate-500 hover:text-slate-700'"
                   >
@@ -1280,7 +1276,7 @@ watch(() => props.summarizationSettings, (settings) => {
                   </button>
                   <button
                     type="button"
-                    @click="switchSummaryMode('agent')"
+                    @click="summaryMode = 'agent'"
                     class="relative z-10 flex-1 px-3 py-2 rounded-xl text-xs font-medium transition-colors inline-flex items-center justify-center gap-1.5"
                     :class="summaryMode === 'agent' ? 'text-white' : 'text-slate-500 hover:text-slate-700'"
                   >
@@ -1289,26 +1285,6 @@ watch(() => props.summarizationSettings, (settings) => {
                   </button>
                 </div>
               </div>
-
-              <!-- 仅转录原文（跳过 AI 总结）开关 -->
-              <button
-                type="button"
-                @click="toggleTranscriptOnly"
-                :title="summaryMode === 'none' ? '点击恢复 AI 总结' : '提交后只转录原文，不生成 AI 总结'"
-                class="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs font-medium transition-all active:scale-[0.98]"
-                :class="summaryMode === 'none'
-                  ? 'border-amber-400 bg-amber-50 text-amber-700 shadow-sm shadow-amber-100'
-                  : 'border-dashed border-slate-300 text-slate-500 hover:border-amber-400 hover:text-amber-600 hover:bg-amber-50/50'"
-              >
-                <span class="flex items-center gap-1.5">
-                  <PhFileText :size="14" :weight="summaryMode === 'none' ? 'fill' : 'regular'" />
-                  <span>仅转录原文（跳过 AI 总结）</span>
-                </span>
-                <span
-                  class="text-[10px] px-1.5 py-0.5 rounded-full"
-                  :class="summaryMode === 'none' ? 'bg-amber-400/20 text-amber-700' : 'bg-slate-100 text-slate-400'"
-                >{{ summaryMode === 'none' ? '已开启' : '关闭' }}</span>
-              </button>
               <p
                 v-if="summaryMode === 'none'"
                 class="text-[11px] text-amber-600/90 px-1 -mt-0.5 leading-relaxed"

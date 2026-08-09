@@ -121,7 +121,9 @@ const audioStatus = computed(() =>
                 ? 'Agent 增强模式'
                 : task.summary_mode === 'standard'
                   ? '标准模式'
-                  : '自动模式'
+                  : task.summary_mode === 'none'
+                    ? '仅转录'
+                    : '自动模式'
             }}
           </strong>
         </span>

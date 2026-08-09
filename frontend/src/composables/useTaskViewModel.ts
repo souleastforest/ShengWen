@@ -138,6 +138,10 @@ const bumpTaskContentVersion = (taskId: string) => {
   taskContentVersion.set(taskId, (taskContentVersion.get(taskId) ?? 0) + 1)
 }
 
+// 内容判定辅助：'' 空串（如 re-transcribe 后端重置 transcript/summary）与 null
+// 同样视为"无内容"，避免把 '' 当"已加载"导致滞留"暂无转录内容"。
+const hasContent = (value?: string | null): boolean => value != null && value !== ''
+
 // 处理中状态：内容将变化，命中时失效 per-task 缓存
 const PROCESSING_STATUSES = new Set([
   'PENDING',
@@ -185,7 +189,8 @@ export function useTaskViewModel() {
   const selectedFile = ref<File | null>(null)
   const localFilePath = ref('')
   const quality = ref('audio_only')
-  const summaryMode = ref<SummaryMode>('standard')
+  // UI 三态默认仅转录；'auto' 仅由后端/历史任务使用
+  const summaryMode = ref<Exclude<SummaryMode, 'auto'>>('none')
   const isSubmitting = ref(false)
   const error = ref<string | null>(null)
   const activeTab = ref<'summary' | 'transcript'>('summary')
@@ -281,6 +286,8 @@ export function useTaskViewModel() {
     isSubmitting.value = true
     error.value = null
     try {
+      // summary_mode：UI 三态（none=仅转录 / standard=标准 / agent=Agent）。
+      // 'auto' 仅作后端/历史任务兼容值，UI 不再发送。
       const payload: CreateTaskRequest = {
         video_url: resolvedUrl,
         quality: quality.value,
@@ -398,7 +405,18 @@ export function useTaskViewModel() {
           taskFullContentCache.set(taskId, { ...data })
         }
         if (selectedTask.value?.id === taskId) {
-          selectedTask.value = { ...selectedTask.value, ...data }
+          if ((taskContentVersion.get(taskId) ?? 0) === version) {
+            selectedTask.value = { ...selectedTask.value, ...data }
+          } else {
+            // 版本已变（期间收到过内容/状态广播）：旧响应只合并非内容字段，
+            // transcript/summary 以最新广播为准，防止过期在途响应覆盖新内容。
+            selectedTask.value = {
+              ...selectedTask.value,
+              ...data,
+              transcript: selectedTask.value.transcript,
+              summary: selectedTask.value.summary,
+            }
+          }
         }
         return data
       } finally {
@@ -467,12 +485,14 @@ export function useTaskViewModel() {
       && (current.summary !== undefined || current.transcript !== undefined)
     if (preserveLoadedContent) {
       // 同任务重选/WS 重连：合并轻量更新，保留已加载的完整内容
-      // （轻量响应的 summary 是 _summary_overview 截断版，不能覆盖完整版）
+      // （轻量响应的 summary 是 _summary_overview 截断版，不能覆盖完整版）。
+      // '' 空串（re-transcribe 重置）视为未加载：回退到轻量值，
+      // 由 watch 在原文 tab 下重新按需加载（自愈）。
       selectedTask.value = {
         ...task,
         ...current,
-        summary: current.summary ?? task.summary,
-        transcript: current.transcript ?? task.transcript,
+        summary: hasContent(current.summary) ? current.summary : task.summary,
+        transcript: hasContent(current.transcript) ? current.transcript : task.transcript,
       }
     } else {
       // 切到新任务：立即用 per-task 缓存补齐已加载过的完整内容（A→B→A 往返恢复）
@@ -506,21 +526,22 @@ export function useTaskViewModel() {
         // 浅拷贝响应对象：后续合并会写 transcript/summary 字段，
         // 不能污染 axios 响应（同一响应对象可能被复用/共享）。
         const data = { ...(response.data as Task) }
-        // 1) 保留当前选中任务已加载的完整内容（WS 广播合并等路径可能不经缓存）
-        if (selectedTask.value.transcript != null && data.transcript == null) {
+        // 1) 保留当前选中任务已加载的完整内容（WS 广播合并等路径可能不经缓存）。
+        //    '' 空串（re-transcribe 重置）不视为已加载，避免滞留"暂无转录内容"。
+        if (hasContent(selectedTask.value.transcript) && data.transcript == null) {
           data.transcript = selectedTask.value.transcript
         }
-        if (selectedTask.value.summary != null) {
+        if (hasContent(selectedTask.value.summary)) {
           data.summary = selectedTask.value.summary
         }
         // 2) per-task 缓存补齐：切走再回来时恢复该任务已加载的完整内容。
         //    轻量响应的 summary 是 _summary_overview 截断版，缓存有完整版时优先。
         const cached = taskFullContentCache.get(task.id)
         if (cached) {
-          if (data.transcript == null && cached.transcript != null) {
+          if (data.transcript == null && hasContent(cached.transcript)) {
             data.transcript = cached.transcript
           }
-          if (cached.summary != null) {
+          if (hasContent(cached.summary)) {
             data.summary = cached.summary
           }
         }
@@ -537,14 +558,15 @@ export function useTaskViewModel() {
   // 选中任务后详情接口只返回轻量内容（transcript 被后端剥离为 null）。
   // 用户切换到“原文”tab 或切换任务时（activeTab 保持 'transcript' 不触发
   // 单一 activeTab 依赖的 watch）按需加载完整内容（含转录原文）。
-  // transcript != null 守卫：防止重复加载，也防止跨任务 stale 泄漏
-  // （新任务的轻量对象 transcript 为 null，旧任务内容不会被误判为已加载）。
+  // hasContent 守卫：null 与 ''（re-transcribe 后端重置）都视为未加载，
+  // 触发一次加载后依赖（[activeTab, id]）不变不会重发；同时防止跨任务
+  // stale 泄漏（新任务的轻量对象 transcript 为 null，旧内容不会被误判为已加载）。
   watch(
     [activeTab, () => selectedTask.value?.id],
     ([tab]) => {
       if (tab !== 'transcript') return
       const task = selectedTask.value
-      if (!task || task.transcript != null) return
+      if (!task || hasContent(task.transcript)) return
       fetchTaskFullContent(task.id).catch((err) => {
         console.error('Failed to load full content for transcript tab:', err)
       })
@@ -1173,6 +1195,8 @@ export function useTaskViewModel() {
     },
     reSummarize: async (taskId: string) => {
       try {
+        // summary_mode：UI 三态（none/standard/agent）。'none' 时后端
+        // 会按 auto 判定兜底生成总结（见 llm_worker._resolve_effective_mode）。
         await axios.post(`${apiBaseUrl}/tasks/${taskId}/re-summarize`, {
           summary_mode: summaryMode.value
         })
@@ -1183,6 +1207,23 @@ export function useTaskViewModel() {
       }
     },
     reTranscribe: async (taskId: string) => {
+      // summary_mode：UI 三态（none/standard/agent）。'none' 重新转录会清空
+      // 现有 AI 总结（后端重置 summary 为空且不再生成），确认条件为"content 或
+      // 模式信号"：
+      // - content 信号：target.summary 有内容；
+      // - 模式信号：target.summary_mode ∈ {standard, agent}（此类任务大概率已有
+      //   总结）。覆盖两个静默跳过窗口——轻量详情在途/失败（selectedTask 缺
+      //   summary）与传非选中任务 id（列表接口剥离 summary 字段）。
+      const target = selectedTask.value?.id === taskId
+        ? selectedTask.value
+        : tasks.value.find((t) => t.id === taskId) ?? null
+      const hasSummarySignal = target
+        && (hasContent(target.summary)
+          || target.summary_mode === 'standard'
+          || target.summary_mode === 'agent')
+      if (summaryMode.value === 'none' && hasSummarySignal) {
+        if (!confirm('重新转录将清除现有 AI 总结，确定继续？')) return
+      }
       try {
         await axios.post(`${apiBaseUrl}/tasks/${taskId}/re-transcribe`, {
           summary_mode: summaryMode.value

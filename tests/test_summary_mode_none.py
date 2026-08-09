@@ -384,7 +384,10 @@ async def test_resummarize_works_on_none_mode_task():
     assert sent["summary_mode"] == "none"
     task = db.get_task(task_id)
     assert task["status"] == TaskStatus.SUMMARIZING
-    assert task["summary_mode"] == "none"
+    # SUMMARIZING 广播/持久化的 summary_mode：resolved='none'（对仅转录任务补总结）
+    # 改存 'auto'，消除"none + SUMMARIZING"瞬时误导（实际模式由
+    # llm_worker._resolve_effective_mode 按 auto 兜底判定）；worker payload 仍为 'none'
+    assert task["summary_mode"] == "auto"
 
 
 @pytest.mark.asyncio

@@ -446,13 +446,21 @@ async def re_summarize_task(
 
     worker_factory = deps.get_worker_factory(request, "get_llm_worker")
     worker = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
+    # 广播/持久化的 summary_mode：resolved 为 'none'（对仅转录任务补总结）时改存
+    # 'auto'，消除"none + SUMMARIZING"的瞬时误导——实际总结模式由
+    # llm_worker._resolve_effective_mode 按 auto 判定兜底（standard/agent）。
+    # 注意：派发给 worker 的 payload 仍沿用 resolved_summary_mode（'none' 时
+    # LLMWorker 内部同样按 auto 兜底，见 llm_worker._resolve_requested_mode）。
+    broadcast_summary_mode = (
+        "auto" if resolved_summary_mode == "none" else resolved_summary_mode
+    )
     await update_and_notify(
         task_id,
         {
             "status": TaskStatus.SUMMARIZING,
             "summary": "",
             "progress": 0.0,
-            "summary_mode": resolved_summary_mode,
+            "summary_mode": broadcast_summary_mode,
             "summary_chunk_total": None,
             "summary_chunk_done": None,
             "summary_meta": None,

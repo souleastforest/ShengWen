@@ -7,8 +7,10 @@
  *    缓存命中不得把 A 的内容错误并给 B。
  * 3. 竞态：include_content=true/false 乱序、selectTask(A) 后快速 selectTask(B)、
  *    copyContent await 期间切任务。
- * 4. 边界：'' 空串转录不无限重发；进行中任务切换 activeTab 重置；FAILED/PARTIAL 正常加载。
+ * 4. 边界：'' 空串转录按需加载一次即止（不无限循环）；进行中任务切换 activeTab 重置；FAILED/PARTIAL 正常加载。
  * 5. 不回归：summary tab 下切任务不请求 include_content=true。
+ * 6. 残留缺陷修复：re-transcribe 重置 '' 后切走再切回自愈重载；过期在途完整响应
+ *    不得覆盖 selectedTask 新内容；reTranscribe 清空总结前需确认。
  *
  * 每个用例失败 = 实现缺陷（用例均为需求允许的行为）。
  */
@@ -71,6 +73,7 @@ const wsInstances: WsInstance[] = []
 
 const emitWsTaskUpdate = (task: Task) => {
   const ws = wsInstances[wsInstances.length - 1]
+  if (!ws) return
   ws.onmessage?.({ data: JSON.stringify({ type: 'task_update', task }) })
 }
 
@@ -427,7 +430,7 @@ describe('对抗性：转录切换修复（需求 A）', () => {
     wrapper.unmount()
   })
 
-  it('[A4] 边界：真正无转录的任务（空串）不无限重发 include_content=true', async () => {
+  it('[A4] 边界：空串转录按需加载一次即止——重选同一任务不重发（依赖不变），不无限循环', async () => {
     const { viewModel, wrapper } = mountViewModel()
     const taskA = { ...makeTask('task-a'), transcript: '' }
 
@@ -436,17 +439,20 @@ describe('对抗性：转录切换修复（需求 A）', () => {
       '/tasks/task-a?include_content=true': { ...taskA, transcript: '' },
     })
 
+    viewModel.activeTab.value = 'transcript'
     viewModel.selectTask(taskA)
-    viewModel.activeTab.value = 'transcript'
-    await flushPromises()
-    viewModel.selectTask(taskA) // 重选同一任务
-    await flushPromises()
-    viewModel.activeTab.value = 'summary'
-    viewModel.activeTab.value = 'transcript'
     await flushPromises()
 
-    // 空串转录：tab 来回切换不得触发完整内容请求
-    expect(fullRequests()).toHaveLength(0)
+    // '' 视为"未加载"：原文 tab 触发一次按需加载（不再是 0 次）
+    expect(fullRequests()).toHaveLength(1)
+
+    viewModel.selectTask(taskA) // 重选同一任务：依赖（activeTab, id）不变，不重发
+    await flushPromises()
+    expect(fullRequests()).toHaveLength(1)
+
+    // 请求返回仍为空串：不会因响应写入触发新的 watch 循环
+    await flushPromises()
+    expect(fullRequests()).toHaveLength(1)
 
     wrapper.unmount()
   })
@@ -455,7 +461,7 @@ describe('对抗性：转录切换修复（需求 A）', () => {
     '[A4] 边界：进行中任务（%s）切换时 activeTab 重置为 summary 且不触发原文加载',
     async (status) => {
       const { viewModel, wrapper } = mountViewModel()
-      const task = { ...makeTask('task-x'), status, transcript: null }
+      const task = { ...makeTask('task-x'), status, transcript: null } as unknown as Task
 
       installDefaultAxios({
         [`/tasks/task-x?include_content=false`]: { ...task, transcript: null },
@@ -474,7 +480,7 @@ describe('对抗性：转录切换修复（需求 A）', () => {
 
   it.each(['FAILED', 'PARTIAL'] as const)('[A4] 边界：%s 任务同 COMPLETED 一样正常加载原文', async (status) => {
     const { viewModel, wrapper } = mountViewModel()
-    const task = { ...makeTask('task-x'), status, transcript: null }
+    const task = { ...makeTask('task-x'), status, transcript: null } as unknown as Task
 
     installDefaultAxios({
       '/tasks/task-x?include_content=false': { ...task, transcript: null },
@@ -544,6 +550,191 @@ describe('对抗性：转录切换修复（需求 A）', () => {
 
     expect(viewModel.selectedTask.value?.id).toBe('task-a')
     expect(viewModel.selectedTask.value?.transcript).toBe('A的完整转录')
+
+    wrapper.unmount()
+  })
+})
+
+describe('对抗性：re-transcribe 重置自愈 + 过期在途响应（残留缺陷修复）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  beforeEach(() => {
+    __resetTaskContentCaches()
+    vi.clearAllMocks()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    wsInstances.length = 0
+
+    const WebSocketMock = vi.fn(function MockWebSocket(this: WsInstance) {
+      this.close = () => {}
+      this.onopen = null
+      this.onmessage = null
+      this.onclose = null
+      this.onerror = null
+      wsInstances.push(this)
+    })
+    vi.stubGlobal('WebSocket', WebSocketMock)
+    vi.stubGlobal('navigator', {
+      clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+    })
+  })
+
+  it('[B6] re-transcribe 重置（transcript=""）写入 selectedTask 后，切走再切回会重新请求 include_content=true 自愈', async () => {
+    const { viewModel, wrapper } = mountViewModel()
+    const taskA = makeTask('task-a')
+    const taskB = makeTask('task-b')
+
+    installDefaultAxios({
+      '/tasks/task-a?include_content=false': { ...taskA, transcript: null },
+      '/tasks/task-a?include_content=true': { ...taskA, transcript: '初始转录内容' },
+      '/tasks/task-b?include_content=false': { ...taskB, transcript: null },
+      '/tasks/task-b?include_content=true': { ...taskB, transcript: 'B的完整转录' },
+    })
+
+    viewModel.activeTab.value = 'transcript'
+    viewModel.selectTask(taskA)
+    await flushPromises()
+    expect(viewModel.selectedTask.value?.transcript).toBe('初始转录内容')
+
+    // WS 广播 re-transcribe 重置：transcript 清空
+    emitWsTaskUpdate({ ...taskA, status: 'PENDING', transcript: '' })
+    await flushPromises()
+    expect(viewModel.selectedTask.value?.transcript).toBe('')
+
+    // 重新转录已完成：服务端已有新的完整内容
+    installDefaultAxios({
+      '/tasks/task-a?include_content=false': { ...taskA, transcript: null },
+      '/tasks/task-a?include_content=true': { ...taskA, transcript: '重新转录后的新内容' },
+      '/tasks/task-b?include_content=false': { ...taskB, transcript: null },
+      '/tasks/task-b?include_content=true': { ...taskB, transcript: 'B的完整转录' },
+    })
+
+    // 切走再切回：原文 tab 重新触发按需加载 → 重新请求 include_content=true（自愈）
+    viewModel.selectTask(taskB)
+    await flushPromises()
+    viewModel.selectTask(taskA)
+    await flushPromises()
+
+    const fullA = fullRequests().filter(([url]) => String(url).includes('task-a'))
+    expect(fullA).toHaveLength(2)
+    expect(viewModel.selectedTask.value?.transcript).toBe('重新转录后的新内容')
+
+    wrapper.unmount()
+  })
+
+  it('[B7] 过期在途响应：fullA 晚于 COMPLETED 广播解析时，selectedTask 的 transcript 不被旧内容覆盖', async () => {
+    const { viewModel, wrapper } = mountViewModel()
+    const taskA = makeTask('task-a')
+    const taskB = makeTask('task-b')
+
+    const fullA = deferred()
+    installDefaultAxios({
+      '/tasks/task-a?include_content=false': { ...taskA, transcript: null },
+      '/tasks/task-a?include_content=true': fullA,
+      '/tasks/task-b?include_content=false': { ...taskB, transcript: null },
+      '/tasks/task-b?include_content=true': { ...taskB, transcript: 'B的完整转录' },
+    })
+
+    viewModel.activeTab.value = 'transcript'
+    viewModel.selectTask(taskA)
+    await flushPromises()
+    expect(fullRequests()).toHaveLength(1)
+
+    // 期间收到携带新内容的 COMPLETED 广播（递增内容版本）
+    emitWsTaskUpdate({ ...taskA, status: 'COMPLETED', transcript: '新转录内容' })
+    await flushPromises()
+    expect(viewModel.selectedTask.value?.transcript).toBe('新转录内容')
+
+    // 在途的旧完整响应此刻才返回：不得覆盖 selectedTask 的 transcript
+    fullA.resolve({ data: { ...taskA, transcript: '旧转录内容' } })
+    await flushPromises()
+    expect(viewModel.selectedTask.value?.transcript).toBe('新转录内容')
+
+    // A→B→A：缓存同样不得回退旧内容
+    viewModel.selectTask(taskB)
+    await flushPromises()
+    viewModel.selectTask(taskA)
+    await flushPromises()
+    expect(viewModel.selectedTask.value?.transcript).toBe('新转录内容')
+
+    wrapper.unmount()
+  })
+})
+
+describe('对抗性：reTranscribe 清空总结确认（残留缺陷修复）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  beforeEach(() => {
+    __resetTaskContentCaches()
+    vi.clearAllMocks()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    wsInstances.length = 0
+
+    const WebSocketMock = vi.fn(function MockWebSocket(this: WsInstance) {
+      this.close = () => {}
+      this.onopen = null
+      this.onmessage = null
+      this.onclose = null
+      this.onerror = null
+      wsInstances.push(this)
+    })
+    vi.stubGlobal('WebSocket', WebSocketMock)
+  })
+
+  it('[B8] summaryMode=none 且目标任务已有总结：先 confirm；取消不提交，确认才提交', async () => {
+    const { viewModel, wrapper } = mountViewModel()
+    installDefaultAxios()
+
+    vi.stubGlobal('confirm', vi.fn())
+    const confirmSpy = vi.mocked(confirm).mockReturnValue(false)
+    viewModel.summaryMode.value = 'none'
+    viewModel.selectedTask.value = { ...makeTask('task-a'), summary: '已有总结' }
+
+    // 取消：不发请求
+    await viewModel.reTranscribe('task-a')
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(mockedAxios.post).not.toHaveBeenCalled()
+
+    // 确认：正常提交，payload 携带 summary_mode='none'
+    confirmSpy.mockReturnValue(true)
+    await viewModel.reTranscribe('task-a')
+    expect(confirmSpy).toHaveBeenCalledTimes(2)
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      '/tasks/task-a/re-transcribe',
+      expect.objectContaining({ summary_mode: 'none' }),
+    )
+
+    wrapper.unmount()
+  })
+
+  it('[B8] 无总结内容或非 none 模式：不弹确认直接提交', async () => {
+    const { viewModel, wrapper } = mountViewModel()
+    installDefaultAxios()
+
+    vi.stubGlobal('confirm', vi.fn())
+    const confirmSpy = vi.mocked(confirm).mockReturnValue(false)
+    // none 任务本身无总结（summary 空 + summary_mode='none'，无 content/模式信号）→ 不弹
+    viewModel.selectedTask.value = { ...makeTask('task-a'), summary: '', summary_mode: 'none' }
+    viewModel.summaryMode.value = 'none'
+    await viewModel.reTranscribe('task-a')
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      '/tasks/task-a/re-transcribe',
+      expect.objectContaining({ summary_mode: 'none' }),
+    )
+
+    mockedAxios.post.mockClear()
+    viewModel.selectedTask.value = { ...makeTask('task-a'), summary: '已有总结' }
+    viewModel.summaryMode.value = 'standard'
+    await viewModel.reTranscribe('task-a')
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      '/tasks/task-a/re-transcribe',
+      expect.objectContaining({ summary_mode: 'standard' }),
+    )
 
     wrapper.unmount()
   })

@@ -65,6 +65,14 @@ ensure_uv() {
 need_deploy() {
   [[ ! -d "frontend/dist" ]] && return 0
   [[ ! -d ".venv" ]] && return 0
+  # 防 stale-dist：前端源码或依赖声明的 mtime 新于 dist 产物时强制重建
+  if [[ -f "frontend/dist/index.html" ]]; then
+    if find frontend/src frontend/package.json -type f -newer frontend/dist/index.html -print -quit 2>/dev/null | grep -q .; then
+      return 0
+    fi
+  else
+    return 0
+  fi
   return 1
 }
 
