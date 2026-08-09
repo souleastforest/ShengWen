@@ -105,6 +105,8 @@ class LLMConfig:
 class DatabaseConfig:
     sqlite_path: str = "ShengWen.db"
     json_file_path: str = "tasks.json"
+    backup_interval_sec: int = 86400  # 1天
+    backup_keep_count: int = 5  # 保留 5 份轮转备份（.bak.1 最新）
 
 
 @dataclass

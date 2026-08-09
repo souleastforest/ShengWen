@@ -24,6 +24,10 @@ from src.main.python.sheng_wen.domain.storage.reclaimer_loop import (
     start_storage_reclaimer,
     stop_storage_reclaimer,
 )
+from src.main.python.sheng_wen.domain.database.backup_loop import (
+    start_database_backup,
+    stop_database_backup,
+)
 from datetime import datetime
 import uuid
 
@@ -211,6 +215,9 @@ async def lifespan(app: FastAPI):
     # 启动存储回收器：先做存量音频状态回填，再启动周期循环
     await start_storage_reclaimer()
 
+    # 启动数据库周期备份（首轮立即备份一次，之后按 backup_interval_sec 循环）
+    await start_database_backup()
+
     # 启动事件总线 Pipeline（订阅 TASK_CREATED 等事件）
     await api_module.pipeline.start()
 
@@ -225,6 +232,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown logic
+    await stop_database_backup()
     await stop_storage_reclaimer()
     await api_module.pipeline.stop()
     await api_module.stop_all_workers()

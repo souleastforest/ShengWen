@@ -65,3 +65,4 @@ models/
 # Root-level development artifacts
 node_modules/
 frontend/test-results/
+*.db.bak.*

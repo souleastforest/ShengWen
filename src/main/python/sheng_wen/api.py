@@ -15,6 +15,10 @@ from src.main.python.sheng_wen.domain.storage.reclaimer_loop import (
     start_storage_reclaimer,
     stop_storage_reclaimer,
 )
+from src.main.python.sheng_wen.domain.database.backup_loop import (
+    start_database_backup,
+    stop_database_backup,
+)
 from src.main.python.sheng_wen.infra.api.error_handler import register_error_handlers
 from src.main.python.sheng_wen.infra.api.routes.bilibili import (
     router as bilibili_router,
@@ -97,8 +101,11 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[Lifespan] 恢复中断任务失败: {e}")
     # 启动存储回收器：先做存量音频状态回填，再启动周期循环
     await start_storage_reclaimer()
+    # 启动数据库周期备份（首轮立即备份一次，之后按 backup_interval_sec 循环）
+    await start_database_backup()
     await pipeline.start()
     yield
+    await stop_database_backup()
     await stop_storage_reclaimer()
     await pipeline.stop()
     await stop_all_workers()
