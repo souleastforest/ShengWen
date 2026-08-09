@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { PhInfo, PhX, PhArrowSquareOut, PhDownloadSimple } from '@phosphor-icons/vue'
+import { computed, ref } from 'vue'
+import { PhInfo, PhX, PhArrowSquareOut, PhDownloadSimple, PhArrowClockwise, PhCopy, PhCheck } from '@phosphor-icons/vue'
 import { TaskStatus, type Task } from '../types'
-import { getAudioStatusInfo, canReDownloadAudio } from '../utils/audioStatus'
+import { getAudioStatusInfo, canReDownloadAudio, isLocalFileUrl } from '../utils/audioStatus'
+import { copyText } from '../utils/clipboard'
 
 const show = defineModel<boolean>('show', { required: true })
 
@@ -13,7 +14,24 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   reDownload: []
+  reTranscribe: []
 }>()
+
+// 复制原网址后的短暂内联反馈（图标/文案 1.5s 后还原）
+const copied = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+
+const copyVideoUrl = async () => {
+  const url = props.selectedTask?.video_url
+  if (!url) return
+  const ok = await copyText(url)
+  if (!ok) return
+  copied.value = true
+  clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => {
+    copied.value = false
+  }, 1500)
+}
 
 const audioStatus = computed(() =>
   getAudioStatusInfo(
@@ -73,6 +91,15 @@ const getStatusClass = (status: TaskStatus) => {
               <span :class="['px-2 py-0.5 rounded-full text-xs font-medium', getStatusClass(selectedTask.status)]">
                 {{ getStatusLabel(selectedTask.status) }}
               </span>
+              <button
+                v-if="selectedTask.status === TaskStatus.FAILED"
+                @click="emit('reTranscribe')"
+                class="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 transition-colors text-xs font-medium"
+                title="快速重跑"
+              >
+                <PhArrowClockwise :size="14" />
+                快速重跑
+              </button>
             </div>
 
             <div class="text-slate-500">音频状态</div>
@@ -95,10 +122,28 @@ const getStatusClass = (status: TaskStatus) => {
             </div>
 
             <div class="text-slate-500">视频 URL</div>
-            <div class="text-slate-800 truncate" :title="selectedTask.video_url">
-              <a :href="selectedTask.video_url" target="_blank" class="text-primary hover:underline flex items-center gap-1">
-                链接 <PhArrowSquareOut :size="12" />
+            <div class="flex items-center gap-1.5 min-w-0">
+              <template v-if="isLocalFileUrl(selectedTask.video_url)">
+                <span class="text-slate-800 font-mono text-xs truncate" :title="selectedTask.video_url">{{ selectedTask.video_url }}</span>
+              </template>
+              <a
+                v-else
+                :href="selectedTask.video_url"
+                target="_blank"
+                class="text-primary hover:underline flex items-center gap-1 min-w-0"
+                :title="selectedTask.video_url"
+              >
+                <span class="truncate">{{ selectedTask.video_url }}</span>
+                <PhArrowSquareOut :size="12" class="shrink-0" />
               </a>
+              <button
+                @click="copyVideoUrl"
+                class="shrink-0 p-1 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                :title="copied ? '已复制' : '复制原网址'"
+              >
+                <PhCheck v-if="copied" :size="14" class="text-emerald-500" />
+                <PhCopy v-else :size="14" />
+              </button>
             </div>
 
             <template v-if="selectedTask.audio_duration">

@@ -44,6 +44,7 @@ const {
   isLocalClient,
   quality,
   summaryMode,
+  generateTopic,
   isSubmitting,
   error,
   activeTab,
@@ -353,6 +354,11 @@ const handleReTranscribe = (taskId: string) => {
   const { info } = useToast()
   info('正在重新转录原文...')
   reTranscribe(taskId)
+}
+
+// Sidebar 快速重跑：FAILED 任务行的小圆钮 → 复用同一 re-transcribe 通道
+const handleRetryTask = (task: Task) => {
+  handleReTranscribe(task.id)
 }
 
 // 重新下载音频：await 以便按钮 loading 防抖（reDownloadAudio 内部吞掉错误并写入 error）
@@ -976,6 +982,7 @@ watch(
       v-model:localFilePath="localFilePath"
       v-model:quality="quality"
       v-model:summaryMode="summaryMode"
+      v-model:generateTopic="generateTopic"
       v-model:isSidebarOpen="isSidebarOpen"
       :isLocalClient="isLocalClient"
       :tasks="tasks"
@@ -994,6 +1001,7 @@ watch(
       @cancelSubmit="cancelSubmitting"
       @selectTask="handleSelectTask"
       @deleteTask="handleDeleteTask"
+      @retryTask="handleRetryTask"
       @updateLlmSettings="handleUpdateLlmSettings"
       @updateTranscriptionSettings="handleUpdateTranscriptionSettings"
       @updateSummarizationSettings="handleUpdateSummarizationSettings"
@@ -1081,6 +1089,7 @@ watch(
       :selectedTask="selectedTask"
       :isRedownloading="isRedownloading"
       @reDownload="selectedTask && handleReDownload(selectedTask.id)"
+      @reTranscribe="selectedTask && handleReTranscribe(selectedTask.id)"
     />
     
     <!-- Mermaid 查看器模态框 -->

@@ -23,6 +23,10 @@ async def upload_file(
     request: Request,
     file: UploadFile = File(...),
     summary_mode: Optional[str] = Form(default=None),
+    generate_topic: Optional[bool] = Form(
+        default=True,
+        description="仅转录（summary_mode=none）时，转录完成后是否对全文生成标题（默认开启）",
+    ),
 ):
     file_ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
 
@@ -69,6 +73,7 @@ async def upload_file(
             "summary_chunk_total": None,
             "summary_chunk_done": None,
             "summary_meta": None,
+            "generate_topic": bool(generate_topic),
         }
         db.save_task(task_id, task_data)
 
@@ -80,6 +85,7 @@ async def upload_file(
                 "file_path": temp_file_path,
                 "filename": file.filename or "uploaded_file",
                 "summary_mode": resolved_summary_mode,
+                "generate_topic": bool(generate_topic),
             },
         )
 
@@ -193,6 +199,7 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
         "summary_chunk_total": None,
         "summary_chunk_done": None,
         "summary_meta": None,
+        "generate_topic": payload.generate_topic,
     }
     db.save_task(task_id, task_data)
 
@@ -204,6 +211,7 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
             "file_path": local_path,
             "filename": os.path.basename(local_path) or "uploaded_file",
             "summary_mode": resolved_summary_mode,
+            "generate_topic": payload.generate_topic,
         },
     )
     await notify_task_update(task_id)

@@ -81,6 +81,8 @@ export interface CreateTaskRequest {
   video_url: string;
   quality: string;
   summary_mode?: SummaryMode;
+  // 仅转录（summary_mode='none'）时是否在转录完成后自动生成标题（默认开启）
+  generate_topic?: boolean;
 }
 
 export interface MarkdownHeadingItem {

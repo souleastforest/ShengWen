@@ -203,6 +203,7 @@ async def create_task(task_in: TaskCreate, request: Request):
                 "summary_chunk_total": None,
                 "summary_chunk_done": None,
                 "summary_meta": None,
+                "generate_topic": task_in.generate_topic,
             }
             db.save_task(task_id, task_data)
 
@@ -211,6 +212,7 @@ async def create_task(task_in: TaskCreate, request: Request):
                 "video_url": str(task_in.video_url),
                 "quality": task_in.quality,
                 "summary_mode": resolved_summary_mode,
+                "generate_topic": task_in.generate_topic,
                 "bilibili_parts": {
                     "mode": "merge",
                     "indices": [part_index],
@@ -252,6 +254,7 @@ async def create_task(task_in: TaskCreate, request: Request):
         "summary_chunk_total": None,
         "summary_chunk_done": None,
         "summary_meta": None,
+        "generate_topic": task_in.generate_topic,
     }
     db.save_task(task_id, task_data)
     _record_task_submit(str(task_in.video_url), task_id)
@@ -276,6 +279,7 @@ async def create_task(task_in: TaskCreate, request: Request):
         "video_url": str(task_in.video_url),
         "quality": task_in.quality,
         "summary_mode": resolved_summary_mode,
+        "generate_topic": task_in.generate_topic,
     }
     task_cookie = deps._sanitize_cookie_value(task_in.bilibili_sessdata)
     if task_cookie:
@@ -401,6 +405,8 @@ async def retry_failed_parts(
             "video_url": str(task.get("video_url") or ""),
             "quality": "audio_only",
             "summary_mode": task.get("summary_mode") or "auto",
+            # 重跑按原开关状态执行（老任务无该字段时默认 True）
+            "generate_topic": bool(task.get("generate_topic", True)),
             "bilibili_parts": {"mode": "merge", "indices": indices},
             "multipart_batch": True,
         }
@@ -572,6 +578,14 @@ async def re_transcribe_task(
         fallback=str(task.get("summary_mode") or ""),
     )
 
+    # “总结标题”开关恢复：payload 显式携带用显式值；缺省时沿用任务已存值
+    # （重跑按原开关状态执行；老任务无该字段时默认 True），与 summary_mode
+    # 的 fallback 模式一致。
+    if payload is not None and payload.generate_topic is not None:
+        resolved_generate_topic = payload.generate_topic
+    else:
+        resolved_generate_topic = bool(task.get("generate_topic", True))
+
     local_media_file = deps._resolve_local_media_file(task_id, task)
     video_url = str(task.get("video_url") or "")
     can_redownload = bool(video_url) and not video_url.startswith("file://")
@@ -589,6 +603,7 @@ async def re_transcribe_task(
         "topic": None,
         "status": TaskStatus.PENDING,
         "summary_mode": resolved_summary_mode,
+        "generate_topic": resolved_generate_topic,
         "summary_chunk_total": None,
         "summary_chunk_done": None,
         "summary_meta": None,
@@ -609,6 +624,7 @@ async def re_transcribe_task(
                 media_path=local_media_file,
                 output_dir="temp",
                 summary_mode=resolved_summary_mode,
+                generate_topic=resolved_generate_topic,
             )
         )
         return db.get_task(task_id)
@@ -622,6 +638,7 @@ async def re_transcribe_task(
             "video_url": video_url,
             "quality": "audio_only",
             "summary_mode": resolved_summary_mode,
+            "generate_topic": resolved_generate_topic,
         }
     )
     return db.get_task(task_id)

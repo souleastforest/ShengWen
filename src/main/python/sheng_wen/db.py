@@ -71,6 +71,8 @@ class TaskModel(Base):
     summary_meta = Column(Text, nullable=True)
     audio_downloaded = Column(Boolean, nullable=True)
     audio_missing_reason = Column(String, nullable=True)
+    # 仅转录模式的"总结标题"开关（创建时快照，供 re-transcribe 等重跑恢复）
+    generate_topic = Column(Boolean, nullable=True)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -97,6 +99,7 @@ class TaskModel(Base):
             "summary_meta": self.summary_meta,
             "audio_downloaded": self.audio_downloaded,
             "audio_missing_reason": self.audio_missing_reason,
+            "generate_topic": self.generate_topic,
         }
 
 
@@ -138,6 +141,7 @@ class TaskDB:
             has_summary_meta = "summary_meta" in columns
             has_audio_downloaded = "audio_downloaded" in columns
             has_audio_missing_reason = "audio_missing_reason" in columns
+            has_generate_topic = "generate_topic" in columns
             if (
                 has_latest_modified_at
                 and has_author_name
@@ -148,6 +152,7 @@ class TaskDB:
                 and has_summary_meta
                 and has_audio_downloaded
                 and has_audio_missing_reason
+                and has_generate_topic
             ):
                 return
 
@@ -209,6 +214,21 @@ class TaskDB:
                     )
                     logger.info(
                         "Database schema updated: added tasks.audio_missing_reason"
+                    )
+                if not has_generate_topic:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE tasks ADD COLUMN generate_topic BOOLEAN DEFAULT 1"
+                        )
+                    )
+                    # 老任务（无该字段）按默认开启（True）回填，与新任务缺省语义一致
+                    conn.execute(
+                        text(
+                            "UPDATE tasks SET generate_topic = 1 WHERE generate_topic IS NULL"
+                        )
+                    )
+                    logger.info(
+                        "Database schema updated: added tasks.generate_topic (legacy tasks default True)"
                     )
         except Exception as e:
             logger.error(f"Failed to ensure database schema: {e}")
@@ -273,6 +293,8 @@ class TaskDB:
                     summary_chunk_total=task_data.get("summary_chunk_total"),
                     summary_chunk_done=task_data.get("summary_chunk_done"),
                     summary_meta=task_data.get("summary_meta"),
+                    # 老任务无该字段时按默认开启（True）迁移
+                    generate_topic=task_data.get("generate_topic", True),
                 )
                 session.add(task)
 

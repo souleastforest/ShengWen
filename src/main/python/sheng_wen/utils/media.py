@@ -22,6 +22,7 @@ def build_transcriber_payload(
     media_path: str,
     output_dir: str = "temp",
     summary_mode: str | None = None,
+    generate_topic: bool | None = None,
 ) -> dict:
     file_ext = get_media_extension(media_path)
     if file_ext not in SUPPORTED_MEDIA_EXTENSIONS:
@@ -35,6 +36,10 @@ def build_transcriber_payload(
     }
     if summary_mode:
         payload["summary_mode"] = str(summary_mode)
+    # 仅转录模式的"总结标题"开关：显式传入时透传；缺省（None）时由
+    # TranscriberWorker 按默认开启（True）处理，与 API 层默认一致。
+    if generate_topic is not None:
+        payload["generate_topic"] = bool(generate_topic)
 
     # 音频文件可直接转录；视频文件需先提取音频。
     if is_audio_media(media_path):

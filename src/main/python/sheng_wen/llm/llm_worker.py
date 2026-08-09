@@ -18,6 +18,51 @@ from .llm import LLM, LLMError, LLMMessage
 
 VALID_SUMMARY_MODES = {"auto", "standard", "agent", "none"}
 
+# 标题生成只用全文开头的有限长度即可抓住主旨：避免超长转录
+# 撑爆上下文窗口，同时控制成本（标准总结仍走全文/分块，不受影响）。
+TOPIC_GENERATION_MAX_CHARS = 12000
+
+TOPIC_GENERATION_SYSTEM_PROMPT = (
+    "你是视频标题生成助手。请根据用户提供的视频转录全文，"
+    "生成一个简洁、准确的中文标题，概括视频的核心内容。"
+    "只输出标题本身，不要任何解释、引号或前后缀，控制在 30 字以内。"
+)
+
+
+async def generate_topic_for_task(
+    llm_worker: Any,
+    task_id: str,
+    transcript: str,
+) -> None:
+    """
+    仅转录模式：对转录全文生成标题并写入 task.topic。
+
+    复用现有 LLM 客户端（LLMWorker.generate_topic，即"api同款"单次调用）。
+    LLM 缺失/调用失败/返回空时静默降级：只记 warning，不阻塞任务终态、
+    不失败任务。multipart 等场景由调用方保证只对最终全文调用一次。
+    """
+    if llm_worker is None or not hasattr(llm_worker, "generate_topic"):
+        logger.warning(
+            f"[TopicGenerator] 缺少 LLM worker，跳过标题生成: task_id={task_id}"
+        )
+        return
+    try:
+        topic = await llm_worker.generate_topic(transcript)
+    except Exception as e:
+        logger.warning(
+            f"[TopicGenerator] 标题生成失败，静默降级: task_id={task_id}, error={e}"
+        )
+        return
+    if not topic or not isinstance(topic, str) or not topic.strip():
+        logger.info(
+            f"[TopicGenerator] 标题生成为空，跳过写入: task_id={task_id}"
+        )
+        return
+    from ..task_updater import update_and_notify
+
+    await update_and_notify(task_id, {"topic": topic.strip()})
+    logger.info(f"[TopicGenerator] 已写入标题: task_id={task_id}, topic={topic.strip()!r}")
+
 
 class LLMWorker(Worker):
     """
@@ -317,6 +362,57 @@ class LLMWorker(Worker):
             "audio_triggered": audio_triggered,
             "line_triggered": line_triggered,
         }
+
+    async def generate_topic(self, transcript: str) -> str | None:
+        """
+        对转录全文生成一个简洁标题（仅转录模式"总结标题"开关用）。
+
+        单次非流式 LLM 调用，复用本 worker 的 _llm_client（即"api同款"）。
+        失败时返回 None 并记录 warning，由调用方静默降级。
+        """
+        client = self._llm_client
+        text = str(transcript or "").strip()
+        if client is None:
+            logger.warning("[LLMWorker] 无 LLM 客户端，跳过标题生成")
+            return None
+        if not text:
+            return None
+
+        # 只取全文开头一段用于标题生成（长转录成本/上下文保护）
+        topic_source = text[:TOPIC_GENERATION_MAX_CHARS]
+        messages = [
+            LLMMessage(role="system", content=TOPIC_GENERATION_SYSTEM_PROMPT),
+            LLMMessage(role="user", content=topic_source),
+        ]
+        response_chunks: list[str] = []
+        llm_error: LLMError | None = None
+
+        def callback(chunk: str | LLMError):
+            nonlocal llm_error
+            if isinstance(chunk, LLMError):
+                llm_error = chunk
+                return
+            response_chunks.append(chunk)
+
+        try:
+            await client.response(
+                messages=messages,
+                resp_callback=callback,
+                stream=False,
+                timeout=60,
+            )
+        except Exception as e:
+            logger.warning(f"[LLMWorker] 标题生成请求失败，静默降级: {e}")
+            return None
+        if llm_error:
+            logger.warning(f"[LLMWorker] 标题生成响应错误，静默降级: {llm_error}")
+            return None
+
+        topic = "".join(response_chunks).strip()
+        # 收敛：只取第一行并去掉常见引号包裹，避免模型输出多行/带引号
+        first_line = topic.splitlines()[0].strip()
+        cleaned = first_line.strip("\"'“”‘’「」『』《》【】")
+        return cleaned.strip() or None
 
     async def _run_standard_summary(self, transcript_text: str, task_id: str | None) -> tuple[str, str | None]:
         if not self.system_prompt:

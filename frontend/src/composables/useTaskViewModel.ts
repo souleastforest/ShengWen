@@ -191,6 +191,8 @@ export function useTaskViewModel() {
   const quality = ref('audio_only')
   // UI 三态默认仅转录；'auto' 仅由后端/历史任务使用
   const summaryMode = ref<Exclude<SummaryMode, 'auto'>>('none')
+  // 仅转录模式的"总结标题"开关：默认开启（与后端 generate_topic 默认一致）
+  const generateTopic = ref(true)
   const isSubmitting = ref(false)
   const error = ref<string | null>(null)
   const activeTab = ref<'summary' | 'transcript'>('summary')
@@ -288,10 +290,15 @@ export function useTaskViewModel() {
     try {
       // summary_mode：UI 三态（none=仅转录 / standard=标准 / agent=Agent）。
       // 'auto' 仅作后端/历史任务兼容值，UI 不再发送。
+      // generate_topic 仅在仅转录模式下随开关显式发送（true/false）；
+      // 标准/Agent 模式本就会生成总结并带出标题，不发送该字段。
       const payload: CreateTaskRequest = {
         video_url: resolvedUrl,
         quality: quality.value,
         summary_mode: summaryMode.value,
+        ...(summaryMode.value === 'none'
+          ? { generate_topic: generateTopic.value }
+          : {}),
       }
       await axios.post(`${apiBaseUrl}/tasks/`, payload, {
         signal: controller.signal
@@ -327,6 +334,9 @@ export function useTaskViewModel() {
       await axios.post(`${apiBaseUrl}/upload/local-path`, {
         file_path: normalized,
         summary_mode: summaryMode.value,
+        ...(summaryMode.value === 'none'
+          ? { generate_topic: generateTopic.value }
+          : {}),
       }, {
         signal: controller.signal
       })
@@ -355,6 +365,9 @@ export function useTaskViewModel() {
       const formData = new FormData()
       formData.append('file', file)
       formData.append('summary_mode', summaryMode.value)
+      if (summaryMode.value === 'none') {
+        formData.append('generate_topic', String(generateTopic.value))
+      }
 
       await axios.post(`${apiBaseUrl}/upload`, formData, {
         headers: {
@@ -973,6 +986,9 @@ export function useTaskViewModel() {
           await axios.post(`${apiBaseUrl}/upload/local-path`, {
             file_path: path,
             summary_mode: summaryMode.value,
+            ...(summaryMode.value === 'none'
+              ? { generate_topic: generateTopic.value }
+              : {}),
           }, {
             signal: controller.signal
           })
@@ -1011,6 +1027,9 @@ export function useTaskViewModel() {
         quality: quality.value,
         summary_mode: summaryMode.value,
         bilibili_parts: partsConfig,
+        ...(summaryMode.value === 'none'
+          ? { generate_topic: generateTopic.value }
+          : {}),
       }
       await axios.post(`${apiBaseUrl}/tasks/`, payload, {
         signal: abortSignal || controller.signal
@@ -1067,6 +1086,7 @@ export function useTaskViewModel() {
     isLocalClient,
     quality,
     summaryMode,
+    generateTopic,
     isSubmitting,
     error,
     activeTab,

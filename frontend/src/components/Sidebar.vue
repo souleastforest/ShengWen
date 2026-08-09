@@ -25,6 +25,7 @@ import {
   PhFile,
   PhFileText,
   PhQuestion,
+  PhArrowClockwise,
 } from '@phosphor-icons/vue'
 import {
   TaskStatus,
@@ -44,6 +45,8 @@ const selectedFile = defineModel<File | null>('selectedFile', { default: null })
 const localFilePath = defineModel<string>('localFilePath', { default: '' })
 // const quality = defineModel<string>('quality', { required: true })
 const summaryMode = defineModel<Exclude<SummaryMode, 'auto'>>('summaryMode', { default: 'none' })
+// 仅转录模式的"总结标题"开关：默认开启，与后端 generate_topic 默认一致
+const generateTopic = defineModel<boolean>('generateTopic', { default: true })
 const isSidebarOpen = defineModel<boolean>('isSidebarOpen', { required: true })
 
 const props = defineProps<{
@@ -67,6 +70,7 @@ const emit = defineEmits<{
   cancelSubmit: []
   selectTask: [task: Task]
   deleteTask: [taskId: string]
+  retryTask: [task: Task]
   showInfo: [task: Task]
   openSettings: []
   focusSearchMatch: [payload: {
@@ -1290,6 +1294,36 @@ watch(() => props.summarizationSettings, (settings) => {
                 class="text-[11px] text-amber-600/90 px-1 -mt-0.5 leading-relaxed"
               >提交后不生成 AI 总结，之后可随时在任务上补总结。</p>
 
+              <!-- 仅转录模式的"总结标题"开关：默认开启，转录完成后对全文生成标题 -->
+              <div
+                v-if="summaryMode === 'none'"
+                class="flex items-center justify-between gap-3 px-3 py-2 rounded-xl border border-amber-200 bg-amber-50/60"
+              >
+                <div class="flex-1 min-w-0">
+                  <p class="text-xs font-medium text-slate-700">总结标题</p>
+                  <p class="text-[11px] text-slate-500 leading-relaxed mt-0.5">
+                    仅转录完成后自动生成标题
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  @click="generateTopic = !generateTopic"
+                  :class="[
+                    'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2',
+                    generateTopic ? 'bg-amber-500' : 'bg-gray-300'
+                  ]"
+                  role="switch"
+                  :aria-checked="generateTopic"
+                >
+                  <span
+                    :class="[
+                      'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                      generateTopic ? 'translate-x-5' : 'translate-x-0'
+                    ]"
+                  ></span>
+                </button>
+              </div>
+
               <button
                 @click="handleSubmitAction"
                 :disabled="!isSubmitting && (!videoUrl && (!props.isLocalClient ? !selectedFile : !localFilePath))"
@@ -1313,14 +1347,24 @@ watch(() => props.summarizationSettings, (settings) => {
                          selectedTask?.id === task.id ? 'border-blue-200 bg-blue-50/60 ring-1 ring-primary/20 shadow-sm' : 'border-transparent hover:bg-white hover:border-gray-100']"
               >
                 <div class="flex justify-between items-start mb-1">
-                  <span v-if="isTaskQueued(task)" class="text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1 text-amber-600 bg-amber-50">
-                    <PhClock :size="12" />
-                    {{ getQueueBadgeText(task) }}
-                  </span>
-                  <span v-else :class="['text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1', getStatusClass(task.status)]">
-                    <component :is="getStatusIcon(task.status)" :size="12" :class="task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED && task.status !== TaskStatus.PENDING ? 'animate-spin' : ''" />
-                    {{ getTaskStatusLabel(task) }}
-                  </span>
+                  <div class="flex items-center gap-1.5">
+                    <span v-if="isTaskQueued(task)" class="text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1 text-amber-600 bg-amber-50">
+                      <PhClock :size="12" />
+                      {{ getQueueBadgeText(task) }}
+                    </span>
+                    <span v-else :class="['text-xs font-medium px-2 py-0.5 rounded-full flex items-center gap-1', getStatusClass(task.status)]">
+                      <component :is="getStatusIcon(task.status)" :size="12" :class="task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED && task.status !== TaskStatus.PENDING ? 'animate-spin' : ''" />
+                      {{ getTaskStatusLabel(task) }}
+                    </span>
+                    <button
+                      v-if="task.status === TaskStatus.FAILED"
+                      @click.stop="emit('retryTask', task)"
+                      class="w-6 h-6 rounded-full bg-red-50 text-red-500 border border-red-100 hover:bg-red-100 hover:text-red-600 transition-colors flex items-center justify-center shrink-0"
+                      title="快速重跑"
+                    >
+                      <PhArrowClockwise :size="12" />
+                    </button>
+                  </div>
                   <div class="flex items-center gap-2">
                     <span class="text-[10px] text-slate-400">{{ formatTaskDate(task.created_at) }}</span>
                     <div :class="['flex items-center gap-1', 'md:opacity-0 md:group-hover:opacity-100', 'md:transition-opacity']">
@@ -1436,6 +1480,14 @@ watch(() => props.summarizationSettings, (settings) => {
                 </div>
 
                 <div class="mt-1.5 flex items-center justify-end gap-1">
+                  <button
+                    v-if="result.task.status === TaskStatus.FAILED"
+                    @click.stop="emit('retryTask', result.task)"
+                    class="w-5 h-5 rounded-full bg-red-50 text-red-500 border border-red-100 hover:bg-red-100 hover:text-red-600 transition-colors flex items-center justify-center"
+                    title="快速重跑"
+                  >
+                    <PhArrowClockwise :size="11" />
+                  </button>
                   <button
                     @click.stop="emit('showInfo', result.task)"
                     class="text-slate-400 hover:text-blue-500 p-0.5"

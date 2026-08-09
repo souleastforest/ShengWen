@@ -127,6 +127,7 @@ class FileUploadWorker(Worker):
                     media_path=final_path,
                     output_dir=self.output_dir,
                     summary_mode=str(payload.get("summary_mode") or ""),
+                    generate_topic=payload.get("generate_topic"),
                 )
                 await self.next_worker.add_task(next_payload)
 

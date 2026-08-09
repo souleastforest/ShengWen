@@ -559,6 +559,20 @@ class VideoDownloaderWorker(Worker):
                 )
             self._submit_coro(update_and_notify(task_id, update_data))
 
+            # “总结标题”开关（默认开启）：字幕直取同样在置终态后异步生成标题，
+            # 失败静默降级；multipart 分P子任务跳过，由 merge 父任务统一生成一次。
+            # self._loop 守卫：未启动的事件循环（如同步单测）下不创建未 await 的协程。
+            if (
+                self._loop
+                and skip_summarization
+                and bool(payload.get("generate_topic", True))
+                and not payload.get("multipart_part")
+            ):
+                from ..llm.llm_worker import generate_topic_for_task
+                self._submit_coro(
+                    generate_topic_for_task(self.summary_worker, task_id, transcript)
+                )
+
             next_payload = payload.copy()
             next_payload.update(
                 {
@@ -917,6 +931,18 @@ class VideoDownloaderWorker(Worker):
                     "progress": 100.0,
                 },
             )
+            # “总结标题”开关（默认开启）：对合并后的完整转录生成一次标题
+            # （各分P子任务已跳过，避免重复调用），失败静默降级。
+            # self._loop 守卫：未启动的事件循环（如同步单测）下不创建未 await 的协程。
+            if self._loop and bool(payload.get("generate_topic", True)):
+                from ..llm.llm_worker import generate_topic_for_task
+                self._submit_coro(
+                    generate_topic_for_task(
+                        self.summary_worker,
+                        task_id,
+                        "\n\n".join(transcript_blocks),
+                    )
+                )
             return
 
         overview_path = os.path.join(

@@ -14,6 +14,10 @@ class LocalPathTaskCreate(BaseModel):
         default=None,
         description="总结模式: standard | agent | auto（前端建议仅 standard/agent）",
     )
+    generate_topic: bool = Field(
+        default=True,
+        description="仅转录（summary_mode=none）时，转录完成后是否对全文生成标题（默认开启）",
+    )
 
 
 class TaskUpdate(BaseModel):
@@ -60,6 +64,10 @@ class ReTranscribeRequest(BaseModel):
     summary_mode: Optional[str] = Field(
         default=None,
         description="重新转录后进入总结时指定模式: standard | agent | auto",
+    )
+    generate_topic: Optional[bool] = Field(
+        default=None,
+        description="重新转录后的'总结标题'开关；缺省时沿用任务已存值（老任务默认 True）",
     )
 
 
@@ -232,6 +240,10 @@ class TaskCreate(BaseModel):
     bilibili_parts: Optional[BilibiliPartsConfig] = Field(
         default=None,
         description="B站分P处理配置（仅多P视频需要）",
+    )
+    generate_topic: bool = Field(
+        default=True,
+        description="仅转录（summary_mode=none）时，转录完成后是否对全文生成标题（默认开启）",
     )
 
 

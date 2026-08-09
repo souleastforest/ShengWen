@@ -635,7 +635,25 @@ class TranscriberWorker(Worker):
                         f"duration={result.transcription_time:.2f}s, audio_duration={result.audio_duration:.2f}s"
                     )
                 from ..task_updater import update_and_notify
+                # 先广播/持久化终态，再异步生成标题（保证 COMPLETED 不晚于标题写入）
                 self._submit_coro(update_and_notify(task_id, update_data))
+
+                # “总结标题”开关（默认开启）：置 COMPLETED 后异步对全文生成标题。
+                # 复用 LLMWorker.generate_topic（api同款单次调用），失败静默降级，
+                # 不阻塞任务终态。multipart 分P子任务跳过，由 merge 父任务统一生成一次。
+                # self._loop 守卫：未启动的事件循环（如同步单测）下不创建未 await 的协程。
+                if (
+                    skip_summarization
+                    and self._loop
+                    and bool(payload.get("generate_topic", True))
+                    and not multipart_part
+                ):
+                    from ..llm.llm_worker import generate_topic_for_task
+                    self._submit_coro(
+                        generate_topic_for_task(
+                            self._next_worker, task_id, transcript
+                        )
+                    )
 
             next_payload = {
                 "intermediate_file_path": intermediate_file_path,

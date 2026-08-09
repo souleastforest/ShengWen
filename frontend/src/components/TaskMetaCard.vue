@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { PhPencilSimple, PhCheck, PhX, PhArrowSquareOut } from '@phosphor-icons/vue'
+import { PhPencilSimple, PhCheck, PhX, PhArrowSquareOut, PhCopy } from '@phosphor-icons/vue'
 import type { Task } from '../types'
 import { formatDuration, formatTranscriptionDuration, formatConversionRatio, formatDateTime } from '../utils/formatters'
 import { ref, nextTick, computed } from 'vue'
-import { getAudioStatusInfo } from '../utils/audioStatus'
+import { getAudioStatusInfo, isLocalFileUrl } from '../utils/audioStatus'
+import { copyText } from '../utils/clipboard'
 
 const props = defineProps<{
   task: Task
@@ -27,6 +28,20 @@ const startEditingTopic = () => {
   nextTick(() => {
     inputRef.value?.focus()
   })
+}
+
+// 复制原网址后的短暂内联反馈（图标 1.5s 后还原）
+const copied = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+
+const copyVideoUrl = async () => {
+  const ok = await copyText(props.task.video_url)
+  if (!ok) return
+  copied.value = true
+  clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => {
+    copied.value = false
+  }, 1500)
 }
 
 // 仅展示：与 TaskInfoModal 共用同一文案映射，避免两处漂移
@@ -73,10 +88,27 @@ const audioStatus = computed(() =>
     <!-- 视频链接 -->
     <div class="flex items-center gap-2 text-xs text-slate-500">
       <span class="text-slate-400">视频链接:</span>
-      <a :href="task.video_url" target="_blank" class="text-slate-600 hover:text-primary hover:underline truncate flex items-center gap-1 max-w-md">
+      <template v-if="isLocalFileUrl(task.video_url)">
+        <span class="text-slate-600 font-mono truncate max-w-md" :title="task.video_url">{{ task.video_url }}</span>
+      </template>
+      <a
+        v-else
+        :href="task.video_url"
+        target="_blank"
+        class="text-slate-600 hover:text-primary hover:underline truncate flex items-center gap-1 max-w-md"
+        :title="task.video_url"
+      >
         {{ task.video_url }}
         <PhArrowSquareOut :size="12" />
       </a>
+      <button
+        @click="copyVideoUrl"
+        class="shrink-0 p-0.5 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+        :title="copied ? '已复制' : '复制原网址'"
+      >
+        <PhCheck v-if="copied" :size="13" class="text-emerald-500" />
+        <PhCopy v-else :size="13" />
+      </button>
       <template v-if="task.author_name">
         <span class="text-slate-400">By</span>
         <a
