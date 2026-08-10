@@ -54,14 +54,14 @@ async def generate_topic_for_task(
         )
         return
     if not topic or not isinstance(topic, str) or not topic.strip():
-        logger.info(
-            f"[TopicGenerator] 标题生成为空，跳过写入: task_id={task_id}"
-        )
+        logger.info(f"[TopicGenerator] 标题生成为空，跳过写入: task_id={task_id}")
         return
     from ..task_updater import update_and_notify
 
     await update_and_notify(task_id, {"topic": topic.strip()})
-    logger.info(f"[TopicGenerator] 已写入标题: task_id={task_id}, topic={topic.strip()!r}")
+    logger.info(
+        f"[TopicGenerator] 已写入标题: task_id={task_id}, topic={topic.strip()!r}"
+    )
 
 
 class LLMWorker(Worker):
@@ -103,42 +103,80 @@ class LLMWorker(Worker):
             index = int(part["part_index"])
             transcript = str(part.get("transcript") or "")
             if not transcript.strip():
-                update_task_part(task_id, index, {"status": "FAILED", "error_message": "该分P没有可用转录文本"})
+                update_task_part(
+                    task_id,
+                    index,
+                    {"status": "FAILED", "error_message": "该分P没有可用转录文本"},
+                )
                 continue
-            update_task_part(task_id, index, {"status": "SUMMARIZING", "progress": 0, "error_message": None, "summary": None})
+            update_task_part(
+                task_id,
+                index,
+                {
+                    "status": "SUMMARIZING",
+                    "progress": 0,
+                    "error_message": None,
+                    "summary": None,
+                },
+            )
             temp_file = os.path.join("temp", "{}_p{}_re.txt".format(task_id, index + 1))
-            output_file = os.path.join("temp", "{}_p{}_re_summary.md".format(task_id, index + 1))
+            output_file = os.path.join(
+                "temp", "{}_p{}_re_summary.md".format(task_id, index + 1)
+            )
             os.makedirs("temp", exist_ok=True)
             with open(temp_file, "w", encoding="utf-8") as file:
                 file.write(transcript)
             try:
-                await self.process_task({
-                    "task_id": task_id,
-                    "intermediate_file_path": temp_file,
-                    "output_file": output_file,
-                    "summary_mode": payload.get("summary_mode") or "auto",
-                    "multipart_part": {"index": index, "title": part.get("title") or "", "duration": part.get("duration") or 0},
-                })
+                await self.process_task(
+                    {
+                        "task_id": task_id,
+                        "intermediate_file_path": temp_file,
+                        "output_file": output_file,
+                        "summary_mode": payload.get("summary_mode") or "auto",
+                        "multipart_part": {
+                            "index": index,
+                            "title": part.get("title") or "",
+                            "duration": part.get("duration") or 0,
+                        },
+                    }
+                )
             except Exception as error:
-                update_task_part(task_id, index, {"status": "FAILED", "error_message": str(error)})
+                update_task_part(
+                    task_id, index, {"status": "FAILED", "error_message": str(error)}
+                )
 
         refreshed = get_task_parts(task_id)
-        successful = [part for part in refreshed if part.get("status") == "COMPLETED" and part.get("summary")]
+        successful = [
+            part
+            for part in refreshed
+            if part.get("status") == "COMPLETED" and part.get("summary")
+        ]
         if not successful:
             await self._mark_failed(task_id, "所有分P均无法重新生成总结")
             return
         overview_file = os.path.join("temp", "{}_overview_re.txt".format(task_id))
-        overview_output = os.path.join("temp", "{}_overview_re_summary.md".format(task_id))
+        overview_output = os.path.join(
+            "temp", "{}_overview_re_summary.md".format(task_id)
+        )
         with open(overview_file, "w", encoding="utf-8") as file:
             file.write("请根据以下各分P总结生成整套视频的总体概览。\n\n")
-            file.write("\n\n".join("## P{}：{}\n\n{}".format(part["part_index"] + 1, part.get("title") or "", part["summary"]) for part in successful))
-        await self.process_task({
-            "task_id": task_id,
-            "intermediate_file_path": overview_file,
-            "output_file": overview_output,
-            "summary_mode": payload.get("summary_mode") or "auto",
-            "multipart_overview": True,
-        })
+            file.write(
+                "\n\n".join(
+                    "## P{}：{}\n\n{}".format(
+                        part["part_index"] + 1, part.get("title") or "", part["summary"]
+                    )
+                    for part in successful
+                )
+            )
+        await self.process_task(
+            {
+                "task_id": task_id,
+                "intermediate_file_path": overview_file,
+                "output_file": overview_output,
+                "summary_mode": payload.get("summary_mode") or "auto",
+                "multipart_overview": True,
+            }
+        )
 
     async def process_task(self, payload: dict[str, Any]):
         intermediate_file_path = payload.get("intermediate_file_path")
@@ -151,7 +189,9 @@ class LLMWorker(Worker):
             return
 
         if not intermediate_file_path or not output_file:
-            await self._mark_failed(task_id, "payload 中缺少 'intermediate_file_path' 或 'output_file'")
+            await self._mark_failed(
+                task_id, "payload 中缺少 'intermediate_file_path' 或 'output_file'"
+            )
             return
 
         if task_id and self.is_task_cancelled(task_id):
@@ -161,7 +201,9 @@ class LLMWorker(Worker):
             with open(intermediate_file_path, "r", encoding="utf-8") as f:
                 transcript_text = f.read()
         except FileNotFoundError:
-            await self._mark_failed(task_id, f"找不到中间转录文件 {intermediate_file_path}")
+            await self._mark_failed(
+                task_id, f"找不到中间转录文件 {intermediate_file_path}"
+            )
             return
         except Exception as e:
             await self._mark_failed(task_id, f"读取中间文件时出错: {e}")
@@ -171,6 +213,7 @@ class LLMWorker(Worker):
             empty_error = "转录文本为空，无法生成总结；已跳过 LLM 请求（可能是 ASR 未生成有效转录片段）。"
             if multipart_part and task_id:
                 from ..task_parts import update_task_part
+
                 update_task_part(
                     task_id,
                     int(multipart_part["index"]),
@@ -199,7 +242,9 @@ class LLMWorker(Worker):
             transcript_text=transcript_text,
         )
 
-        auto_metrics = self._collect_auto_mode_metrics(task_data=task_data, transcript_text=transcript_text)
+        auto_metrics = self._collect_auto_mode_metrics(
+            task_data=task_data, transcript_text=transcript_text
+        )
         logger.info(
             f"[{self.name}] 任务 {task_id or '<unknown>'} 总结模式: "
             f"requested={requested_mode}, effective={effective_mode}, "
@@ -240,7 +285,10 @@ class LLMWorker(Worker):
             logger.info(f"[{self.name}] {e}")
             return
         except Exception as e:
-            if effective_mode == "agent" and config.summarization.fallback_to_standard_on_agent_error:
+            if (
+                effective_mode == "agent"
+                and config.summarization.fallback_to_standard_on_agent_error
+            ):
                 logger.warning(f"[{self.name}] 分块总结失败，回退标准模式: {e}")
                 try:
                     final_summary, topic = await self._run_standard_summary(
@@ -253,11 +301,18 @@ class LLMWorker(Worker):
                     }
                     mode_used = "standard"
                 except Exception as fallback_err:
-                    await self._mark_failed(task_id, f"分块总结失败且回退标准模式失败: {fallback_err}")
+                    await self._mark_failed(
+                        task_id, f"分块总结失败且回退标准模式失败: {fallback_err}"
+                    )
                     return
             else:
                 await self._mark_failed(task_id, f"LLM 处理过程中发生错误: {e}")
                 return
+
+        # 纵深防御：写入前的最终校验，任何模式下都不允许空总结静默 COMPLETED
+        if not (final_summary or "").strip():
+            await self._mark_failed(task_id, "总结结果为空，任务标记失败")
+            return
 
         if task_id and self.is_task_cancelled(task_id):
             raise TaskCancelledError(f"任务已取消，停止写入总结结果: {task_id}")
@@ -272,7 +327,12 @@ class LLMWorker(Worker):
 
         if multipart_part and task_id:
             from ..task_parts import update_task_part
-            update_task_part(task_id, int(multipart_part["index"]), {"status": "COMPLETED", "progress": 100, "summary": final_summary})
+
+            update_task_part(
+                task_id,
+                int(multipart_part["index"]),
+                {"status": "COMPLETED", "progress": 100, "summary": final_summary},
+            )
             return
 
         if task_id:
@@ -286,10 +346,28 @@ class LLMWorker(Worker):
             final_status = TaskStatus.COMPLETED
             if payload.get("multipart_overview"):
                 from ..task_parts import get_task_parts
+
                 parts = get_task_parts(task_id)
                 separator = chr(10) * 2
-                sections = ["## P{}：{}{}{}".format(part["part_index"] + 1, part.get("title") or "", separator, part["summary"]) for part in parts if part.get("summary")]
-                final_summary = '# 总体概览' + separator + final_summary + separator + '# 分P总结' + separator + separator.join(sections)
+                sections = [
+                    "## P{}：{}{}{}".format(
+                        part["part_index"] + 1,
+                        part.get("title") or "",
+                        separator,
+                        part["summary"],
+                    )
+                    for part in parts
+                    if part.get("summary")
+                ]
+                final_summary = (
+                    "# 总体概览"
+                    + separator
+                    + final_summary
+                    + separator
+                    + "# 分P总结"
+                    + separator
+                    + separator.join(sections)
+                )
                 if any(part["status"] == "FAILED" for part in parts):
                     final_status = TaskStatus.PARTIAL
 
@@ -298,7 +376,9 @@ class LLMWorker(Worker):
                 "status": final_status,
                 "progress": 100,
                 "summary_mode": mode_used,
-                "summary_meta": json.dumps(summary_meta, ensure_ascii=False) if summary_meta else None,
+                "summary_meta": json.dumps(summary_meta, ensure_ascii=False)
+                if summary_meta
+                else None,
             }
             if topic:
                 update_data["topic"] = topic
@@ -312,9 +392,12 @@ class LLMWorker(Worker):
                 await self._await_pending_updates(timeout=5.0)
 
             from ..task_updater import update_and_notify
+
             await update_and_notify(task_id, update_data)
 
-    def _resolve_requested_mode(self, payload: dict[str, Any], task_data: dict[str, Any] | None) -> str:
+    def _resolve_requested_mode(
+        self, payload: dict[str, Any], task_data: dict[str, Any] | None
+    ) -> str:
         payload_mode = str(payload.get("summary_mode") or "").strip().lower()
         if payload_mode in VALID_SUMMARY_MODES:
             return payload_mode
@@ -337,7 +420,9 @@ class LLMWorker(Worker):
         if requested_mode in {"standard", "agent"}:
             return requested_mode
 
-        metrics = self._collect_auto_mode_metrics(task_data=task_data, transcript_text=transcript_text)
+        metrics = self._collect_auto_mode_metrics(
+            task_data=task_data, transcript_text=transcript_text
+        )
         if metrics["audio_triggered"] or metrics["line_triggered"]:
             return "agent"
         return "standard"
@@ -354,8 +439,12 @@ class LLMWorker(Worker):
             except (TypeError, ValueError):
                 audio_duration = 0.0
         line_count = count_timestamp_lines(transcript_text)
-        audio_triggered = audio_duration >= config.summarization.auto_chunk_min_audio_duration_sec
-        line_triggered = line_count >= config.summarization.auto_chunk_min_transcript_lines
+        audio_triggered = (
+            audio_duration >= config.summarization.auto_chunk_min_audio_duration_sec
+        )
+        line_triggered = (
+            line_count >= config.summarization.auto_chunk_min_transcript_lines
+        )
         return {
             "audio_duration_sec": audio_duration,
             "line_count": line_count,
@@ -414,7 +503,9 @@ class LLMWorker(Worker):
         cleaned = first_line.strip("\"'“”‘’「」『』《》【】")
         return cleaned.strip() or None
 
-    async def _run_standard_summary(self, transcript_text: str, task_id: str | None) -> tuple[str, str | None]:
+    async def _run_standard_summary(
+        self, transcript_text: str, task_id: str | None
+    ) -> tuple[str, str | None]:
         if not self.system_prompt:
             raise RuntimeError("未加载系统提示词，无法执行标准总结。")
 
@@ -447,7 +538,10 @@ class LLMWorker(Worker):
 
                 # 只有当任务仍在 SUMMARIZING 状态时才更新，避免覆盖 COMPLETED 状态
                 current_task = db.get_task(task_id)
-                if not current_task or current_task.get("status") != TaskStatus.SUMMARIZING:
+                if (
+                    not current_task
+                    or current_task.get("status") != TaskStatus.SUMMARIZING
+                ):
                     return
 
                 await update_and_notify(
@@ -483,6 +577,9 @@ class LLMWorker(Worker):
             raise llm_error
 
         final_summary = "".join(response_chunks)
+        # 空结果视为失败：禁止静默生成空总结（与 agent 分块路径同规格）
+        if not final_summary.strip():
+            raise LLMError("标准总结结果为空")
         topic = _extract_topic(final_summary)
         return final_summary, topic
 
@@ -512,7 +609,9 @@ class LLMWorker(Worker):
                 max_duration_sec=config.summarization.chunk_max_duration_sec,
                 boundary_jump_sec=config.summarization.boundary_jump_sec,
             )
-            logger.info(f"[{self.name}] 任务 {task_label} Agent 预分块结果: total_chunks={len(preview_chunks)}")
+            logger.info(
+                f"[{self.name}] 任务 {task_label} Agent 预分块结果: total_chunks={len(preview_chunks)}"
+            )
             for idx, chunk in enumerate(preview_chunks, start=1):
                 logger.info(
                     f"[{self.name}] 任务 {task_label} 分块 {idx}/{len(preview_chunks)}: "
@@ -547,17 +646,22 @@ class LLMWorker(Worker):
 
             progress = int((done / total) * 100) if total > 0 else 0
             from ..task_updater import update_and_notify
-            self._submit_coro(update_and_notify(
-                task_id,
-                {
-                    "status": TaskStatus.SUMMARIZING,
-                    "summary": partial_summary,
-                    "progress": progress,
-                    "summary_mode": mode_value if mode_value in {"auto", "agent"} else "agent",
-                    "summary_chunk_total": total,
-                    "summary_chunk_done": done,
-                },
-            ))
+
+            self._submit_coro(
+                update_and_notify(
+                    task_id,
+                    {
+                        "status": TaskStatus.SUMMARIZING,
+                        "summary": partial_summary,
+                        "progress": progress,
+                        "summary_mode": mode_value
+                        if mode_value in {"auto", "agent"}
+                        else "agent",
+                        "summary_chunk_total": total,
+                        "summary_chunk_done": done,
+                    },
+                )
+            )
             last_stream_summary = partial_summary
 
         async def flush_chunk_stream(done: int, total: int, streaming_summary: str):
@@ -595,7 +699,9 @@ class LLMWorker(Worker):
                         "status": TaskStatus.SUMMARIZING,
                         "summary": streaming_summary,
                         "progress": progress,
-                        "summary_mode": mode_value if mode_value in {"auto", "agent"} else "agent",
+                        "summary_mode": mode_value
+                        if mode_value in {"auto", "agent"}
+                        else "agent",
                         "summary_chunk_total": total,
                         "summary_chunk_done": done,
                     },
@@ -647,7 +753,10 @@ class LLMWorker(Worker):
         normalized = str(prompt_file or "").strip()
         if not normalized:
             return ""
-        if self._chunk_prompt_cache_path == normalized and self._chunk_prompt_cache_text is not None:
+        if (
+            self._chunk_prompt_cache_path == normalized
+            and self._chunk_prompt_cache_text is not None
+        ):
             return self._chunk_prompt_cache_text
 
         try:
@@ -670,7 +779,9 @@ class LLMWorker(Worker):
         from ..db import TaskStatus
         from ..task_updater import update_and_notify
 
-        await update_and_notify(task_id, {"status": TaskStatus.FAILED, "error_message": error_message})
+        await update_and_notify(
+            task_id, {"status": TaskStatus.FAILED, "error_message": error_message}
+        )
 
 
 def _extract_topic(summary: str) -> str | None:
