@@ -20,7 +20,7 @@ from .state_manager import DynamicStateManager
 
 def remove_duplicate_paragraphs(text: str) -> str:
     """移除连续重复的段落"""
-    paragraphs = text.split('\n\n')
+    paragraphs = text.split("\n\n")
     result = []
     prev = None
     for para in paragraphs:
@@ -28,18 +28,20 @@ def remove_duplicate_paragraphs(text: str) -> str:
         if para_stripped and para_stripped != prev:
             result.append(para)
             prev = para_stripped
-    return '\n\n'.join(result)
+    return "\n\n".join(result)
 
 
 def truncate_after_state_ops(text: str) -> str:
     """截断state_ops之后的所有内容"""
-    pattern = r'(```state_ops\s*\{[^`]*\}\s*```)'
+    pattern = r"(```state_ops\s*\{[^`]*\}\s*```)"
     matches = list(re.finditer(pattern, text, re.DOTALL))
     if matches:
         last_match = matches[-1]
-        truncated = text[:last_match.end()]
+        truncated = text[: last_match.end()]
         if truncated != text:
-            logger.info(f"[ChunkedSummarizer] 截断了state_ops之后的内容，移除了 {len(text) - len(truncated)} 个字符")
+            logger.info(
+                f"[ChunkedSummarizer] 截断了state_ops之后的内容，移除了 {len(text) - len(truncated)} 个字符"
+            )
         return truncated
     return text
 
@@ -49,10 +51,12 @@ def truncate_discussed_topics(topics: str, max_items: int = 10) -> str:
     if not topics:
         return topics
 
-    items = [item.strip() for item in topics.split(';') if item.strip()]
+    items = [item.strip() for item in topics.split(";") if item.strip()]
     if len(items) > max_items:
-        truncated = '; '.join(items[-max_items:])
-        logger.info(f"[ChunkedSummarizer] 截断已讨论主题从 {len(items)} 项到 {max_items} 项")
+        truncated = "; ".join(items[-max_items:])
+        logger.info(
+            f"[ChunkedSummarizer] 截断已讨论主题从 {len(items)} 项到 {max_items} 项"
+        )
         return truncated
     return topics
 
@@ -87,7 +91,9 @@ class ChunkedSummarizer:
         self._chunk_system_prompt = chunk_system_prompt
         self._chunk_target_duration_sec = max(60, int(chunk_target_duration_sec))
         self._chunk_min_duration_sec = max(30, int(chunk_min_duration_sec))
-        self._chunk_max_duration_sec = max(self._chunk_target_duration_sec, int(chunk_max_duration_sec))
+        self._chunk_max_duration_sec = max(
+            self._chunk_target_duration_sec, int(chunk_max_duration_sec)
+        )
         self._boundary_jump_sec = max(1, int(boundary_jump_sec))
         self._prev_tail_timestamp_lines_m = max(0, int(prev_tail_timestamp_lines_m))
         self._prev_summary_tail_chars_j = max(0, int(prev_summary_tail_chars_j))
@@ -149,12 +155,16 @@ class ChunkedSummarizer:
             parsed_ops, parse_warnings = parse_state_ops(output)
             if parse_warnings:
                 warnings.extend([f"chunk_{idx}: {msg}" for msg in parse_warnings])
-            apply_warnings = state.apply_ops(parsed_ops, max_value_chars=self._max_agent_value_chars)
+            apply_warnings = state.apply_ops(
+                parsed_ops, max_value_chars=self._max_agent_value_chars
+            )
             if apply_warnings:
                 warnings.extend([f"chunk_{idx}: {msg}" for msg in apply_warnings])
 
             if self._chunk_debug_dump_enabled:
-                self._dump_chunk_debug(idx, chunk, user_prompt, output, state.snapshot())
+                self._dump_chunk_debug(
+                    idx, chunk, user_prompt, output, state.snapshot()
+                )
 
             if on_chunk_progress:
                 partial_summary, _ = assemble_chunk_summaries(chunk_outputs)
@@ -165,9 +175,14 @@ class ChunkedSummarizer:
         # 提取最后一块生成的文档主题（如果有）
         doc_topic = state.snapshot().get("agent", {}).get("文档主题", "").strip()
         if doc_topic:
-            # 将主题添加到摘要开头
-            final_summary = f"{doc_topic}\n{final_summary}"
+            # 将主题添加到摘要开头（清理模型常见的 {{...}} 强调包裹）
+            cleaned_topic = re.sub(r"^\{\{|\}\}$", "", doc_topic).strip()
+            final_summary = f"{cleaned_topic}\n{final_summary}"
             assembly_logs.append(f"已添加文档主题: {doc_topic}")
+
+        # 终检：组装结果为空时不允许静默成功（触发上层 fallback 或失败路径）
+        if not final_summary.strip():
+            raise RuntimeError("分块总结结果为空（所有分块均无有效内容）")
 
         return ChunkedSummaryResult(
             summary_text=final_summary,
@@ -201,7 +216,7 @@ class ChunkedSummarizer:
         prev_summary_cleaned = strip_state_instruction_blocks(prev_summary)
 
         # 取末尾片段并去重
-        prev_summary_tail = prev_summary_cleaned[-self._prev_summary_tail_chars_j:]
+        prev_summary_tail = prev_summary_cleaned[-self._prev_summary_tail_chars_j :]
         prev_summary_tail = remove_duplicate_paragraphs(prev_summary_tail)
 
         state.set_program_value(
@@ -232,7 +247,9 @@ class ChunkedSummarizer:
                 last_error = e
                 if attempt >= self._llm_call_retry_max:
                     break
-                logger.warning(f"[ChunkedSummarizer] LLM 调用失败，准备重试 ({attempt}/{self._llm_call_retry_max}): {e}")
+                logger.warning(
+                    f"[ChunkedSummarizer] LLM 调用失败，准备重试 ({attempt}/{self._llm_call_retry_max}): {e}"
+                )
                 await asyncio.sleep(min(2.0, 0.3 * attempt))
 
         raise RuntimeError(f"分块总结调用失败: {last_error}")
@@ -279,6 +296,11 @@ class ChunkedSummarizer:
 
         # 截断state_ops之后的所有内容（防止思考过程泄露）
         final_text = truncate_after_state_ops(final_text)
+
+        # 空结果视为失败：零字节响应或仅指令块的输出都应走重试/失败路径，
+        # 禁止静默生成空总结（曾因 LLM 间歇性空响应产出"空总结 COMPLETED"任务）。
+        if not strip_state_instruction_blocks(final_text).strip():
+            raise LLMError("LLM 响应为空或仅包含指令块")
 
         if on_partial and len(final_text) != last_emit_len:
             try:
