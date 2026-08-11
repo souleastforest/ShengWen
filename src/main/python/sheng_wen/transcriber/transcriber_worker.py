@@ -41,7 +41,9 @@ def _build_actionable_transcription_error(error_text: str) -> str:
 
     lowered = text.lower()
     missing_dll, cuda_major = _extract_missing_cuda_runtime_dll(text)
-    maybe_cuda_runtime_error = bool(missing_dll) or "cuda" in lowered or "cublas" in lowered
+    maybe_cuda_runtime_error = (
+        bool(missing_dll) or "cuda" in lowered or "cublas" in lowered
+    )
     if not maybe_cuda_runtime_error:
         return text
 
@@ -49,7 +51,9 @@ def _build_actionable_transcription_error(error_text: str) -> str:
     lines.append("1) 先切换到 CPU 转录，保证任务可继续。")
     if missing_dll:
         if cuda_major:
-            lines.append(f"2) 当前缺失 {missing_dll}（对应 CUDA {cuda_major} 运行库），请安装对应 CUDA Runtime。")
+            lines.append(
+                f"2) 当前缺失 {missing_dll}（对应 CUDA {cuda_major} 运行库），请安装对应 CUDA Runtime。"
+            )
         else:
             lines.append(f"2) 当前缺失 {missing_dll}，请安装对应 CUDA Runtime。")
     else:
@@ -76,7 +80,8 @@ class TranscriberWorker(Worker):
     一个工作单元，可以从视频中提取音频，然后转录音频文件，
     并将详细的转录结果保存到中间文件，最后将文件路径传递给下一个工作单元。
     """
-    def __init__(self, name: str, transcriber: Transcriber, next_worker: 'LLMWorker'):
+
+    def __init__(self, name: str, transcriber: Transcriber, next_worker: "LLMWorker"):
         """
         初始化 TranscriberWorker。
         """
@@ -91,7 +96,9 @@ class TranscriberWorker(Worker):
             self._transcriber = transcriber
         logger.info(f"[{self.name}] 转录器实例已更新。")
 
-    def _extract_audio(self, video_path: str, audio_path: str, task_id: str | None = None) -> bool:
+    def _extract_audio(
+        self, video_path: str, audio_path: str, task_id: str | None = None
+    ) -> bool:
         """
         使用 ffmpeg 从视频文件中提取音频。
 
@@ -101,7 +108,9 @@ class TranscriberWorker(Worker):
         # 使用 FFmpegHelper 配置 ffmpeg 路径
         if not FFmpegHelper.configure_ffmpeg_python():
             logger.error(f"[{self.name}] 错误: FFmpeg 配置失败。")
-            logger.error(f"[{self.name}] 请确保已安装 imageio-ffmpeg: pip install imageio-ffmpeg")
+            logger.error(
+                f"[{self.name}] 请确保已安装 imageio-ffmpeg: pip install imageio-ffmpeg"
+            )
             return False
 
         # 若目标音频已存在且不早于视频文件，优先复用，避免重复提取。
@@ -110,7 +119,11 @@ class TranscriberWorker(Worker):
                 audio_size = os.path.getsize(audio_path)
                 if audio_size > 0:
                     audio_mtime = os.path.getmtime(audio_path)
-                    video_mtime = os.path.getmtime(video_path) if os.path.exists(video_path) else 0.0
+                    video_mtime = (
+                        os.path.getmtime(video_path)
+                        if os.path.exists(video_path)
+                        else 0.0
+                    )
                     if audio_mtime >= video_mtime:
                         logger.info(
                             f"[{self.name}] 复用已存在音频文件，跳过提取: {audio_path} "
@@ -120,12 +133,13 @@ class TranscriberWorker(Worker):
         except Exception as e:
             logger.debug(f"[{self.name}] 复用音频文件检查失败，回退常规提取: {e}")
 
-        logger.info(f"[{self.name}] 正在从视频 '{video_path}' 中提取音频到 '{audio_path}'...")
+        logger.info(
+            f"[{self.name}] 正在从视频 '{video_path}' 中提取音频到 '{audio_path}'..."
+        )
         try:
             process = (
-                ffmpeg
-                .input(video_path)
-                .output(audio_path, acodec='mp3', audio_bitrate='192k')
+                ffmpeg.input(video_path)
+                .output(audio_path, acodec="mp3", audio_bitrate="192k")
                 .overwrite_output()
                 .run_async(pipe_stdout=False, pipe_stderr=True)
             )
@@ -187,7 +201,9 @@ class TranscriberWorker(Worker):
                 stderr_text = "\n".join(stderr_tail).strip()
                 if not stderr_text:
                     stderr_text = f"ffmpeg exited with code {process.returncode}"
-                raise ffmpeg.Error("ffmpeg", b"", stderr_text.encode("utf-8", errors="replace"))
+                raise ffmpeg.Error(
+                    "ffmpeg", b"", stderr_text.encode("utf-8", errors="replace")
+                )
 
             logger.info(f"[{self.name}] 音频提取成功。")
             return True
@@ -206,15 +222,17 @@ class TranscriberWorker(Worker):
             logger.error(f"[{self.name}] 提取音频时发生未知错误: {e}", exc_info=True)
             return False
 
-    def _save_transcription_to_file(self, result: TranscriptionResult, output_path: str):
+    def _save_transcription_to_file(
+        self, result: TranscriptionResult, output_path: str
+    ):
         """
         将转录结果以特定格式保存到文件。
         """
         logger.info(f"[{self.name}] 正在将转录结果保存到: {output_path}")
         try:
-            with open(output_path, "w", encoding="utf-8", errors='replace') as f:
+            with open(output_path, "w", encoding="utf-8", errors="replace") as f:
                 for seg in result.segments:
-                    clean_text = seg['text'].strip()
+                    clean_text = seg["text"].strip()
                     line = f"{_format_duration(seg['start'])}{clean_text}\n"
                     f.write(line)
             logger.info(f"[{self.name}] 成功保存转录文件。")
@@ -264,14 +282,22 @@ class TranscriberWorker(Worker):
             total_time += float(result.total_time or 0.0)
             for segment in result.segments or []:
                 adjusted = dict(segment)
-                adjusted["start"] = max(0.0, float(segment.get("start", 0.0) or 0.0) + offset)
+                adjusted["start"] = max(
+                    0.0, float(segment.get("start", 0.0) or 0.0) + offset
+                )
                 adjusted["end"] = max(
                     adjusted["start"],
-                    float(segment.get("end", segment.get("start", 0.0)) or 0.0) + offset,
+                    float(segment.get("end", segment.get("start", 0.0)) or 0.0)
+                    + offset,
                 )
                 segments.append(adjusted)
 
-        segments.sort(key=lambda item: (float(item.get("start", 0.0)), float(item.get("end", 0.0))))
+        segments.sort(
+            key=lambda item: (
+                float(item.get("start", 0.0)),
+                float(item.get("end", 0.0)),
+            )
+        )
         duration = max(0.0, float(audio_duration or 0.0))
         if duration <= 0.0:
             duration = sum(float(result.audio_duration or 0.0) for result, _ in results)
@@ -288,7 +314,9 @@ class TranscriberWorker(Worker):
         )
 
     @staticmethod
-    def _release_transcriber_resources(transcriber: Transcriber, reset_model: bool = False) -> None:
+    def _release_transcriber_resources(
+        transcriber: Transcriber, reset_model: bool = False
+    ) -> None:
         try:
             if reset_model and hasattr(transcriber, "reset_model"):
                 transcriber.reset_model()
@@ -336,9 +364,7 @@ class TranscriberWorker(Worker):
             transcriber = self._transcriber
 
         if audio_duration <= 0.0:
-            raise RuntimeError(
-                f"无法探测音频时长，已停止整段 CUDA 推理: {audio_file}"
-            )
+            raise RuntimeError(f"无法探测音频时长，已停止整段 CUDA 推理: {audio_file}")
 
         def transcribe_one(path: str, callback):
             if cancel_check():
@@ -371,9 +397,7 @@ class TranscriberWorker(Worker):
                     if expected_duration <= 0:
                         continue
                     self._release_transcriber_resources(transcriber)
-                    self._log_cuda_memory(
-                        f"before chunk {index + 1}/{len(chunks)}"
-                    )
+                    self._log_cuda_memory(f"before chunk {index + 1}/{len(chunks)}")
                     logger.info(
                         f"[{self.name}] 开始 ASR 分片 {index + 1}/{len(chunks)}: "
                         f"{offset:.1f}s-{offset + expected_duration:.1f}s"
@@ -406,9 +430,7 @@ class TranscriberWorker(Worker):
                     completed = min(duration, offset + expected_duration)
                     progress_callback(completed / duration if duration > 0 else 1.0)
                     self._release_transcriber_resources(transcriber)
-                    self._log_cuda_memory(
-                        f"after chunk {index + 1}/{len(chunks)}"
-                    )
+                    self._log_cuda_memory(f"after chunk {index + 1}/{len(chunks)}")
                     logger.info(
                         f"[{self.name}] ASR 分片完成 {index + 1}/{len(chunks)}: "
                         f"elapsed={result.transcription_time:.2f}s"
@@ -477,7 +499,13 @@ class TranscriberWorker(Worker):
             if task_id:
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
-                self._submit_coro(update_and_notify(task_id, {"status": TaskStatus.FAILED, "error_message": error_msg}))
+
+                self._submit_coro(
+                    update_and_notify(
+                        task_id,
+                        {"status": TaskStatus.FAILED, "error_message": error_msg},
+                    )
+                )
             return
 
         # 如果提供了视频文件，则先提取音频
@@ -488,12 +516,21 @@ class TranscriberWorker(Worker):
                     if task_id:
                         from ..db import TaskStatus
                         from ..task_updater import update_and_notify
-                        self._submit_coro(update_and_notify(task_id, {"status": TaskStatus.FAILED, "error_message": "音频提取失败"}))
+
+                        self._submit_coro(
+                            update_and_notify(
+                                task_id,
+                                {
+                                    "status": TaskStatus.FAILED,
+                                    "error_message": "音频提取失败",
+                                },
+                            )
+                        )
                     return
             except TaskCancelledError:
                 logger.info(f"[{self.name}] 任务已取消，停止音频提取: {task_id}")
                 return
-        
+
         # 检查音频文件是否存在
         if not os.path.exists(audio_file):
             error_msg = f"找不到要转录的音频文件: {audio_file}"
@@ -501,18 +538,29 @@ class TranscriberWorker(Worker):
             if task_id:
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
-                self._submit_coro(update_and_notify(task_id, {"status": TaskStatus.FAILED, "error_message": error_msg}))
+
+                self._submit_coro(
+                    update_and_notify(
+                        task_id,
+                        {"status": TaskStatus.FAILED, "error_message": error_msg},
+                    )
+                )
             return
 
         try:
             if task_id:
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
-                self._submit_coro(update_and_notify(task_id, {"status": TaskStatus.TRANSCRIBING}))
+
+                self._submit_coro(
+                    update_and_notify(task_id, {"status": TaskStatus.TRANSCRIBING})
+                )
                 self._submit_coro(notify_task_update(task_id))
 
             logger.info(f"[{self.name}] 开始转录: {audio_file}")
-            logger.info(f"[{self.name}] 已注册转录进度回调，等待进度上报: task={task_id or '<unknown>'}")
+            logger.info(
+                f"[{self.name}] 已注册转录进度回调，等待进度上报: task={task_id or '<unknown>'}"
+            )
 
             last_progress_percent = -1
             last_logged_bucket = -1
@@ -536,19 +584,38 @@ class TranscriberWorker(Worker):
                     task_progress = float(progress_percent)
                     if multipart_part:
                         from ..task_parts import get_task_parts, update_task_part
+
                         part_index = int(multipart_part["index"])
-                        update_task_part(str(task_id), part_index, {
-                            "status": "TRANSCRIBING", "progress": progress_percent
-                        })
+                        update_task_part(
+                            str(task_id),
+                            part_index,
+                            {"status": "TRANSCRIBING", "progress": progress_percent},
+                        )
                         parts = get_task_parts(str(task_id), include_text=False)
                         weighted_total = sum(
-                            max(0.0, float(part.get("duration") or part.get("audio_duration") or 0.0))
+                            max(
+                                0.0,
+                                float(
+                                    part.get("duration")
+                                    or part.get("audio_duration")
+                                    or 0.0
+                                ),
+                            )
                             for part in parts
                         )
                         if weighted_total > 0:
                             weighted_done = sum(
-                                max(0.0, float(part.get("duration") or part.get("audio_duration") or 0.0))
-                                * max(0.0, min(float(part.get("progress") or 0.0), 100.0))
+                                max(
+                                    0.0,
+                                    float(
+                                        part.get("duration")
+                                        or part.get("audio_duration")
+                                        or 0.0
+                                    ),
+                                )
+                                * max(
+                                    0.0, min(float(part.get("progress") or 0.0), 100.0)
+                                )
                                 / 100.0
                                 for part in parts
                             )
@@ -559,13 +626,18 @@ class TranscriberWorker(Worker):
                                 for part in parts
                             ) / len(parts)
                     from ..task_updater import update_and_notify
-                    self._submit_coro(update_and_notify(task_id, {"progress": task_progress}))
+
+                    self._submit_coro(
+                        update_and_notify(task_id, {"progress": task_progress})
+                    )
 
                     # 每 10% 打点一次，便于快速判断是后端卡住还是前端未刷新。
                     progress_bucket = progress_percent // 10
                     if progress_bucket > last_logged_bucket or progress_percent >= 100:
                         last_logged_bucket = progress_bucket
-                        logger.info(f"[{self.name}] 转录进度 task={task_id}: {progress_percent}%")
+                        logger.info(
+                            f"[{self.name}] 转录进度 task={task_id}: {progress_percent}%"
+                        )
 
             result = self._transcribe_audio_with_chunking(
                 audio_file,
@@ -574,13 +646,49 @@ class TranscriberWorker(Worker):
             )
             logger.info(f"[{self.name}] 转录完成。")
 
+            # 空转录防御（事故修复 vibevoice-empty-transcript）：ASR 输出截断/
+            # JSON 解析失败/未识别语音都可能返回空 segments——必须显式 FAILED，
+            # 禁止静默写空 transcript 并 COMPLETED。此校验覆盖所有 transcriber
+            # 类型（vibevoice/fast-whisper/api）与 multipart 分片路径，是最后防线。
+            if not (result.segments or []):
+                empty_error = (
+                    "转录结果为空（ASR 未生成有效转录片段，"
+                    "可能因输出截断或未识别到语音）"
+                )
+                logger.error(f"[{self.name}] {empty_error}: task_id={task_id}")
+                if multipart_part:
+                    from ..task_parts import update_task_part
+
+                    update_task_part(
+                        str(task_id),
+                        int(multipart_part["index"]),
+                        {
+                            "status": "FAILED",
+                            "progress": 0,
+                            "error_message": empty_error,
+                        },
+                    )
+                if task_id:
+                    from ..db import TaskStatus
+                    from ..task_updater import update_and_notify
+
+                    self._submit_coro(
+                        update_and_notify(
+                            task_id,
+                            {"status": TaskStatus.FAILED, "error_message": empty_error},
+                        )
+                    )
+                return
+
             # 打印性能指标
             logger.info(f"[{self.name}] --- 性能指标 ---")
             logger.info(f"[{self.name}] 模型加载耗时: {result.model_load_time:.2f}s")
             logger.info(f"[{self.name}] 音频时长: {result.audio_duration:.2f}s")
             logger.info(f"[{self.name}] 转录耗时: {result.transcription_time:.2f}s")
             logger.info(f"[{self.name}] 实时率 (RTF): {result.real_time_factor:.2f}")
-            logger.info(f"[{self.name}] 检测到的语言: {result.language} (置信度: {result.language_probability:.2f})")
+            logger.info(
+                f"[{self.name}] 检测到的语言: {result.language} (置信度: {result.language_probability:.2f})"
+            )
 
             intermediate_file_path = os.path.splitext(output_file)[0] + ".txt"
             self._save_transcription_to_file(result, intermediate_file_path)
@@ -591,18 +699,24 @@ class TranscriberWorker(Worker):
 
             if multipart_part:
                 from ..task_parts import update_task_part
+
                 with open(intermediate_file_path, "r", encoding="utf-8") as f:
                     part_transcript = f.read()
-                update_task_part(str(task_id), int(multipart_part["index"]), {
-                    "status": "COMPLETED" if skip_summarization else "SUMMARIZING",
-                    "progress": 100,
-                    "transcript": part_transcript,
-                    "audio_duration": result.audio_duration,
-                    "transcription_time": result.transcription_time,
-                })
+                update_task_part(
+                    str(task_id),
+                    int(multipart_part["index"]),
+                    {
+                        "status": "COMPLETED" if skip_summarization else "SUMMARIZING",
+                        "progress": 100,
+                        "transcript": part_transcript,
+                        "audio_duration": result.audio_duration,
+                        "transcription_time": result.transcription_time,
+                    },
+                )
 
             if task_id:
                 from ..db import TaskStatus
+
                 # 保存转录文本到数据库供前端查看
                 with open(intermediate_file_path, "r", encoding="utf-8") as f:
                     transcript = f.read()
@@ -635,6 +749,7 @@ class TranscriberWorker(Worker):
                         f"duration={result.transcription_time:.2f}s, audio_duration={result.audio_duration:.2f}s"
                     )
                 from ..task_updater import update_and_notify
+
                 # 先广播/持久化终态，再异步生成标题（保证 COMPLETED 不晚于标题写入）
                 self._submit_coro(update_and_notify(task_id, update_data))
 
@@ -649,16 +764,12 @@ class TranscriberWorker(Worker):
                     and not multipart_part
                 ):
                     from ..llm.llm_worker import generate_topic_for_task
+
                     self._submit_coro(
-                        generate_topic_for_task(
-                            self._next_worker, task_id, transcript
-                        )
+                        generate_topic_for_task(self._next_worker, task_id, transcript)
                     )
 
-            next_payload = {
-                "intermediate_file_path": intermediate_file_path,
-                **payload
-            }
+            next_payload = {"intermediate_file_path": intermediate_file_path, **payload}
 
             if not multipart_part and not skip_summarization:
                 self._submit_coro(self._next_worker.add_task(next_payload))
@@ -671,10 +782,15 @@ class TranscriberWorker(Worker):
             if task_id:
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
-                self._submit_coro(update_and_notify(
-                    task_id,
-                    {
-                        "status": TaskStatus.FAILED,
-                        "error_message": _build_actionable_transcription_error(str(e)),
-                    },
-                ))
+
+                self._submit_coro(
+                    update_and_notify(
+                        task_id,
+                        {
+                            "status": TaskStatus.FAILED,
+                            "error_message": _build_actionable_transcription_error(
+                                str(e)
+                            ),
+                        },
+                    )
+                )

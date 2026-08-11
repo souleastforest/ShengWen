@@ -188,9 +188,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
         return TranscriptionResult(
             segments=merged_segments,
             transcription_time=transcription_time,
-            real_time_factor=(
-                transcription_time / max_end if max_end > 0.0 else 0.0
-            ),
+            real_time_factor=(transcription_time / max_end if max_end > 0.0 else 0.0),
             total_time=transcription_time + float(model_load_time or 0.0),
             model_load_time=float(model_load_time or 0.0),
             audio_duration=max_end,
@@ -223,8 +221,15 @@ class VibeVoiceAsrTranscriber(Transcriber):
         logger.warning("[VibeVoiceAsrTranscriber] OOM 后已释放模型，下一片将重新加载。")
 
     def _generation_budget(self, audio_duration: float) -> int:
-        duration_budget = max(2048, int(math.ceil(max(0.0, audio_duration) * 8.0)))
-        return min(max(1, int(self.max_new_tokens)), duration_budget)
+        # 预算 = 语音 token + 文本 JSON 分段开销（事故修复 vibevoice-empty-transcript）：
+        # 语音 token 率 ≈ 7.5 tokens/s（24000Hz / speech_tok_compress_ratio=3200）；
+        # 文本为每段时间戳+字段名的 JSON 输出，实测开销约为语音的 0.5-1 倍。
+        # 旧公式仅按 8 tokens/s 封顶 → 长音频输出在 JSON 中途被硬截断 →
+        # 库解析失败静默返回空 → 空转录 COMPLETED（生产事故 89e565dd）。
+        speech_budget = int(math.ceil(max(0.0, audio_duration) * 7.5))
+        text_budget = max(1536, int(math.ceil(max(0.0, audio_duration) * 5.0)))
+        budget = max(2048, speech_budget + text_budget)
+        return min(max(1, int(self.max_new_tokens)), budget)
 
     def transcribe(
         self,
@@ -279,18 +284,47 @@ class VibeVoiceAsrTranscriber(Transcriber):
                 f"audio={audio_duration:.1f}s max_new_tokens={effective_max_new_tokens} "
                 f"global_max={self.max_new_tokens}"
             )
-            generation_config = {
-                "max_new_tokens": effective_max_new_tokens,
-                "do_sample": False,
-                "pad_token_id": self.processor.pad_id,
-                "eos_token_id": self.processor.tokenizer.eos_token_id,
-            }
+            # 截断时自动放大预算重试（do_sample=False 下同一前缀确定性续写可补全
+            # 被截断的 JSON 输出）；达到全局上限仍截断则显式失败——禁止静默返回
+            # 空转录（生产事故 vibevoice-empty-transcript：截断→JSON 解析失败→空 COMPLETED）。
+            while True:
+                generation_config = {
+                    "max_new_tokens": effective_max_new_tokens,
+                    "do_sample": False,
+                    "pad_token_id": self.processor.pad_id,
+                    "eos_token_id": self.processor.tokenizer.eos_token_id,
+                }
 
-            with torch.inference_mode():
-                output_ids = self.model.generate(
-                    **inputs,
-                    **generation_config,
+                with torch.inference_mode():
+                    output_ids = self.model.generate(
+                        **inputs,
+                        **generation_config,
+                    )
+
+                generated_ids = self._extract_generated_ids(output_ids)
+                generated_ids = generated_ids[0, input_length:]
+                if generated_ids.shape[0] < effective_max_new_tokens:
+                    break
+
+                logger.warning(
+                    "[VibeVoiceAsrTranscriber] 输出达到 max_new_tokens，可能发生截断: "
+                    f"{effective_max_new_tokens}"
                 )
+                if effective_max_new_tokens >= self.max_new_tokens:
+                    raise TranscriptionError(
+                        f"输出在 max_new_tokens={self.max_new_tokens} 下仍被截断，转录不完整"
+                    )
+                if cancel_check and cancel_check():
+                    raise TranscriptionCancelled("任务已取消，停止转录。")
+                effective_max_new_tokens = min(
+                    self.max_new_tokens, effective_max_new_tokens * 2
+                )
+                logger.warning(
+                    "[VibeVoiceAsrTranscriber] 已放大预算重试: "
+                    f"{effective_max_new_tokens}"
+                )
+                if progress_callback:
+                    progress_callback(0.5)
 
             if progress_callback:
                 progress_callback(0.7)
@@ -298,13 +332,6 @@ class VibeVoiceAsrTranscriber(Transcriber):
             if cancel_check and cancel_check():
                 raise TranscriptionCancelled("任务已取消，停止转录。")
 
-            generated_ids = self._extract_generated_ids(output_ids)
-            generated_ids = generated_ids[0, input_length:]
-            if generated_ids.shape[0] >= effective_max_new_tokens:
-                logger.warning(
-                    "[VibeVoiceAsrTranscriber] 输出达到 max_new_tokens，可能发生截断: "
-                    f"{effective_max_new_tokens}"
-                )
             text = self.processor.decode(generated_ids, skip_special_tokens=True)
             raw_segments = self.processor.post_process_transcription(text)
 

@@ -41,6 +41,9 @@ async def generate_topic_for_task(
     LLM 缺失/调用失败/返回空时静默降级：只记 warning，不阻塞任务终态、
     不失败任务。multipart 等场景由调用方保证只对最终全文调用一次。
     """
+    if not transcript or not transcript.strip():
+        logger.info(f"[TopicGenerator] 转录文本为空，跳过标题生成: task_id={task_id}")
+        return
     if llm_worker is None or not hasattr(llm_worker, "generate_topic"):
         logger.warning(
             f"[TopicGenerator] 缺少 LLM worker，跳过标题生成: task_id={task_id}"

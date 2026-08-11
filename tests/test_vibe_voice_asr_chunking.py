@@ -50,9 +50,7 @@ class TestMergeChunkResults:
         chunk_results = [
             (
                 _build_result(
-                    [
-                        {"start": 0.0, "end": 3.0, "text": "chunk1", "speaker_id": "A"}
-                    ],
+                    [{"start": 0.0, "end": 3.0, "text": "chunk1", "speaker_id": "A"}],
                     transcription_time=2.0,
                     audio_duration=3.0,
                 ),
@@ -60,9 +58,7 @@ class TestMergeChunkResults:
             ),
             (
                 _build_result(
-                    [
-                        {"start": 1.0, "end": 4.0, "text": "chunk2", "speaker_id": "B"}
-                    ],
+                    [{"start": 1.0, "end": 4.0, "text": "chunk2", "speaker_id": "B"}],
                     transcription_time=3.0,
                     audio_duration=4.0,
                 ),
@@ -122,6 +118,7 @@ def test_generation_budget_scales_with_chunk_duration():
         max_new_tokens=8192,
     )
 
-    assert transcriber._generation_budget(180.0) == 2048
-    assert transcriber._generation_budget(360.0) == 2880
+    # 事故修复（vibevoice-empty-transcript）：预算须为文本 JSON 分段预留空间
+    assert transcriber._generation_budget(180.0) == 2886
+    assert transcriber._generation_budget(360.0) == 4500
     assert transcriber._generation_budget(2000.0) == 8192
