@@ -647,10 +647,13 @@ class TranscriberWorker(Worker):
             logger.info(f"[{self.name}] 转录完成。")
 
             # 空转录防御（事故修复 vibevoice-empty-transcript）：ASR 输出截断/
-            # JSON 解析失败/未识别语音都可能返回空 segments——必须显式 FAILED，
+            # JSON 解析失败/未识别语音都可能返回空 segments 或空文本 segments
+            # （静音音频输出合法 JSON 但 Content 为空）——必须显式 FAILED，
             # 禁止静默写空 transcript 并 COMPLETED。此校验覆盖所有 transcriber
             # 类型（vibevoice/fast-whisper/api）与 multipart 分片路径，是最后防线。
-            if not (result.segments or []):
+            if not any(
+                str(seg.get("text") or "").strip() for seg in (result.segments or [])
+            ):
                 empty_error = (
                     "转录结果为空（ASR 未生成有效转录片段，"
                     "可能因输出截断或未识别到语音）"

@@ -257,6 +257,73 @@ class TestWorkerEmptyResult:
         assert not completed_updates, "禁止静默写空 transcript 并 COMPLETED"
 
     @pytest.mark.asyncio
+    async def test_whitespace_only_segments_marks_task_failed(
+        self, monkeypatch, tmp_path
+    ):
+        """segments 非空但 text 全空（静音音频输出合法 JSON）同样必须 FAILED。"""
+        import src.main.python.sheng_wen.transcriber.transcriber_worker as worker_module
+        from src.main.python.sheng_wen import task_updater as updater_module
+
+        audio_file = tmp_path / "audio.mp3"
+        audio_file.write_bytes(b"fake-audio")
+
+        calls = []
+
+        async def fake_update_and_notify(task_id, updates, **kwargs):
+            calls.append((task_id, updates))
+
+        monkeypatch.setattr(updater_module, "update_and_notify", fake_update_and_notify)
+        monkeypatch.setattr(worker_module, "get_audio_duration", lambda _: 10.0)
+
+        class BlankTextTranscriber:
+            def transcribe(self, path, progress_callback=None, cancel_check=None):
+                if progress_callback:
+                    progress_callback(1.0)
+                return TranscriptionResult(
+                    segments=[
+                        {"start": 0.0, "end": 1.0, "text": "  ", "speaker_id": ""}
+                    ],
+                    transcription_time=1.0,
+                    real_time_factor=0.0,
+                    total_time=1.0,
+                    model_load_time=0.0,
+                    audio_duration=1.0,
+                    language="unknown",
+                    language_probability=0.0,
+                )
+
+        worker = TranscriberWorker("test", BlankTextTranscriber(), None)  # pyright: ignore[reportArgumentType]
+        monkeypatch.setattr(worker, "_is_task_deleted", lambda _: False)
+
+        submitted = []
+
+        def sync_submit(self, coro):
+            submitted.append(coro)
+
+        monkeypatch.setattr(worker, "_submit_coro", sync_submit.__get__(worker))
+
+        worker.process_task(
+            {
+                "audio_file": str(audio_file),
+                "output_file": str(tmp_path / "out.txt"),
+                "task_id": "task-blank",
+                "summary_mode": "none",
+            }
+        )
+        await asyncio.gather(*submitted)
+
+        failed_updates = [
+            u for tid, u in calls if tid == "task-blank" and u.get("status") == "FAILED"
+        ]
+        completed_updates = [
+            u
+            for tid, u in calls
+            if tid == "task-blank" and u.get("status") == "COMPLETED"
+        ]
+        assert failed_updates, "空文本 segments 必须标记 FAILED"
+        assert not completed_updates, "空文本 segments 禁止 COMPLETED"
+
+    @pytest.mark.asyncio
     async def test_empty_segments_multipart_part_failed(self, monkeypatch, tmp_path):
         import src.main.python.sheng_wen.transcriber.transcriber_worker as worker_module
         from src.main.python.sheng_wen import task_parts as parts_module

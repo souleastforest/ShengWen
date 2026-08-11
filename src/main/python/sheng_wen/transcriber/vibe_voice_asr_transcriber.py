@@ -67,6 +67,11 @@ class VibeVoiceAsrTranscriber(Transcriber):
         self.device = device
         self.language_model_pretrained_name = language_model_pretrained_name
         self.max_new_tokens = max_new_tokens
+        if int(max_new_tokens) < 2048:
+            logger.warning(
+                f"[VibeVoiceAsrTranscriber] max_new_tokens={max_new_tokens} 过小，"
+                "语音 token（约 7.5/s）+ 文本 JSON 开销下必然截断，转录将显式失败"
+            )
         self.dtype = dtype
 
         self.processor: VibeVoiceASRProcessor | None = None
