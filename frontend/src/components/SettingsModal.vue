@@ -110,7 +110,7 @@ const enableBilibiliSubtitleFetch = ref(true)
 const globalBilibiliSessdataInput = ref('')
 const transcriberType = ref<'fast_whisper' | 'vibe_voice_asr'>('fast_whisper')
 const vibevoiceLanguageModel = ref('Qwen/Qwen2.5-7B')
-const vibevoiceMaxNewTokens = ref(8192)
+const vibevoiceMaxNewTokens = ref(16384)
 const vibevoiceDtype = ref<'bfloat16' | 'float16'>('bfloat16')
 const vibevoiceInferenceMode = ref<'local' | 'api'>('local')
 const vibevoiceApiUrl = ref('')
@@ -167,7 +167,7 @@ watch(() => props.transcriptionSettings, (settings) => {
     enableBilibiliSubtitleFetch.value = settings.enable_bilibili_subtitle_fetch ?? true
     transcriberType.value = settings.transcriber_type || 'fast_whisper'
     vibevoiceLanguageModel.value = settings.vibevoice_language_model || 'Qwen/Qwen2.5-7B'
-    vibevoiceMaxNewTokens.value = settings.vibevoice_max_new_tokens ?? 8192
+    vibevoiceMaxNewTokens.value = settings.vibevoice_max_new_tokens ?? 16384
     vibevoiceDtype.value = settings.vibevoice_dtype || 'bfloat16'
     vibevoiceInferenceMode.value = settings.vibevoice_inference_mode || 'local'
     vibevoiceApiUrl.value = settings.vibevoice_api_url || ''
@@ -320,7 +320,7 @@ const handleSaveTranscriptionSettings = () => {
   if (transcriberType.value === 'vibe_voice_asr') {
     payload.model_source = 'manual_path'
     payload.vibevoice_language_model = vibevoiceLanguageModel.value.trim()
-    payload.vibevoice_max_new_tokens = Math.max(1, Number(vibevoiceMaxNewTokens.value) || 8192)
+    payload.vibevoice_max_new_tokens = Math.max(1, Number(vibevoiceMaxNewTokens.value) || 16384)
     payload.vibevoice_dtype = vibevoiceDtype.value
     payload.vibevoice_inference_mode = vibevoiceInferenceMode.value
     payload.vibevoice_api_url = vibevoiceApiUrl.value.trim()

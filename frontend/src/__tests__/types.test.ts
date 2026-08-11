@@ -83,7 +83,7 @@ describe('VibeVoice runtime values for typed shapes', () => {
       bilibili_sessdata_masked: '',
       transcriber_type: 'vibe_voice_asr',
       vibevoice_language_model: 'Qwen/Qwen2.5-7B',
-      vibevoice_max_new_tokens: 8192,
+      vibevoice_max_new_tokens: 16384,
       vibevoice_dtype: 'bfloat16',
       vibevoice_inference_mode: 'local',
       vibevoice_api_url: '',
@@ -92,7 +92,7 @@ describe('VibeVoice runtime values for typed shapes', () => {
     expect(settings).toMatchObject({
       transcriber_type: 'vibe_voice_asr',
       vibevoice_language_model: 'Qwen/Qwen2.5-7B',
-      vibevoice_max_new_tokens: 8192,
+      vibevoice_max_new_tokens: 16384,
       vibevoice_dtype: 'bfloat16',
       vibevoice_inference_mode: 'local',
       vibevoice_api_url: '',

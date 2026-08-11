@@ -135,13 +135,13 @@ class VibeVoiceApiTranscriber(Transcriber):
     def build_runtime_kwargs(cls, runtime_state: dict) -> dict:
         return {
             "api_url": runtime_state.get("vibevoice_api_url", ""),
-            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 8192),
+            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 16384),
         }
 
     def __init__(
         self,
         api_url: str,
-        max_new_tokens: int = 8192,
+        max_new_tokens: int = 16384,
         **kwargs,
     ):
         super().__init__(**kwargs)

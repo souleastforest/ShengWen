@@ -238,7 +238,7 @@ class TestVibeVoiceAsrClassmethods:
         state = {"model_path": str(vibevoice_model_dir)}
         kwargs = VibeVoiceAsrTranscriber.build_runtime_kwargs(state)
         assert kwargs["device"] == "cuda"
-        assert kwargs["max_new_tokens"] == 8192
+        assert kwargs["max_new_tokens"] == 16384
         assert kwargs["dtype"] == "bfloat16"
 
 
@@ -281,4 +281,4 @@ class TestVibeVoiceApiClassmethods:
         state = {}
         kwargs = VibeVoiceApiTranscriber.build_runtime_kwargs(state)
         assert kwargs["api_url"] == ""
-        assert kwargs["max_new_tokens"] == 8192
+        assert kwargs["max_new_tokens"] == 16384

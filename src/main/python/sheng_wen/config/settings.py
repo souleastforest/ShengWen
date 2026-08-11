@@ -63,7 +63,9 @@ class WhisperConfig:
     bilibili_sessdata: str = ""
     faster_whisper_model_path: str | None = None
     vibevoice_language_model: str = "Qwen/Qwen2.5-7B"
-    vibevoice_max_new_tokens: int = 8192
+    # 8192 曾导致长音频/复杂音频转录截断失败（fix/vibevoice-empty-transcript 事故）：
+    # 模型完整输出需 speech tokens + 文本 JSON（实测 ~1 万+ tokens），提升至 16384
+    vibevoice_max_new_tokens: int = 16384
     vibevoice_dtype: Literal["bfloat16", "float16"] = "bfloat16"
     vibevoice_inference_mode: Literal["local", "api"] = "local"
     vibevoice_api_url: str = ""

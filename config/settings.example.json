@@ -17,7 +17,7 @@
     "bilibili_sessdata": "",
     "faster_whisper_model_path": null,
     "vibevoice_language_model": "Qwen/Qwen2.5-7B",
-    "vibevoice_max_new_tokens": 8192,
+    "vibevoice_max_new_tokens": 16384,
     "vibevoice_dtype": "bfloat16",
     "vibevoice_inference_mode": "local",
     "vibevoice_api_url": "",
@@ -27,17 +27,19 @@
     "asr_chunk_oom_fallback": true
   },
   "llm": {
-    "provider": "openai_responses",
-    "base_url": "https://api.deepseek.com/v1",
-    "api_key": "sk-REPLACE_ME",
-    "model_id": "deepseek-v4-flash",
+    "provider": "openai_compatible",
+    "base_url": "",
+    "api_key": "",
+    "model_id": "",
     "temperature": 0.7,
     "context_window_size": 1000000,
     "extra_headers": null
   },
   "database": {
     "sqlite_path": "ShengWen.db",
-    "json_file_path": "tasks.json"
+    "json_file_path": "tasks.json",
+    "backup_interval_sec": 86400,
+    "backup_keep_count": 5
   },
   "cors": {
     "allow_origins": "*",

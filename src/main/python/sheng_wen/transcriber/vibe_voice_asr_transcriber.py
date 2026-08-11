@@ -49,7 +49,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
             "language_model_pretrained_name": runtime_state.get(
                 "vibevoice_language_model", "Qwen/Qwen2.5-7B"
             ),
-            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 8192),
+            "max_new_tokens": runtime_state.get("vibevoice_max_new_tokens", 16384),
             "dtype": runtime_state.get("vibevoice_dtype", "bfloat16"),
         }
 
@@ -58,7 +58,7 @@ class VibeVoiceAsrTranscriber(Transcriber):
         model_path: str,
         device: str = "cuda",
         language_model_pretrained_name: str = "Qwen/Qwen2.5-7B",
-        max_new_tokens: int = 8192,
+        max_new_tokens: int = 16384,
         dtype: str = "bfloat16",
         **kwargs,
     ):
