@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { PhSparkle, PhArticle, PhCaretDown, PhArrowClockwise, PhCopy, PhDownloadSimple, PhImageSquare, PhGearSix, PhList } from '@phosphor-icons/vue'
+import { PhSparkle, PhArticle, PhCaretDown, PhArrowClockwise, PhCopy, PhDownloadSimple, PhImageSquare, PhGearSix, PhList, PhBrain } from '@phosphor-icons/vue'
 import { TaskStatus, type Task, type MarkdownHeadingItem } from '../types'
 import FloatingToolbarShell from './FloatingToolbarShell.vue'
 import FloatingToolbarChapterNav from './FloatingToolbarChapterNav.vue'
@@ -15,7 +15,7 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  reSummarize: []
+  reSummarize: [mode?: 'standard' | 'agent']
   reTranscribe: []
   reDownload: []
   copySummary: []
@@ -68,9 +68,30 @@ const emit = defineEmits<{
               </button>
 
               <!-- AI 总结下拉菜单 -->
-              <div class="absolute left-0 top-full mt-2 w-44 bg-white border border-slate-200 rounded-xl shadow-lg opacity-0 invisible group-hover/summary:opacity-100 group-hover/summary:visible transition-all z-30 overflow-hidden">
+              <div class="absolute left-0 top-full mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-lg opacity-0 invisible group-hover/summary:opacity-100 group-hover/summary:visible transition-all z-30 overflow-hidden">
+                <!-- 无总结任务（仅转录等）：提供"从原文生成总结"入口，可显式选模式。
+                     注意不能用 transcript 作守卫——轻量详情恒剥离该字段（懒加载盲区），
+                     后端 re-summarize 自行校验 DB 转录，缺失时返回 400 由错误链兜底 -->
+                <template
+                  v-if="selectedTask && (selectedTask.status === TaskStatus.COMPLETED || selectedTask.status === TaskStatus.FAILED) && !selectedTask.summary"
+                >
+                  <button
+                    @click="emit('reSummarize', 'standard')"
+                    class="w-full text-left flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors"
+                  >
+                    <PhArrowClockwise :size="14" />
+                    生成 AI 总结（标准）
+                  </button>
+                  <button
+                    @click="emit('reSummarize', 'agent')"
+                    class="w-full text-left flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors"
+                  >
+                    <PhBrain :size="14" />
+                    生成 AI 总结（Agent）
+                  </button>
+                </template>
                 <button
-                  v-if="(selectedTask?.status === TaskStatus.COMPLETED || selectedTask?.status === TaskStatus.FAILED) && selectedTask?.transcript"
+                  v-else-if="selectedTask && (selectedTask.status === TaskStatus.COMPLETED || selectedTask.status === TaskStatus.FAILED)"
                   @click="emit('reSummarize')"
                   class="w-full text-left flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors"
                 >

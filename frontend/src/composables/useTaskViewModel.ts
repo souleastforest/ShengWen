@@ -1213,12 +1213,13 @@ export function useTaskViewModel() {
         return false
       }
     },
-    reSummarize: async (taskId: string) => {
+    reSummarize: async (taskId: string, mode?: SummaryMode) => {
       try {
-        // summary_mode：UI 三态（none/standard/agent）。'none' 时后端
-        // 会按 auto 判定兜底生成总结（见 llm_worker._resolve_effective_mode）。
+        // summary_mode：优先显式模式（如补总结入口指定 standard/agent）；
+        // 缺省沿用 UI 三态（none/standard/agent）。'none' 时后端会按
+        // auto 判定兜底生成总结（见 llm_worker._resolve_effective_mode）。
         await axios.post(`${apiBaseUrl}/tasks/${taskId}/re-summarize`, {
-          summary_mode: summaryMode.value
+          summary_mode: mode ?? summaryMode.value
         })
         // No need to do more, WS will update the status
       } catch (err) {
