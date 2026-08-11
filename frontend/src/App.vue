@@ -344,10 +344,10 @@ const handleCopyTranscript = async () => {
   }
 }
 
-const handleReSummarize = (taskId: string) => {
+const handleReSummarize = (taskId: string, mode?: 'standard' | 'agent') => {
   const { info } = useToast()
-  info('正在重新生成 AI 总结...')
-  reSummarize(taskId)
+  info(mode ? `正在以${mode === 'agent' ? ' Agent' : ''}模式生成 AI 总结...` : '正在重新生成 AI 总结...')
+  reSummarize(taskId, mode)
 }
 
 const handleReTranscribe = (taskId: string) => {
@@ -1021,7 +1021,7 @@ watch(
           :isSidebarOpen="isSidebarOpen"
           :headings="markdownHeadings"
           :active-heading-id="activeHeadingId"
-          @reSummarize="handleReSummarize(selectedTask.id)"
+          @reSummarize="handleReSummarize(selectedTask.id, $event)"
           @reTranscribe="handleReTranscribe(selectedTask.id)"
           @reDownload="handleReDownload(selectedTask.id)"
           @copySummary="handleCopySummary"

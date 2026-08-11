@@ -345,6 +345,36 @@ describe('对抗性：模式 Tab 三选一（需求 1）— composable 层 paylo
 
     wrapper.unmount()
   })
+
+  it('[S7] reSummarize 显式模式参数优先：传 agent/standard 时 payload 用显式值，覆盖全局；不传沿用全局（向后兼容）', async () => {
+    const { viewModel, wrapper } = mountViewModel()
+    installDefaultAxios()
+
+    // 显式模式优先于全局（即使全局是 none）
+    viewModel.summaryMode.value = 'none'
+    await viewModel.reSummarize('task-a', 'agent')
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      '/tasks/task-a/re-summarize',
+      expect.objectContaining({ summary_mode: 'agent' }),
+    )
+
+    mockedAxios.post.mockClear()
+    await viewModel.reSummarize('task-a', 'standard')
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      '/tasks/task-a/re-summarize',
+      expect.objectContaining({ summary_mode: 'standard' }),
+    )
+
+    // 不传模式：沿用全局（S6 语义不回归）
+    mockedAxios.post.mockClear()
+    await viewModel.reSummarize('task-a')
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      '/tasks/task-a/re-summarize',
+      expect.objectContaining({ summary_mode: 'none' }),
+    )
+
+    wrapper.unmount()
+  })
 })
 
 describe('对抗性：模式 Tab 三选一（需求 1）— Sidebar 层', () => {
