@@ -75,6 +75,10 @@ class TaskModel(Base):
     generate_topic = Column(Boolean, nullable=True)
     # 本地上传任务的原始文件名（None 表示非上传任务）
     source_name = Column(String, nullable=True)
+    # ASR 分片进度（仅转录阶段非空；转录完成转 SUMMARIZING 时置 None，
+    # 与 summary_chunk_* 对称）。供前端展示"转录分片 done/total"。
+    asr_chunk_total = Column(Integer, nullable=True)
+    asr_chunk_done = Column(Integer, nullable=True)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -103,6 +107,8 @@ class TaskModel(Base):
             "audio_missing_reason": self.audio_missing_reason,
             "generate_topic": self.generate_topic,
             "source_name": self.source_name,
+            "asr_chunk_total": self.asr_chunk_total,
+            "asr_chunk_done": self.asr_chunk_done,
         }
 
 
@@ -146,6 +152,8 @@ class TaskDB:
             has_audio_missing_reason = "audio_missing_reason" in columns
             has_generate_topic = "generate_topic" in columns
             has_source_name = "source_name" in columns
+            has_asr_chunk_total = "asr_chunk_total" in columns
+            has_asr_chunk_done = "asr_chunk_done" in columns
             if (
                 has_latest_modified_at
                 and has_author_name
@@ -158,6 +166,8 @@ class TaskDB:
                 and has_audio_missing_reason
                 and has_generate_topic
                 and has_source_name
+                and has_asr_chunk_total
+                and has_asr_chunk_done
             ):
                 return
 
@@ -240,6 +250,16 @@ class TaskDB:
                         text("ALTER TABLE tasks ADD COLUMN source_name VARCHAR")
                     )
                     logger.info("Database schema updated: added tasks.source_name")
+                if not has_asr_chunk_total:
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN asr_chunk_total INTEGER")
+                    )
+                    logger.info("Database schema updated: added tasks.asr_chunk_total")
+                if not has_asr_chunk_done:
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN asr_chunk_done INTEGER")
+                    )
+                    logger.info("Database schema updated: added tasks.asr_chunk_done")
         except Exception as e:
             logger.error(f"Failed to ensure database schema: {e}")
 

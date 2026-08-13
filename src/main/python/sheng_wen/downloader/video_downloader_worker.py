@@ -908,6 +908,10 @@ class VideoDownloaderWorker(Worker):
                 "error_message": f"部分分P处理失败：{failed_labels}"
                 if failed
                 else None,
+                # ASR 分片字段仅在转录阶段非空：多P长音频分片曾写父任务，
+                # 合并转总结/终态时清空（与 transcriber 的 SUMMARIZING 更新对称）
+                "asr_chunk_total": None,
+                "asr_chunk_done": None,
             },
         )
         if self.summary_worker is None:

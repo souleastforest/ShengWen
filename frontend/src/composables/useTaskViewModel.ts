@@ -239,6 +239,11 @@ export function useTaskViewModel() {
   let submitAbortController: AbortController | null = null
   let taskPartsRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
+  // 轮询兜底（生产事故 93b857d0 修复）：WS 断流/丢广播时任务列表与队列仍能
+  // 低频刷新。60s 一次，与 WS 并行无害；onUnmounted 清理。
+  const POLL_INTERVAL_MS = 60_000
+  let pollingTimer: ReturnType<typeof setInterval> | null = null
+
   // --- Actions ---
   const fetchTasks = async () => {
     try {
@@ -693,6 +698,15 @@ export function useTaskViewModel() {
     
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
+      if (data.type === 'ping') {
+        // 双向心跳：服务端每 ~30s 发 ping，回 pong 保持连接活性；
+        // 非 OPEN 状态（连接建立中/关闭中）静默忽略。
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'pong' }))
+        }
+        return
+      }
+      // 未知 type 消息（旧客户端不认识的新协议扩展）走默认分支忽略，不崩溃。
       if (data.type === 'task_update') {
         const updatedTask = data.task
         const index = tasks.value.findIndex(t => t.id === updatedTask.id)
@@ -1092,11 +1106,22 @@ export function useTaskViewModel() {
     fetchTranscriptionSettings()
     fetchSummarizationSettings()
     connectWebSocket()
+
+    // 轮询兜底：WS 断流时列表/队列仍低频刷新（fetchTasks 已有 P1 守卫，
+    // 不重置已选中任务的完整内容；与 WS 并行无害）。
+    pollingTimer = setInterval(() => {
+      fetchTasks()
+      fetchQueueSnapshot()
+    }, POLL_INTERVAL_MS)
   })
 
   onUnmounted(() => {
     if (ws) {
       ws.close()
+    }
+    if (pollingTimer) {
+      clearInterval(pollingTimer)
+      pollingTimer = null
     }
     if (taskPartsRefreshTimer) {
       clearTimeout(taskPartsRefreshTimer)

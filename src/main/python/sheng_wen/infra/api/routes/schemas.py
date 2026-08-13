@@ -47,6 +47,9 @@ class Task(BaseModel):
     audio_downloaded: Optional[bool] = None
     audio_missing_reason: Optional[str] = None
     source_name: Optional[str] = None
+    # ASR 分片进度（仅转录阶段非空，与 summary_chunk_* 对称；加性字段向后兼容）
+    asr_chunk_total: Optional[int] = None
+    asr_chunk_done: Optional[int] = None
     part_count: Optional[int] = None
     part_completed: Optional[int] = None
     part_failed: Optional[int] = None

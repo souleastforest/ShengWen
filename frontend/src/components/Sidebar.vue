@@ -455,6 +455,15 @@ const getTaskStatusLabel = (task: Task) => {
   if (total > 0 && (task.status === TaskStatus.PARTIAL || task.status === TaskStatus.COMPLETED || task.status === TaskStatus.DOWNLOADING || task.status === TaskStatus.TRANSCRIBING || task.status === TaskStatus.SUMMARIZING)) {
     return failed > 0 ? base + ' (' + done + '/' + total + '，失败 ' + failed + ')' : base + ' (' + done + '/' + total + ')'
   }
+  // ASR 分片计数（仅转录阶段；与总结分块 summary_chunk_* 语义独立）：
+  // 长音频 10 个 6min 分片 → "转录中 (3/10)"。done||0 兜底、total>0 才显示。
+  if (task.status === TaskStatus.TRANSCRIBING) {
+    const asrTotal = Number(task.asr_chunk_total || 0)
+    if (asrTotal > 0) {
+      const asrDone = Number(task.asr_chunk_done || 0)
+      return '转录中 (' + Math.min(asrDone, asrTotal) + '/' + asrTotal + ')'
+    }
+  }
   if (task.status !== TaskStatus.SUMMARIZING) return base
   const summaryTotal = Number(task.summary_chunk_total || 0)
   const summaryDone = Number(task.summary_chunk_done || 0)
