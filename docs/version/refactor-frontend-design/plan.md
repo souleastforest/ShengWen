@@ -186,6 +186,9 @@ frontend/src/
 - 引入 eslint（或 biome）工具链（待用户定，不在 A 阶段）
 - 任务分 P 失败降级不拖垮详情加载（`:569` Promise.all 解耦）
 - 双 ToastContainer 已入 P5；错误提取已入 P2；身份守卫已入 P1
+- 无总结任务每次选中重复 GET include_content=true（code-reviewer S-1：watch 触发前查 taskFullContentCache 定论跳过）
+- 非分P任务超长总结（>12000 字）总结 tab 永久截断无入口（code-reviewer S-2：`summary.length >= 12000` 时也显示展开入口）
+- XSS 向量 e2e 用例（img onerror / script / javascript: href / svg xlink / style url()）纳入后续 e2e 批次（code-reviewer S-3）
 
 ## 8. 文件变更清单（删除/改名，需用户确认后执行）
 

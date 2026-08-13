@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { TaskPart } from '../types'
 
 const props = defineProps<{
@@ -7,6 +7,10 @@ const props = defineProps<{
   partDetails?: Record<number, TaskPart>
   loading?: boolean
   loadingPartIndex?: number | null
+  /** 当前选中任务 id：任务切换时重置展开状态，防止旧任务的展开索引残留到新任务 */
+  taskId?: string | null
+  /** 分P内容刷新信号（如重试失败分P，后端将清空分P content）：变化时收起展开区 */
+  refreshKey?: number
 }>()
 
 const emit = defineEmits<{
@@ -16,6 +20,24 @@ const emit = defineEmits<{
 
 const expandedPart = ref<number | null>(null)
 const panelRef = ref<HTMLElement | null>(null)
+
+// 任务切换（taskId 变化）时重置展开状态：parts 直接替换（面板保持挂载）的场景
+// 下，旧任务的展开索引不得残留到新任务的分P列表
+watch(
+  () => props.taskId,
+  () => {
+    expandedPart.value = null
+  },
+)
+
+// 内容刷新（重试失败分P等）时收起展开区：后端已置分P content 为 NULL，
+// 展开区不得滞留旧值
+watch(
+  () => props.refreshKey,
+  () => {
+    expandedPart.value = null
+  },
+)
 const panelHeight = ref<number | null>(null)
 const isResizing = ref(false)
 const failedParts = computed(() => props.parts.filter((part) => part.status === 'FAILED'))

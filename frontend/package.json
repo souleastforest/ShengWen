@@ -16,6 +16,7 @@
     "@types/marked": "^5.0.2",
     "autoprefixer": "^10.4.23",
     "axios": "^1.13.2",
+    "dompurify": "^3.4.13",
     "html2canvas": "^1.4.1",
     "lucide-vue-next": "^0.562.0",
     "marked": "^17.0.1",

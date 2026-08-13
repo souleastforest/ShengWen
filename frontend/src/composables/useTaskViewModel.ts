@@ -142,6 +142,38 @@ const bumpTaskContentVersion = (taskId: string) => {
 // 同样视为"无内容"，避免把 '' 当"已加载"导致滞留"暂无转录内容"。
 const hasContent = (value?: string | null): boolean => value != null && value !== ''
 
+// 任务内容合并守卫：把新到的任务数据（轻量列表项 / 广播）合并到已选任务时，
+// 保护已加载的完整内容不被截断版 _summary_overview / 空值覆盖。
+// - 默认（preserve）：base 的 transcript/summary 已加载（null 与 '' 均视为
+//   未加载）时保留 base，防止轻量响应覆盖完整版；
+// - preserveContent: false：内容以 incoming 为准（WS task_update 广播为 DB
+//   全量权威行，含 re-transcribe/re-summarize 的 '' 重置必须传播；或内容版本
+//   latest_modified_at 已变化，陈旧内容不得保留——incoming 无该字段时结果为
+//   undefined，由懒加载 watch 补拉新内容）。
+const mergeTaskWithPreservedContent = (
+  base: Task,
+  incoming: Task,
+  options?: { preserveContent?: boolean },
+): Task => {
+  if (options?.preserveContent === false) {
+    return { ...base, ...incoming, summary: incoming.summary, transcript: incoming.transcript }
+  }
+  return {
+    ...base,
+    ...incoming,
+    summary: hasContent(base.summary) ? base.summary : incoming.summary,
+    transcript: hasContent(base.transcript) ? base.transcript : incoming.transcript,
+  }
+}
+
+// per-task 缓存条目可用性：缓存记录的是 fetch 时的内容版本（latest_modified_at）。
+// 与当前任务值不一致说明内容已被其他端（双开标签页/断线期间 re-transcribe 等）
+// 重置，不得恢复陈旧内容。
+const isTaskCacheUsable = (cached: Task, task: Task): boolean =>
+  cached.latest_modified_at == null
+  || task.latest_modified_at == null
+  || cached.latest_modified_at === task.latest_modified_at
+
 // 处理中状态：内容将变化，命中时失效 per-task 缓存
 const PROCESSING_STATUSES = new Set([
   'PENDING',
@@ -191,7 +223,6 @@ export function useTaskViewModel() {
   const videoUrl = ref('')
   const selectedFile = ref<File | null>(null)
   const localFilePath = ref('')
-  const quality = ref('audio_only')
   // UI 三态默认仅转录；'auto' 仅由后端/历史任务使用
   const summaryMode = ref<Exclude<SummaryMode, 'auto'>>('none')
   // 仅转录模式的"总结标题"开关：默认开启（与后端 generate_topic 默认一致）
@@ -250,7 +281,22 @@ export function useTaskViewModel() {
         const current = tasks.value.find(t => t.id === selectedTask.value?.id)
         if (current) {
           // Merge updates so detail fields and part statistics are not lost.
-          selectedTask.value = { ...selectedTask.value, ...current }
+          // 守卫：轻量列表项（后端剥离/可能携带截断版 summary）不得覆盖已加载的
+          // 完整内容（WS 重连对账后详情回退截断版的修复点）。
+          // latest_modified_at 变化（双开标签页/断线期间内容被另一标签页重置）
+          // 时内容已陈旧：不得保留（以 incoming 为准），并失效 per-task 缓存，
+          // 由懒加载 watch 补拉新内容。
+          const selected = selectedTask.value
+          const contentStale = selected.latest_modified_at != null
+            && current.latest_modified_at != null
+            && selected.latest_modified_at !== current.latest_modified_at
+          selectedTask.value = mergeTaskWithPreservedContent(selected, current, {
+            preserveContent: !contentStale,
+          })
+          if (contentStale) {
+            taskFullContentCache.delete(current.id)
+            bumpTaskContentVersion(current.id)
+          }
           scheduleTaskPartsRefresh(current.id)
         }
       }
@@ -302,7 +348,8 @@ export function useTaskViewModel() {
       // 标准/Agent 模式本就会生成总结并带出标题，不发送该字段。
       const payload: CreateTaskRequest = {
         video_url: resolvedUrl,
-        quality: quality.value,
+        // quality 恒为默认值（无 UI 消费），显式常量保持行为等价
+        quality: 'audio_only',
         summary_mode: summaryMode.value,
         ...(summaryMode.value === 'none'
           ? { generate_topic: generateTopic.value }
@@ -532,17 +579,14 @@ export function useTaskViewModel() {
       // 同任务重选/WS 重连：合并轻量更新，保留已加载的完整内容
       // （轻量响应的 summary 是 _summary_overview 截断版，不能覆盖完整版）。
       // '' 空串（re-transcribe 重置）视为未加载：回退到轻量值，
-      // 由 watch 在原文 tab 下重新按需加载（自愈）。
-      selectedTask.value = {
-        ...task,
-        ...current,
-        summary: hasContent(current.summary) ? current.summary : task.summary,
-        transcript: hasContent(current.transcript) ? current.transcript : task.transcript,
-      }
+      // 由 watch 在原文/summary tab 下重新按需加载（自愈）。
+      selectedTask.value = mergeTaskWithPreservedContent(task, current)
     } else {
-      // 切到新任务：立即用 per-task 缓存补齐已加载过的完整内容（A→B→A 往返恢复）
+      // 切到新任务：立即用 per-task 缓存补齐已加载过的完整内容（A→B→A 往返恢复）。
+      // latest_modified_at 不一致说明缓存内容已陈旧（双开标签页/断线期间被重置），
+      // 不得恢复，由懒加载 watch 补拉新内容。
       const cached = taskFullContentCache.get(task.id)
-      if (cached) {
+      if (cached && isTaskCacheUsable(cached, task)) {
         selectedTask.value = {
           ...cached,
           ...task,
@@ -550,6 +594,9 @@ export function useTaskViewModel() {
           summary: task.summary ?? cached.summary,
         }
       } else {
+        if (cached) {
+          taskFullContentCache.delete(task.id)
+        }
         selectedTask.value = task
       }
       taskParts.value = []
@@ -581,8 +628,9 @@ export function useTaskViewModel() {
         }
         // 2) per-task 缓存补齐：切走再回来时恢复该任务已加载的完整内容。
         //    轻量响应的 summary 是 _summary_overview 截断版，缓存有完整版时优先。
+        //    latest_modified_at 不一致（缓存陈旧）时不得恢复。
         const cached = taskFullContentCache.get(task.id)
-        if (cached) {
+        if (cached && isTaskCacheUsable(cached, task)) {
           if (data.transcript == null && hasContent(cached.transcript)) {
             data.transcript = cached.transcript
           }
@@ -595,6 +643,13 @@ export function useTaskViewModel() {
         console.error('Failed to fetch task details:', err)
         if (selectedTask.value?.id === task.id) {
           error.value = '获取任务详情失败'
+          // 详情加载失败：summary 标记为"未加载"（null），使 summary watch 判定
+          // 补拉完整内容（否则停留在列表项 summary=undefined，watch 永不触发）。
+          // 已加载内容不覆盖（避免详情刷新失败误清显示）。transcript watch 对
+          // undefined 同样视为未加载，天然对称，无需处理。
+          if (!hasContent(selectedTask.value.summary)) {
+            selectedTask.value = { ...selectedTask.value, summary: null }
+          }
         }
       }
     })()
@@ -614,6 +669,29 @@ export function useTaskViewModel() {
       if (!task || hasContent(task.transcript)) return
       fetchTaskFullContent(task.id).catch((err) => {
         console.error('Failed to load full content for transcript tab:', err)
+      })
+    },
+    { immediate: true },
+  )
+
+  // summary tab 按需加载（与原文 tab 同款懒加载）：摘要未加载（null / ''，
+  // 如 re-summarize 重置后断线丢广播）时补拉完整内容，修复总结 tab 长期显示
+  // 截断版 _summary_overview / 空内容的问题。
+  // - summary 依赖纳入 watch：轻量详情合并（undefined → null/截断版）后重新判定；
+  // - 轻量详情在途（summary === undefined，详情接口未返回）时不抢跑，
+  //   保持"summary tab 轻量预览"语义（截断版预览不触发加载）；
+  // - 进行中任务（内容将变化，广播会携带新内容）不触发加载。
+  watch(
+    [activeTab, () => selectedTask.value?.id, () => selectedTask.value?.summary],
+    ([tab]) => {
+      if (tab !== 'summary') return
+      const task = selectedTask.value
+      if (!task) return
+      if (PROCESSING_STATUSES.has(task.status)) return
+      if (task.summary === undefined) return
+      if (hasContent(task.summary)) return
+      fetchTaskFullContent(task.id).catch((err) => {
+        console.error('Failed to load full content for summary tab:', err)
       })
     },
     { immediate: true },
@@ -702,9 +780,16 @@ export function useTaskViewModel() {
           tasks.value.unshift(updatedTask)
         }
 
-        if (selectedTask.value?.id === updatedTask.id) {
+        const currentSelected = selectedTask.value
+        if (currentSelected && currentSelected.id === updatedTask.id) {
           // Merge updates to preserve details that might not be in the broadcast.
-          selectedTask.value = { ...selectedTask.value, ...updatedTask }
+          // 广播内容权威：WS task_update 为 DB 全量行（含 re-transcribe 的 '' 重置），
+          // 内容字段以广播为准，不做 hasContent 保留（守卫统一但语义不弱化）。
+          selectedTask.value = mergeTaskWithPreservedContent(
+            currentSelected,
+            updatedTask,
+            { preserveContent: false },
+          )
           scheduleTaskPartsRefresh(updatedTask.id)
         }
 
@@ -1056,7 +1141,8 @@ export function useTaskViewModel() {
     try {
       const payload = {
         video_url: videoUrl,
-        quality: quality.value,
+        // quality 恒为默认值（无 UI 消费），显式常量保持行为等价
+        quality: 'audio_only',
         summary_mode: summaryMode.value,
         bilibili_parts: partsConfig,
         ...(summaryMode.value === 'none'
@@ -1118,7 +1204,6 @@ export function useTaskViewModel() {
     selectedFile,
     localFilePath,
     isLocalClient,
-    quality,
     summaryMode,
     generateTopic,
     isSubmitting,

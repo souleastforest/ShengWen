@@ -2,6 +2,7 @@
 import { computed, watch, ref } from 'vue'
 import { PhMonitorPlay, PhList } from '@phosphor-icons/vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { useTaskViewModel } from './composables/useTaskViewModel'
 import { useMermaidViewer } from './composables/useMermaidViewer'
 import {
@@ -42,7 +43,6 @@ const {
   selectedFile,
   localFilePath,
   isLocalClient,
-  quality,
   summaryMode,
   generateTopic,
   isSubmitting,
@@ -103,6 +103,9 @@ const isEditingTopic = ref(false)
 const editingTopicValue = ref('')
 const isTestingLlm = ref(false)
 const isRedownloading = ref(false)
+// 分P内容刷新信号：重试失败分P时递增，TaskPartsPanel 据此收起残留展开
+// （重试后后端置分P content 为 NULL，展开区不得滞留旧值）
+const taskPartsRefreshKey = ref(0)
 const summaryHighlightRequest = ref<{
   taskId: string
   keyword: string
@@ -361,6 +364,13 @@ const handleReTranscribe = (taskId: string) => {
 // Sidebar 快速重跑：FAILED 任务行的小圆钮 → 复用同一 re-transcribe 通道
 const handleRetryTask = (task: Task) => {
   handleReTranscribe(task.id)
+}
+
+// 重试失败分P：先发刷新信号收起展开区（后端将清空分P content），再提交重试
+const handleRetryFailedParts = async () => {
+  if (!selectedTask.value) return
+  taskPartsRefreshKey.value += 1
+  await retryFailedParts(selectedTask.value.id)
 }
 
 // 重新下载音频：await 以便按钮 loading 防抖（reDownloadAudio 内部吞掉错误并写入 error）
@@ -694,9 +704,13 @@ const startEditingTopic = () => {
 }
 
 const saveTopic = async () => {
-  if (!selectedTask.value) return
+  const targetTaskId = selectedTask.value?.id
+  if (!targetTaskId) return
   try {
-    await updateTaskTopic(selectedTask.value.id, editingTopicValue.value)
+    await updateTaskTopic(targetTaskId, editingTopicValue.value)
+    // 等待期间用户可能已切换任务并开始新编辑：身份校验通过才清编辑态，
+    // 防止任务 A 的保存完成误关任务 B 的编辑态
+    if (selectedTask.value?.id !== targetTaskId) return
     isEditingTopic.value = false
     success('主题已更新')
   } catch (e) {
@@ -713,6 +727,10 @@ const handleSelectTask = (task: Task) => {
   markdownHeadings.value = []
   activeHeadingId.value = ''
   headingJumpRequest.value = null
+  // 任务切换视图状态全重置：退出主题编辑态并清空编辑文本，
+  // 防止任务 A 的编辑文本在保存时 PATCH 到任务 B
+  isEditingTopic.value = false
+  editingTopicValue.value = ''
   selectTask(task)
 }
 
@@ -855,7 +873,17 @@ const scheduleMarkdownCompile = () => {
       }
     }
     const cleanedSummary = stripDoubleBracePlaceholders(previewSummary)
-    const html = marked.parse(cleanedSummary) as string
+    // XSS 单点净化（管线出口）：marked 不做净化，LLM 内容（含原始 HTML）经
+    // marked 编译后立即 DOMPurify 白名单净化；postProcess 只追加可信 DOM
+    // （类名/时间芯片），不会重新引入未净化内容。TaskContentArea 的 v-html
+    // 只渲染本管线产物，禁止绕过此出口直接给 compiledMarkdown 赋值。
+    // 配置：FORBID_ATTR: ['style']（默认配置不过滤 style，LLM 输出可携带
+    // 追踪/遮罩 CSS）；USE_PROFILES: { html: true }（剔除 svg/mathML 面，
+    // 本管线不需要；Mermaid SVG 走 DOM API 不经此出口）。
+    const html = DOMPurify.sanitize(marked.parse(cleanedSummary) as string, {
+      FORBID_ATTR: ['style'],
+      USE_PROFILES: { html: true },
+    })
     compiledMarkdown.value = postProcessCompiledMarkdown(html, {
       videoUrl: task.video_url || '',
     })
@@ -877,15 +905,18 @@ watch(
 )
 
 const expandMultipartSummary = async () => {
+  const task = selectedTask.value
+  if (!task) return
   multipartPage.value = 0
-  if (selectedTask.value) {
-    try {
-      await fetchTaskFullContent(selectedTask.value.id)
-    } catch (error) {
-      console.error('Failed to load full multipart summary:', error)
-      return
-    }
+  try {
+    await fetchTaskFullContent(task.id)
+  } catch (error) {
+    console.error('Failed to load full multipart summary:', error)
+    return
   }
+  // 等待期间用户可能已切换任务：任务身份重校验（与 copyContent/downloadContent
+  // 的 selectedTask.id 守卫模式一致），不得展开新任务的完整分P总结
+  if (!selectedTask.value || selectedTask.value.id !== task.id) return
   showFullMultipartSummary.value = true
 }
 
@@ -982,7 +1013,6 @@ watch(
       v-model:videoUrl="videoUrl"
       v-model:selectedFile="selectedFile"
       v-model:localFilePath="localFilePath"
-      v-model:quality="quality"
       v-model:summaryMode="summaryMode"
       v-model:generateTopic="generateTopic"
       v-model:isSidebarOpen="isSidebarOpen"
@@ -1043,8 +1073,10 @@ watch(
           :parts="taskParts"
           :part-details="taskPartDetails"
           :loading-part-index="loadingPartIndex"
+          :task-id="selectedTask.id"
+          :refresh-key="taskPartsRefreshKey"
           @expand="(partIndex) => selectedTask && fetchTaskPart(selectedTask.id, partIndex)"
-          @retry="retryFailedParts(selectedTask.id)"
+          @retry="handleRetryFailedParts"
         />
         <TaskContentArea
           :task="selectedTask"

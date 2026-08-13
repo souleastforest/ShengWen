@@ -44,7 +44,6 @@ import ThemeSelector from './ThemeSelector.vue'
 const videoUrl = defineModel<string>('videoUrl', { required: true })
 const selectedFile = defineModel<File | null>('selectedFile', { default: null })
 const localFilePath = defineModel<string>('localFilePath', { default: '' })
-// const quality = defineModel<string>('quality', { required: true })
 const summaryMode = defineModel<Exclude<SummaryMode, 'auto'>>('summaryMode', { default: 'none' })
 // 仅转录模式的"总结标题"开关：默认开启，与后端 generate_topic 默认一致
 const generateTopic = defineModel<boolean>('generateTopic', { default: true })
