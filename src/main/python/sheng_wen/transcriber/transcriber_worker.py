@@ -390,6 +390,10 @@ class TranscriberWorker(Worker):
             )
             results: list[tuple[TranscriptionResult, float]] = []
             try:
+                # ASR 分片计数上报：开始分片即写 total（OOM 降级后重新分片时
+                # total 变化也会覆盖），done=0；与 progress 走同一上报路径，
+                # 合并进 update_and_notify，避免重复广播。
+                progress_callback(0.0, asr_chunk_total=len(chunks), asr_chunk_done=0)
                 for index, (chunk_path, offset) in enumerate(chunks):
                     expected_duration = min(
                         current_chunk_duration, max(0.0, duration - offset)
@@ -428,7 +432,12 @@ class TranscriberWorker(Worker):
                         ) from exc
                     results.append((result, offset))
                     completed = min(duration, offset + expected_duration)
-                    progress_callback(completed / duration if duration > 0 else 1.0)
+                    # 每片完成后写 asr_chunk_done=已完成片数（与 progress 合并上报）
+                    progress_callback(
+                        completed / duration if duration > 0 else 1.0,
+                        asr_chunk_total=len(chunks),
+                        asr_chunk_done=index + 1,
+                    )
                     self._release_transcriber_resources(transcriber)
                     self._log_cuda_memory(f"after chunk {index + 1}/{len(chunks)}")
                     logger.info(
@@ -568,7 +577,11 @@ class TranscriberWorker(Worker):
             def cancel_check() -> bool:
                 return self.is_task_cancelled(task_id)
 
-            def progress_callback(progress: float):
+            def progress_callback(
+                progress: float,
+                asr_chunk_total: int | None = None,
+                asr_chunk_done: int | None = None,
+            ):
                 nonlocal last_progress_percent, last_logged_bucket
                 if cancel_check():
                     raise TaskCancelledError("任务已取消，停止转录。")
@@ -578,7 +591,14 @@ class TranscriberWorker(Worker):
                     progress_percent = int(clamped_progress * 100)
                     if progress_percent < last_progress_percent:
                         progress_percent = last_progress_percent
-                    if progress_percent == last_progress_percent:
+                    # ASR 分片计数事件（total/done）即使进度百分比未变也要上报
+                    has_chunk_update = (
+                        asr_chunk_total is not None or asr_chunk_done is not None
+                    )
+                    if (
+                        progress_percent == last_progress_percent
+                        and not has_chunk_update
+                    ):
                         return
                     last_progress_percent = progress_percent
                     task_progress = float(progress_percent)
@@ -627,9 +647,14 @@ class TranscriberWorker(Worker):
                             ) / len(parts)
                     from ..task_updater import update_and_notify
 
-                    self._submit_coro(
-                        update_and_notify(task_id, {"progress": task_progress})
-                    )
+                    # ASR 分片计数与 progress 合并进同一次 update_and_notify，
+                    # 避免重复广播。
+                    updates: Dict[str, Any] = {"progress": task_progress}
+                    if asr_chunk_total is not None:
+                        updates["asr_chunk_total"] = asr_chunk_total
+                    if asr_chunk_done is not None:
+                        updates["asr_chunk_done"] = asr_chunk_done
+                    self._submit_coro(update_and_notify(task_id, updates))
 
                     # 每 10% 打点一次，便于快速判断是后端卡住还是前端未刷新。
                     progress_bucket = progress_percent // 10
@@ -733,6 +758,9 @@ class TranscriberWorker(Worker):
                     "summary_chunk_total": None,
                     "summary_chunk_done": None,
                     "summary_meta": None,
+                    # ASR 分片字段仅在转录阶段非空：转总结/终态时清空（与 summary_chunk 对称）
+                    "asr_chunk_total": None,
+                    "asr_chunk_done": None,
                 }
                 if summary_mode in {"auto", "standard", "agent", "none"}:
                     update_data["summary_mode"] = summary_mode

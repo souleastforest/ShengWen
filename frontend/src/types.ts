@@ -75,6 +75,10 @@ export interface Task {
   summary_chunk_total?: number;
   summary_chunk_done?: number;
   summary_meta?: string;
+  // ASR 分片进度（仅转录阶段非空；转录完成转 SUMMARIZING 时后端置 null，
+  // 与 summary_chunk_* 对称）。展示"转录分片 done/total"。
+  asr_chunk_total?: number | null;
+  asr_chunk_done?: number | null;
   audio_downloaded?: boolean;
   audio_missing_reason?: AudioMissingReason;
   source_name?: string;

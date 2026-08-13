@@ -610,6 +610,9 @@ async def re_transcribe_task(
         "summary_chunk_total": None,
         "summary_chunk_done": None,
         "summary_meta": None,
+        # ASR 分片字段重转录时清空：非分片路径不再写回，避免残留陈旧计数
+        "asr_chunk_total": None,
+        "asr_chunk_done": None,
     }
     from src.main.python.sheng_wen.task_updater import update_and_notify
 

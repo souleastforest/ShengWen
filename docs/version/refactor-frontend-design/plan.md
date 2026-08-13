@@ -80,6 +80,9 @@ frontend/src/
 
 **范围**：
 1. **WS 加固**（`useTaskViewModel.ts:753-761`）：`disposed` 标志（onUnmounted 置位，重连定时器先检查）；指数退避 3s→6s→12s→封顶 30s（onopen 复位）；onerror 不主动 close（onclose 兜底，消除双调度）；onmessage `JSON.parse` try/catch（失败 console.warn + 跳过该帧，`:695`）。
+
+   > **与 fix/realtime-progress 重叠注记（2026-08-13）**：WS 生命周期加固的后端半（30s ping 心跳、`_safe_send` 10s 超时、receive 90s 判半开、broadcast 副本迭代）与前端 ping→pong 应答、60s 轮询兜底已随生产事故修复在 `fix/realtime-progress`（commit `27ae849`）落地。P2 剩余前端生命周期项不变：`disposed` 标志、指数退避 3s→6s→12s→30s、onerror 单调度、JSON.parse 畸形帧防护（F5，已确认 P2 范围，见 §7）、axios 共享实例与 timeout 等。
+
 2. **axios 共享实例**：新建 `src/shared/api/client.ts`（baseURL 统一、timeout 默认 60s、上传请求放宽 10min、拦截器统一错误提取），替换 ~30 处裸 axios 调用——各调用点响应处理语义不变，仅底层换实例。
 3. **uploadMaxBytes 随 WS onopen 对账刷新**（`fetchUploadConfig` 并入对账，后端运行期改上限后前端预检不陈旧，`:1088`）。
 4. **deleteTask tombstone**：`recentlyDeletedIds` 集合，WS 合并命中即忽略（防已删任务复活，`:1241`）。
@@ -189,6 +192,7 @@ frontend/src/
 - 无总结任务每次选中重复 GET include_content=true（code-reviewer S-1：watch 触发前查 taskFullContentCache 定论跳过）
 - 非分P任务超长总结（>12000 字）总结 tab 永久截断无入口（code-reviewer S-2：`summary.length >= 12000` 时也显示展开入口）
 - XSS 向量 e2e 用例（img onerror / script / javascript: href / svg xlink / style url()）纳入后续 e2e 批次（code-reviewer S-3）
+- WS onmessage 畸形帧防护（非 JSON 帧 JSON.parse 抛错不崩溃）——code-reviewer F5 确认 P2 范围，fix/realtime-progress 分支不做，待本 backlog 排期
 
 ## 8. 文件变更清单（删除/改名，需用户确认后执行）
 
