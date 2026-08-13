@@ -195,6 +195,7 @@ class StorageConfig:
     retention_failed_sec: int = 7200  # 2h
     cleanup_interval_sec: int = 600  # 10min
     base_dir: str = "temp"
+    max_upload_mb: float = 2048  # 单文件上传上限（2G，流式写盘边写边限）
 
 
 @dataclass
@@ -693,6 +694,7 @@ class JSONConfigManager:
                 raw.get("cleanup_interval_sec", defaults["cleanup_interval_sec"])
             ),
             base_dir=str(raw.get("base_dir", defaults["base_dir"])),
+            max_upload_mb=float(raw.get("max_upload_mb", defaults["max_upload_mb"])),
         )
 
     def get_observability_config(self) -> ObservabilityConfig:

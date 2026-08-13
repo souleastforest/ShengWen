@@ -46,6 +46,7 @@ const {
   summaryMode,
   generateTopic,
   isSubmitting,
+  uploadProgress,
   error,
   activeTab,
   llmProviders,
@@ -989,6 +990,7 @@ watch(
       :queues="queues"
       :selectedTask="selectedTask"
       :isSubmitting="isSubmitting"
+      :uploadProgress="uploadProgress"
       :llmProviders="llmProviders"
       :llmSettings="llmSettings"
       :isUpdatingLlmSettings="isUpdatingLlmSettings"

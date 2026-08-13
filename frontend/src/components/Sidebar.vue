@@ -26,6 +26,7 @@ import {
   PhFileText,
   PhQuestion,
   PhArrowClockwise,
+  PhWarning,
 } from '@phosphor-icons/vue'
 import {
   TaskStatus,
@@ -38,6 +39,7 @@ import {
   type QueueSnapshot
 } from '../types'
 import { getQueueInfo as resolveQueueInfo } from '../utils/queueStatus'
+import { MAX_UPLOAD_BYTES } from '../composables/useTaskViewModel'
 import ThemeSelector from './ThemeSelector.vue'
 
 const videoUrl = defineModel<string>('videoUrl', { required: true })
@@ -55,6 +57,7 @@ const props = defineProps<{
   queues?: QueueSnapshot[]
   selectedTask: Task | null
   isSubmitting: boolean
+  uploadProgress: number
   llmProviders: LLMProvider[]
   llmSettings: LLMSettings | null
   isUpdatingLlmSettings: boolean
@@ -205,6 +208,14 @@ const handleFileChange = (event: Event) => {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
   if (file) {
+    // 大小预检：与后端 max_upload_mb 上限一致（默认 2GB），超限拒绝并提示
+    if (file.size > MAX_UPLOAD_BYTES) {
+      selectedFile.value = null
+      target.value = ''
+      fileSizeError.value = `文件过大（${formatFileSize(file.size)}），最大支持 2GB`
+      return
+    }
+    fileSizeError.value = null
     // 清空 URL 输入框（互斥模式）
     videoUrl.value = ''
     localFilePath.value = ''
@@ -238,7 +249,11 @@ const handleClearSelectedFile = () => {
     emit('cancelSubmit')
   }
   selectedFile.value = null
+  fileSizeError.value = null
 }
+
+// 文件大小预检错误（超 2GB 上限）
+const fileSizeError = ref<string | null>(null)
 
 const formatFileSize = (bytes: number) => {
   if (bytes < 1024) return bytes + ' B'
@@ -1170,7 +1185,6 @@ watch(() => props.summarizationSettings, (settings) => {
                   @keydown.enter.prevent="handleVideoUrlEnter"
                 >
                 <button
-                  v-if="!props.isLocalClient"
                   @click="triggerFileUpload"
                   class="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-primary hover:bg-blue-50 rounded-lg transition-colors"
                   title="上传文件"
@@ -1178,7 +1192,6 @@ watch(() => props.summarizationSettings, (settings) => {
                   <PhUpload :size="18" />
                 </button>
                 <input
-                  v-if="!props.isLocalClient"
                   ref="fileInput"
                   type="file"
                   accept="video/*,audio/*"
@@ -1234,7 +1247,7 @@ watch(() => props.summarizationSettings, (settings) => {
                 </button>
               </div>
 
-              <div v-if="!props.isLocalClient && selectedFile" class="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-lg text-sm">
+              <div v-if="selectedFile" class="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-lg text-sm">
                 <div class="flex-1 min-w-0">
                   <p class="font-medium text-slate-700 truncate">{{ selectedFile.name }}</p>
                   <p class="text-xs text-slate-500">{{ formatFileSize(selectedFile.size) }}</p>
@@ -1246,6 +1259,14 @@ watch(() => props.summarizationSettings, (settings) => {
                 >
                   <PhX :size="16" />
                 </button>
+              </div>
+
+              <div
+                v-if="fileSizeError"
+                class="flex items-center gap-1.5 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600"
+              >
+                <PhWarning :size="14" />
+                {{ fileSizeError }}
               </div>
 
               <div class="relative">
@@ -1326,13 +1347,21 @@ watch(() => props.summarizationSettings, (settings) => {
 
               <button
                 @click="handleSubmitAction"
-                :disabled="!isSubmitting && (!videoUrl && (!props.isLocalClient ? !selectedFile : !localFilePath))"
+                :disabled="!isSubmitting && !videoUrl && !selectedFile && !localFilePath"
                 class="w-full bg-primary hover:bg-secondary text-white py-2.5 rounded-xl font-semibold transition-all shadow-sm shadow-blue-100 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
               >
                 <PhSpinner v-if="isSubmitting" :size="18" class="animate-spin" />
                 <PhPlayCircle v-else :size="18" />
-                {{ isSubmitting ? '取消提交' : '开始处理' }}
+                {{ isSubmitting && uploadProgress > 0 ? `上传中 ${uploadProgress}%` : isSubmitting ? '取消提交' : '开始处理' }}
               </button>
+
+              <!-- 文件上传真实进度条 -->
+              <div v-if="isSubmitting && uploadProgress > 0" class="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-primary rounded-full transition-all duration-300"
+                  :style="{ width: uploadProgress + '%' }"
+                ></div>
+              </div>
             </div>
           </div>
 

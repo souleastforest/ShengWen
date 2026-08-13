@@ -124,7 +124,7 @@ const getStatusClass = (status: TaskStatus) => {
             <div class="text-slate-500">视频 URL</div>
             <div class="flex items-center gap-1.5 min-w-0">
               <template v-if="isLocalFileUrl(selectedTask.video_url)">
-                <span class="text-slate-800 font-mono text-xs truncate" :title="selectedTask.video_url">{{ selectedTask.video_url }}</span>
+                <span class="text-slate-800 font-mono text-xs truncate" :title="selectedTask.video_url">{{ selectedTask.source_name || selectedTask.video_url }}</span>
               </template>
               <a
                 v-else

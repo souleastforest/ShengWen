@@ -158,6 +158,9 @@ export const __resetTaskContentCaches = () => {
   taskContentVersion.clear()
 }
 
+/** 单文件上传大小上限（与后端 config.storage.max_upload_mb 保持一致，默认 2GB） */
+export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+
 export function useTaskViewModel() {
   const normalizeBase = (base?: string) => (base || '').trim().replace(/\/+$/, '')
   const isLoopbackHost = (host: string) => {
@@ -194,6 +197,8 @@ export function useTaskViewModel() {
   // 仅转录模式的"总结标题"开关：默认开启（与后端 generate_topic 默认一致）
   const generateTopic = ref(true)
   const isSubmitting = ref(false)
+  // 文件上传真实进度（0-100，onUploadProgress 驱动；非上传提交时为 0）
+  const uploadProgress = ref(0)
   const error = ref<string | null>(null)
   const activeTab = ref<'summary' | 'transcript'>('summary')
   const isSidebarOpen = ref(false)
@@ -361,6 +366,7 @@ export function useTaskViewModel() {
     submitAbortController = controller
     isSubmitting.value = true
     error.value = null
+    uploadProgress.value = 0
     try {
       const formData = new FormData()
       formData.append('file', file)
@@ -373,7 +379,12 @@ export function useTaskViewModel() {
         headers: {
           'Content-Type': 'multipart/form-data'
         },
-        signal: controller.signal
+        signal: controller.signal,
+        onUploadProgress: (event) => {
+          if (event.total && event.total > 0) {
+            uploadProgress.value = Math.round((event.loaded / event.total) * 100)
+          }
+        }
       })
 
       selectedFile.value = null
@@ -389,6 +400,7 @@ export function useTaskViewModel() {
       if (submitAbortController === controller) {
         submitAbortController = null
         isSubmitting.value = false
+        uploadProgress.value = 0
       }
     }
   }
@@ -1088,6 +1100,7 @@ export function useTaskViewModel() {
     summaryMode,
     generateTopic,
     isSubmitting,
+    uploadProgress,
     error,
     activeTab,
     isSidebarOpen,

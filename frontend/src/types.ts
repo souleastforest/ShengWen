@@ -75,6 +75,7 @@ export interface Task {
   summary_meta?: string;
   audio_downloaded?: boolean;
   audio_missing_reason?: AudioMissingReason;
+  source_name?: string;
 }
 
 export interface CreateTaskRequest {

@@ -89,7 +89,7 @@ const audioStatus = computed(() =>
     <div class="flex items-center gap-2 text-xs text-slate-500">
       <span class="text-slate-400">视频链接:</span>
       <template v-if="isLocalFileUrl(task.video_url)">
-        <span class="text-slate-600 font-mono truncate max-w-md" :title="task.video_url">{{ task.video_url }}</span>
+        <span class="text-slate-600 font-mono truncate max-w-md" :title="task.video_url">{{ task.source_name || task.video_url }}</span>
       </template>
       <a
         v-else

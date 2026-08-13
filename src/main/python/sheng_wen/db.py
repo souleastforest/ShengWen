@@ -73,6 +73,8 @@ class TaskModel(Base):
     audio_missing_reason = Column(String, nullable=True)
     # 仅转录模式的"总结标题"开关（创建时快照，供 re-transcribe 等重跑恢复）
     generate_topic = Column(Boolean, nullable=True)
+    # 本地上传任务的原始文件名（None 表示非上传任务）
+    source_name = Column(String, nullable=True)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -100,6 +102,7 @@ class TaskModel(Base):
             "audio_downloaded": self.audio_downloaded,
             "audio_missing_reason": self.audio_missing_reason,
             "generate_topic": self.generate_topic,
+            "source_name": self.source_name,
         }
 
 
@@ -142,6 +145,7 @@ class TaskDB:
             has_audio_downloaded = "audio_downloaded" in columns
             has_audio_missing_reason = "audio_missing_reason" in columns
             has_generate_topic = "generate_topic" in columns
+            has_source_name = "source_name" in columns
             if (
                 has_latest_modified_at
                 and has_author_name
@@ -153,6 +157,7 @@ class TaskDB:
                 and has_audio_downloaded
                 and has_audio_missing_reason
                 and has_generate_topic
+                and has_source_name
             ):
                 return
 
@@ -230,6 +235,11 @@ class TaskDB:
                     logger.info(
                         "Database schema updated: added tasks.generate_topic (legacy tasks default True)"
                     )
+                if not has_source_name:
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN source_name VARCHAR")
+                    )
+                    logger.info("Database schema updated: added tasks.source_name")
         except Exception as e:
             logger.error(f"Failed to ensure database schema: {e}")
 

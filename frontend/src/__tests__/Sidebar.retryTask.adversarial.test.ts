@@ -17,6 +17,7 @@ const baseProps = {
   queues: [],
   selectedTask: null as Task | null,
   isSubmitting: false,
+  uploadProgress: 0,
   llmProviders: [],
   llmSettings: null,
   isUpdatingLlmSettings: false,

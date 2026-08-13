@@ -46,6 +46,7 @@ class Task(BaseModel):
     summary_meta: Optional[str] = None
     audio_downloaded: Optional[bool] = None
     audio_missing_reason: Optional[str] = None
+    source_name: Optional[str] = None
     part_count: Optional[int] = None
     part_completed: Optional[int] = None
     part_failed: Optional[int] = None

@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from src.main.python.sheng_wen.application.events.topics import TASK_CREATED
+from src.main.python.sheng_wen.config.settings import config
 from src.main.python.sheng_wen.db import TaskStatus, db
 from src.main.python.sheng_wen.infra.api.routes import deps
 from src.main.python.sheng_wen.infra.api.routes.schemas import LocalPathTaskCreate, Task
@@ -16,6 +17,10 @@ from src.main.python.sheng_wen.utils.media import SUPPORTED_MEDIA_EXTENSIONS
 
 
 router = APIRouter(prefix="")
+
+# multipart 请求体的 boundary 等表单开销容忍（Content-Length 含表单开销，比文件本身略大）
+_UPLOAD_PREFLIGHT_TOLERANCE_BYTES = 32 * 1024 * 1024
+_UPLOAD_CHUNK_BYTES = 1024 * 1024  # 流式写盘分块大小（1MB）
 
 
 @router.post("/upload", response_model=Task, status_code=201)
@@ -36,27 +41,44 @@ async def upload_file(
             detail=f"不支持的文件格式: {file_ext}。支持的格式: {', '.join(sorted(SUPPORTED_MEDIA_EXTENSIONS))}",
         )
 
+    max_upload_bytes = int(config.storage.max_upload_mb * 1024 * 1024)
+
+    # 预检：Content-Length 明确超限（含表单开销容忍）时直接拒绝，不开始写盘
+    content_length = request.headers.get("content-length")
+    if (
+        content_length
+        and content_length.isdigit()
+        and int(content_length) > max_upload_bytes + _UPLOAD_PREFLIGHT_TOLERANCE_BYTES
+    ):
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大，最大支持 {max_upload_bytes / 1024 / 1024:.0f}MB",
+        )
+
     task_id = str(uuid.uuid4())
     temp_dir = "temp"
     os.makedirs(temp_dir, exist_ok=True)
     temp_file_path = os.path.join(temp_dir, f"{task_id}_temp{file_ext}")
 
     try:
+        # 流式分块写盘，边写边累计大小：超限即清理并 413
+        # （防大文件整体读入内存 OOM，防 Content-Length 缺失/谎报绕过预检）
+        total_written = 0
         with open(temp_file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
-
-        file_size = len(content)
-        file_size_mb = file_size / 1024 / 1024
-        max_size = 500 * 1024 * 1024
-        if file_size > max_size:
+            while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
+                total_written += len(chunk)
+                if total_written > max_upload_bytes:
+                    break
+                buffer.write(chunk)
+        if total_written > max_upload_bytes:
             os.remove(temp_file_path)
             raise HTTPException(
-                status_code=400,
-                detail=f"文件过大 ({file_size_mb:.1f}MB)，最大支持 {max_size / 1024 / 1024:.0f}MB",
+                status_code=413,
+                detail=f"文件过大 ({total_written / 1024 / 1024:.1f}MB)，最大支持 {max_upload_bytes / 1024 / 1024:.0f}MB",
             )
 
         resolved_summary_mode = deps._normalize_summary_mode(summary_mode)
+        source_name = os.path.basename(file.filename or "") or None
         task_data = {
             "id": task_id,
             "video_url": f"file://{temp_file_path}",
@@ -74,6 +96,7 @@ async def upload_file(
             "summary_chunk_done": None,
             "summary_meta": None,
             "generate_topic": bool(generate_topic),
+            "source_name": source_name,
         }
         db.save_task(task_id, task_data)
 
@@ -84,6 +107,7 @@ async def upload_file(
                 "video_url": f"file://{temp_file_path}",
                 "file_path": temp_file_path,
                 "filename": file.filename or "uploaded_file",
+                "source_name": source_name,
                 "summary_mode": resolved_summary_mode,
                 "generate_topic": bool(generate_topic),
             },
@@ -200,6 +224,7 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
         "summary_chunk_done": None,
         "summary_meta": None,
         "generate_topic": payload.generate_topic,
+        "source_name": os.path.basename(local_path) or None,
     }
     db.save_task(task_id, task_data)
 
@@ -210,6 +235,7 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
             "video_url": f"file://{local_path}",
             "file_path": local_path,
             "filename": os.path.basename(local_path) or "uploaded_file",
+            "source_name": os.path.basename(local_path) or None,
             "summary_mode": resolved_summary_mode,
             "generate_topic": payload.generate_topic,
         },
