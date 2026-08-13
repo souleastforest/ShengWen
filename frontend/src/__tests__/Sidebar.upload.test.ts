@@ -21,6 +21,7 @@ const baseProps = {
   selectedTask: null as Task | null,
   isSubmitting: false,
   uploadProgress: 0,
+  maxUploadBytes: 2 * 1024 * 1024 * 1024,
   llmProviders: [],
   llmSettings: null,
   isUpdatingLlmSettings: false,
@@ -31,7 +32,7 @@ const baseProps = {
   isUpdatingSummarizationSettings: false,
 }
 
-const mountSidebar = (opts?: { isLocalClient?: boolean; isSubmitting?: boolean; uploadProgress?: number }) => {
+const mountSidebar = (opts?: { isLocalClient?: boolean; isSubmitting?: boolean; uploadProgress?: number; maxUploadBytes?: number }) => {
   return mount(Sidebar, {
     props: {
       ...baseProps,
@@ -42,6 +43,7 @@ const mountSidebar = (opts?: { isLocalClient?: boolean; isSubmitting?: boolean; 
       ...(opts?.isLocalClient !== undefined ? { isLocalClient: opts.isLocalClient } : {}),
       ...(opts?.isSubmitting !== undefined ? { isSubmitting: opts.isSubmitting } : {}),
       ...(opts?.uploadProgress !== undefined ? { uploadProgress: opts.uploadProgress } : {}),
+      ...(opts?.maxUploadBytes !== undefined ? { maxUploadBytes: opts.maxUploadBytes } : {}),
     },
     global: {
       stubs: {
@@ -89,16 +91,18 @@ describe('对抗性：文件大小预检（2GB 上限）', () => {
     return file
   }
 
-  it('超过 2GB 的文件被拒绝并显示错误提示', async () => {
-    const wrapper = mountSidebar()
+  it('超过后端下发上限的文件被拒绝并显示动态错误提示', async () => {
+    // 运维配置 1GB 上限（后端 /upload/config 下发）
+    const maxBytes = 1 * 1024 * 1024 * 1024
+    const wrapper = mountSidebar({ maxUploadBytes: maxBytes })
     const input = wrapper.find('input[type="file"]')
     Object.defineProperty(input.element, 'files', {
-      value: [makeFile(2 * 1024 * 1024 * 1024 + 1)],
+      value: [makeFile(maxBytes + 1)],
     })
     await input.trigger('change')
 
     expect(wrapper.text()).toContain('文件过大')
-    expect(wrapper.text()).toContain('2GB')
+    expect(wrapper.text()).toContain('1024.0 MB')
     // 超限文件不进入选中态
     expect(wrapper.find('button[title="清除文件"]').exists()).toBe(false)
   })

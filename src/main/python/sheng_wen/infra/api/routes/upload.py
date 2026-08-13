@@ -24,6 +24,12 @@ _UPLOAD_PREFLIGHT_TOLERANCE_BYTES = 8 * 1024 * 1024
 _UPLOAD_CHUNK_BYTES = 1024 * 1024  # 流式写盘分块大小（1MB）
 
 
+@router.get("/upload/config")
+async def get_upload_config():
+    """上传配置下发：前端大小预检与后端上限同源（避免客户端硬编码漂移）。"""
+    return {"max_upload_mb": config.storage.max_upload_mb}
+
+
 @router.post("/upload", response_model=Task, status_code=201)
 async def upload_file(
     request: Request,

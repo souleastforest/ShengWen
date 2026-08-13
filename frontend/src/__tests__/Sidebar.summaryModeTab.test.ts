@@ -17,6 +17,7 @@ const baseProps = {
   selectedTask: null as Task | null,
   isSubmitting: false,
   uploadProgress: 0,
+  maxUploadBytes: 2 * 1024 * 1024 * 1024,
   llmProviders: [],
   llmSettings: null,
   isUpdatingLlmSettings: false,

@@ -169,6 +169,31 @@ async def test_upload_oversize_content_length_preflight_413(track_created, monke
     assert db.list_tasks() == []
 
 
+@pytest.mark.asyncio
+async def test_upload_config_endpoint_syncs_with_storage(monkeypatch):
+    """GET /upload/config 下发与 storage.max_upload_mb 同源（前端预检与后端不漂移）。
+
+    回归：前端曾硬编码 2GB（code-reviewer I2），配置下发后改 storage.max_upload_mb
+    即可同步客户端预检。
+    """
+    app = _make_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/upload/config")
+    assert resp.status_code == 200
+    assert resp.json() == {"max_upload_mb": 2048}
+
+    # 配置变更后端点反映新值
+    monkeypatch.setattr(
+        upload_module,
+        "config",
+        type("FakeConfig", (), {"storage": StorageConfig(max_upload_mb=4096)})(),
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/upload/config")
+    assert resp.json() == {"max_upload_mb": 4096}
+
+
 def test_file_upload_worker_max_size_follows_config():
     """FileUploadWorker 上限跟随 storage.max_upload_mb（默认 2GB，可注入覆盖）。
 

@@ -39,7 +39,6 @@ import {
   type QueueSnapshot
 } from '../types'
 import { getQueueInfo as resolveQueueInfo } from '../utils/queueStatus'
-import { MAX_UPLOAD_BYTES } from '../composables/useTaskViewModel'
 import ThemeSelector from './ThemeSelector.vue'
 
 const videoUrl = defineModel<string>('videoUrl', { required: true })
@@ -58,6 +57,8 @@ const props = defineProps<{
   selectedTask: Task | null
   isSubmitting: boolean
   uploadProgress: number
+  /** 上传大小上限（字节，后端 /upload/config 下发，与 storage.max_upload_mb 同源） */
+  maxUploadBytes: number
   llmProviders: LLMProvider[]
   llmSettings: LLMSettings | null
   isUpdatingLlmSettings: boolean
@@ -208,11 +209,11 @@ const handleFileChange = (event: Event) => {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
   if (file) {
-    // 大小预检：与后端 max_upload_mb 上限一致（默认 2GB），超限拒绝并提示
-    if (file.size > MAX_UPLOAD_BYTES) {
+    // 大小预检：上限来自后端 /upload/config（与 storage.max_upload_mb 同源），超限拒绝并提示
+    if (file.size > props.maxUploadBytes) {
       selectedFile.value = null
       target.value = ''
-      fileSizeError.value = `文件过大（${formatFileSize(file.size)}），最大支持 2GB`
+      fileSizeError.value = `文件过大（${formatFileSize(file.size)}），最大支持 ${formatFileSize(props.maxUploadBytes)}`
       return
     }
     fileSizeError.value = null

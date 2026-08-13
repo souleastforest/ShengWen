@@ -47,6 +47,7 @@ const {
   generateTopic,
   isSubmitting,
   uploadProgress,
+  uploadMaxBytes,
   error,
   activeTab,
   llmProviders,
@@ -991,6 +992,7 @@ watch(
       :selectedTask="selectedTask"
       :isSubmitting="isSubmitting"
       :uploadProgress="uploadProgress"
+      :maxUploadBytes="uploadMaxBytes"
       :llmProviders="llmProviders"
       :llmSettings="llmSettings"
       :isUpdatingLlmSettings="isUpdatingLlmSettings"

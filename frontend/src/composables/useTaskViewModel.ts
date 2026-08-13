@@ -158,8 +158,8 @@ export const __resetTaskContentCaches = () => {
   taskContentVersion.clear()
 }
 
-/** 单文件上传大小上限（与后端 config.storage.max_upload_mb 保持一致，默认 2GB） */
-export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
+/** 单文件上传大小上限回退值（后端 GET /upload/config 下发前的初始值/不可达时的兜底，默认 2GB） */
+export const DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
 export function useTaskViewModel() {
   const normalizeBase = (base?: string) => (base || '').trim().replace(/\/+$/, '')
@@ -199,6 +199,8 @@ export function useTaskViewModel() {
   const isSubmitting = ref(false)
   // 文件上传真实进度（0-100，onUploadProgress 驱动；非上传提交时为 0）
   const uploadProgress = ref(0)
+  // 上传大小上限（字节）：后端 /upload/config 下发，与 storage.max_upload_mb 同源
+  const uploadMaxBytes = ref(DEFAULT_MAX_UPLOAD_BYTES)
   const error = ref<string | null>(null)
   const activeTab = ref<'summary' | 'transcript'>('summary')
   const isSidebarOpen = ref(false)
@@ -360,6 +362,19 @@ export function useTaskViewModel() {
         submitAbortController = null
         isSubmitting.value = false
       }
+    }
+  }
+
+  // 拉取上传配置（大小上限与后端同源）；失败静默回退默认值，不阻塞 UI
+  const fetchUploadConfig = async () => {
+    try {
+      const resp = await axios.get(`${apiBaseUrl}/upload/config`)
+      const mb = Number(resp.data?.max_upload_mb)
+      if (mb && mb > 0) {
+        uploadMaxBytes.value = Math.round(mb * 1024 * 1024)
+      }
+    } catch (err) {
+      console.warn('获取上传配置失败，使用默认上限:', err)
     }
   }
 
@@ -1068,6 +1083,7 @@ export function useTaskViewModel() {
   onMounted(() => {
     fetchTasks()
     fetchQueueSnapshot()
+    fetchUploadConfig()
 
     fetchLlmProviders()
     fetchLlmSettings()
@@ -1091,6 +1107,7 @@ export function useTaskViewModel() {
     tasks,
     queues,
     fetchQueueSnapshot,
+    fetchUploadConfig,
     selectedTask,
     taskParts,
     taskPartDetails,
@@ -1104,6 +1121,7 @@ export function useTaskViewModel() {
     generateTopic,
     isSubmitting,
     uploadProgress,
+    uploadMaxBytes,
     error,
     activeTab,
     isSidebarOpen,
