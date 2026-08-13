@@ -454,8 +454,20 @@ const renderMermaidBlocks = async () => {
   }
 }
 
+// XSS 防线说明（渲染层兜底断言）：compiledMarkdown 已在 App.vue
+// scheduleMarkdownCompile 管线出口（marked 编译后、postProcess 前）经
+// DOMPurify.sanitize() 单点净化——marked 本身不做净化。此处 v-html 只渲染
+// 管线产物，任何代码不得绕过该出口直接给 compiledMarkdown 赋值；
+// DEV 下若检测到未净化痕迹则告警（生产构建 import.meta.env.DEV 为 false，会被摇树）。
 // 监听内容变化并渲染 Mermaid
 watch([() => props.compiledMarkdown, () => props.activeTab], async () => {
+  if (
+    import.meta.env.DEV
+    && props.compiledMarkdown
+    && /<script|onerror=|onload=|javascript:/i.test(props.compiledMarkdown)
+  ) {
+    console.error('[XSS 防线] compiledMarkdown 疑似未净化（管线出口被绕过？）', props.compiledMarkdown)
+  }
   if (props.activeTab === 'summary' && props.compiledMarkdown) {
     await nextTick()
     try {

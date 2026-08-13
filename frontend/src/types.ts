@@ -63,7 +63,9 @@ export interface Task {
   title?: string;
   topic?: string;
   transcript?: string;
-  summary?: string;
+  // summary 允许 null：后端 include_content=false 时返回 null / _summary_overview
+  // 截断版；前端"详情加载失败"标记亦用 null 表示"未加载但详情已结算"
+  summary?: string | null;
   error_message?: string;
   transcription_time?: number;
   audio_duration?: number;
