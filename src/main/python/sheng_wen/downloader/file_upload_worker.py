@@ -23,14 +23,23 @@ class FileUploadWorker(Worker):
     AUDIO_EXTENSIONS = AUDIO_MEDIA_EXTENSIONS
     SUPPORTED_EXTENSIONS = SUPPORTED_MEDIA_EXTENSIONS
 
-    # 文件大小限制 (500MB)
-    MAX_FILE_SIZE = 500 * 1024 * 1024
-
-    def __init__(self, name: str, next_worker: Worker = None):
+    def __init__(
+        self,
+        name: str,
+        next_worker: Worker = None,
+        max_file_mb: float | None = None,
+    ):
         super().__init__(name)
         self.next_worker = next_worker
         self.output_dir = "temp"
         os.makedirs(self.output_dir, exist_ok=True)
+        # 上传大小上限跟随配置（storage.max_upload_mb，默认 2GB）。
+        # 端点 /upload 已按同一配置拦截；此处兜底直连 payload 或配置漂移。
+        if max_file_mb is None:
+            from ..config.settings import config
+
+            max_file_mb = config.storage.max_upload_mb
+        self.MAX_FILE_SIZE = int(max_file_mb * 1024 * 1024)
 
     async def process_task(self, payload: Any):
         """

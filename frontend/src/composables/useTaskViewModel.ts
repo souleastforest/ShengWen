@@ -288,6 +288,7 @@ export function useTaskViewModel() {
       return
     }
 
+    uploadProgress.value = 0
     const controller = new AbortController()
     submitAbortController = controller
     isSubmitting.value = true
@@ -331,6 +332,7 @@ export function useTaskViewModel() {
       return
     }
 
+    uploadProgress.value = 0
     const controller = new AbortController()
     submitAbortController = controller
     isSubmitting.value = true
@@ -411,6 +413,7 @@ export function useTaskViewModel() {
       submitAbortController = null
     }
     isSubmitting.value = false
+    uploadProgress.value = 0
   }
 
   const fetchTaskFullContent = (taskId: string): Promise<Task> => {

@@ -18,8 +18,9 @@ from src.main.python.sheng_wen.utils.media import SUPPORTED_MEDIA_EXTENSIONS
 
 router = APIRouter(prefix="")
 
-# multipart 请求体的 boundary 等表单开销容忍（Content-Length 含表单开销，比文件本身略大）
-_UPLOAD_PREFLIGHT_TOLERANCE_BYTES = 32 * 1024 * 1024
+# multipart 请求体的 boundary 等表单开销容忍（Content-Length 含表单开销，比文件本身略大；
+# 实际开销仅几 KB~几 MB，8MB 已覆盖且避免超限请求先写满再拒绝）
+_UPLOAD_PREFLIGHT_TOLERANCE_BYTES = 8 * 1024 * 1024
 _UPLOAD_CHUNK_BYTES = 1024 * 1024  # 流式写盘分块大小（1MB）
 
 
@@ -61,16 +62,18 @@ async def upload_file(
     temp_file_path = os.path.join(temp_dir, f"{task_id}_temp{file_ext}")
 
     try:
-        # 流式分块写盘，边写边累计大小：超限即清理并 413
+        # 流式分块写盘，先判限再写：超限即清理并 413，文案统计实际落盘字节
         # （防大文件整体读入内存 OOM，防 Content-Length 缺失/谎报绕过预检）
         total_written = 0
+        truncated = False
         with open(temp_file_path, "wb") as buffer:
             while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
-                total_written += len(chunk)
-                if total_written > max_upload_bytes:
+                if total_written + len(chunk) > max_upload_bytes:
+                    truncated = True
                     break
+                total_written += len(chunk)
                 buffer.write(chunk)
-        if total_written > max_upload_bytes:
+        if truncated:
             os.remove(temp_file_path)
             raise HTTPException(
                 status_code=413,
@@ -78,7 +81,9 @@ async def upload_file(
             )
 
         resolved_summary_mode = deps._normalize_summary_mode(summary_mode)
-        source_name = os.path.basename(file.filename or "") or None
+        source_name = os.path.basename(file.filename or "").strip() or None
+        if source_name:
+            source_name = source_name[:255]
         task_data = {
             "id": task_id,
             "video_url": f"file://{temp_file_path}",
@@ -224,7 +229,7 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
         "summary_chunk_done": None,
         "summary_meta": None,
         "generate_topic": payload.generate_topic,
-        "source_name": os.path.basename(local_path) or None,
+        "source_name": os.path.basename(local_path).strip()[:255] or None,
     }
     db.save_task(task_id, task_data)
 
@@ -235,7 +240,7 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
             "video_url": f"file://{local_path}",
             "file_path": local_path,
             "filename": os.path.basename(local_path) or "uploaded_file",
-            "source_name": os.path.basename(local_path) or None,
+            "source_name": os.path.basename(local_path).strip()[:255] or None,
             "summary_mode": resolved_summary_mode,
             "generate_topic": payload.generate_topic,
         },

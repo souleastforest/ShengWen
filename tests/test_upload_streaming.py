@@ -169,6 +169,23 @@ async def test_upload_oversize_content_length_preflight_413(track_created, monke
     assert db.list_tasks() == []
 
 
+def test_file_upload_worker_max_size_follows_config():
+    """FileUploadWorker 上限跟随 storage.max_upload_mb（默认 2GB，可注入覆盖）。
+
+    回归：worker 曾硬编码 500MB，端点升 2GB 后 500MB~2GB 上传会"先成功建任务后 FAILED"
+    （code-reviewer B1）。
+    """
+    from src.main.python.sheng_wen.downloader.file_upload_worker import (
+        FileUploadWorker,
+    )
+
+    worker = FileUploadWorker("upload_test")
+    assert worker.MAX_FILE_SIZE == 2048 * 1024 * 1024
+
+    worker_injected = FileUploadWorker("upload_test2", max_file_mb=0.001)
+    assert worker_injected.MAX_FILE_SIZE == int(0.001 * 1024 * 1024)
+
+
 @pytest.mark.asyncio
 async def test_upload_unsupported_ext_rejects_400():
     """回归：扩展名白名单外文件 400。"""
