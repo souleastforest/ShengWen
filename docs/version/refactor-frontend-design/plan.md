@@ -87,6 +87,12 @@ frontend/src/
 3. **uploadMaxBytes 随 WS onopen 对账刷新**（`fetchUploadConfig` 并入对账，后端运行期改上限后前端预检不陈旧，`:1088`）。
 4. **deleteTask tombstone**：`recentlyDeletedIds` 集合，WS 合并命中即忽略（防已删任务复活，`:1241`）。
 
+> **修订轮注记（2026-08-13，refactor/p2-network-lifecycle）**：
+> - **F1**：`/upload` 不再用固定超时（原规划"上传放宽 10min"作废）——axios/XHR timeout 为整请求总时长（不被 onUploadProgress 重置），600s 会误杀 <3.4MB/s 慢链路上传；调用点显式 `timeout: 0` 保持旧行为，依赖进度条可见性 + 后端 Content-Length 预检/流式 413 + M3 断连核对三层兜底。
+> - **S1**：onerror 排定 ~5s 兜底重连（与 onclose 退避共用同一定时器槽位互斥，后到者作废）——防"只发 error 不发 close"环境重连永久停滞。
+> - **S3**：重连定时器与墓碑清理定时器 id 留存，onUnmounted 统一 clearTimeout（wsDisposed 双检查保留）。
+> - **S2/S4/S5 确认不修**：握手挂起看门狗（环境性非回归，不动）；对账重复 fetchTasks/fetchQueueSnapshot（无害幂等，不动）；墓碑过期幽灵复活（后端删除后广播残留的证据近零，且 60s 过期窗口已收敛，不动）。
+
 **public seam**：useTaskViewModel 导出不变；各 axios 调用点语义不变。
 
 **测试**：fake timers 断言退避序列 3s/6s/12s 与卸载后不重连；畸形报文单帧不中断后续消息；删除后同任务广播不复活。

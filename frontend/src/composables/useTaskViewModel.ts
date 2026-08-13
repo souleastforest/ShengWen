@@ -1,5 +1,10 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import axios from 'axios'
+import {
+  apiClient,
+  getAxiosErrorMessage,
+  isCanceledRequest,
+  isAxiosError,
+} from '../shared/api/client'
 import type {
   Task,
   TaskPart,
@@ -90,33 +95,6 @@ const isBilibiliUrl = (url: string): boolean => {
   } catch {
     return false
   }
-}
-
-const getAxiosErrorMessage = (err: unknown, fallback: string): string => {
-  if (!axios.isAxiosError(err)) return fallback
-
-  const detail = err.response?.data?.detail
-  if (typeof detail === 'string' && detail.trim()) {
-    return detail
-  }
-
-  if (Array.isArray(detail) && detail.length > 0) {
-    const first = detail[0]
-    if (first && typeof first === 'object' && 'msg' in first) {
-      const message = String((first as { msg?: unknown }).msg || '').trim()
-      if (message) {
-        return `请求参数错误：${message}`
-      }
-    }
-  }
-
-  return err.message ? `${fallback}：${err.message}` : fallback
-}
-
-const isCanceledRequest = (err: unknown): boolean => {
-  if (axios.isCancel(err)) return true
-  if (!axios.isAxiosError(err)) return false
-  return err.code === 'ERR_CANCELED'
 }
 
 // per-task 完整内容缓存（include_content=true 的结果，key=taskId）。
@@ -270,6 +248,61 @@ export function useTaskViewModel() {
   let submitAbortController: AbortController | null = null
   let taskPartsRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
+  // --- WS 生命周期（P2-A / S1 / S3）---
+  // 组件已卸载标志：onUnmounted 置位；重连定时器回调先检查——防止卸载后
+  // 每 3s 泄漏新连接（当前因 App 永不卸载而潜伏）。
+  let wsDisposed = false
+  // 重连指数退避：3s→6s→12s→24s→封顶 30s；onopen 成功后复位到 3s。
+  const RECONNECT_BASE_DELAY_MS = 3_000
+  const RECONNECT_MAX_DELAY_MS = 30_000
+  // onerror 兜底（S1）：仅发 error 不发 close 的环境 ~5s 后重连一次
+  const RECONNECT_ERROR_FALLBACK_MS = 5_000
+  let reconnectAttempts = 0
+  // 重连定时器 id（S1/S3）：onclose 退避与 onerror 兜底共用同一槽位互斥——
+  // 后到者作废（防双调度）；onUnmounted 统一 clearTimeout 清理。
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  const scheduleReconnect = () => {
+    if (wsDisposed) return
+    if (reconnectTimer != null) return // 已排定（含 onerror 兜底）：不重复排定
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts,
+      RECONNECT_MAX_DELAY_MS,
+    )
+    reconnectAttempts += 1
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      // 卸载前已排定的定时器：到期时组件可能已卸载，须再检查一次
+      if (wsDisposed) return
+      connectWebSocket()
+    }, delay)
+  }
+  const scheduleReconnectErrorFallback = () => {
+    if (wsDisposed) return
+    if (reconnectTimer != null) return // onclose 已先行排定重连 → 兜底作废
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (wsDisposed) return
+      connectWebSocket()
+    }, RECONNECT_ERROR_FALLBACK_MS)
+  }
+
+  // 删除任务墓碑（P2-D）：删除成功后记录 id → 过期时间；WS task_update 广播
+  // 命中时忽略，防止已删任务被在途广播"复活"；60s 后过期清理，防无限增长。
+  const TOMBSTONE_TTL_MS = 60_000
+  const deletedTaskIds = new Map<string, number>()
+  // 墓碑过期清理定时器（S3）：id 留存，onUnmounted 统一 clearTimeout，
+  // 防止卸载后残留定时器。
+  const tombstoneCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const isTaskDeleted = (taskId: string): boolean => {
+    const expiresAt = deletedTaskIds.get(taskId)
+    if (expiresAt == null) return false
+    if (expiresAt <= Date.now()) {
+      deletedTaskIds.delete(taskId) // 惰性过期清理
+      return false
+    }
+    return true
+  }
+
   // 轮询兜底（生产事故 93b857d0 修复）：WS 断流/丢广播时任务列表与队列仍能
   // 低频刷新。60s 一次，与 WS 并行无害；onUnmounted 清理。
   const POLL_INTERVAL_MS = 60_000
@@ -278,7 +311,7 @@ export function useTaskViewModel() {
   // --- Actions ---
   const fetchTasks = async () => {
     try {
-      const response = await axios.get(apiBaseUrl + "/tasks/")
+      const response = await apiClient.get('/tasks/')
       tasks.value = response.data
       
       // Sync selected task details
@@ -313,7 +346,7 @@ export function useTaskViewModel() {
 
   const fetchQueueSnapshot = async () => {
     try {
-      const response = await axios.get<QueueResponse>(apiBaseUrl + "/tasks/queue")
+      const response = await apiClient.get<QueueResponse>('/tasks/queue')
       queues.value = response.data?.queues ?? []
     } catch (err) {
       // 队列快照为辅助信息：失败时保留上一次快照，不影响任务列表主流程
@@ -360,7 +393,7 @@ export function useTaskViewModel() {
           ? { generate_topic: generateTopic.value }
           : {}),
       }
-      await axios.post(`${apiBaseUrl}/tasks/`, payload, {
+      await apiClient.post('/tasks/', payload, {
         signal: controller.signal
       })
       videoUrl.value = ''
@@ -392,7 +425,7 @@ export function useTaskViewModel() {
     isSubmitting.value = true
     error.value = null
     try {
-      await axios.post(`${apiBaseUrl}/upload/local-path`, {
+      await apiClient.post('/upload/local-path', {
         file_path: normalized,
         summary_mode: summaryMode.value,
         ...(summaryMode.value === 'none'
@@ -420,7 +453,7 @@ export function useTaskViewModel() {
   // 拉取上传配置（大小上限与后端同源）；失败静默回退默认值，不阻塞 UI
   const fetchUploadConfig = async () => {
     try {
-      const resp = await axios.get(`${apiBaseUrl}/upload/config`)
+      const resp = await apiClient.get('/upload/config')
       const mb = Number(resp.data?.max_upload_mb)
       if (mb && mb > 0) {
         uploadMaxBytes.value = Math.round(mb * 1024 * 1024)
@@ -444,11 +477,16 @@ export function useTaskViewModel() {
         formData.append('generate_topic', String(generateTopic.value))
       }
 
-      await axios.post(`${apiBaseUrl}/upload`, formData, {
+      await apiClient.post('/upload', formData, {
         headers: {
           'Content-Type': 'multipart/form-data'
         },
         signal: controller.signal,
+        // 上传不设总时长超时（timeout: 0，保持旧行为）：axios timeout 为
+        // "整请求总时长"（不被 onUploadProgress 重置），600s 会误杀 <3.4MB/s
+        // 慢链路大文件上传。不无限挂起的三层兜底：进度条实时可见 +
+        // 后端 Content-Length 预检/流式 413 + M3 断连核对。
+        timeout: 0,
         onUploadProgress: (event) => {
           if (event.total && event.total > 0) {
             uploadProgress.value = Math.round((event.loaded / event.total) * 100)
@@ -495,7 +533,7 @@ export function useTaskViewModel() {
     const version = taskContentVersion.get(taskId) ?? 0
     const promise = (async () => {
       try {
-        const response = await axios.get(`${apiBaseUrl}/tasks/${taskId}?include_content=true`)
+        const response = await apiClient.get(`/tasks/${taskId}?include_content=true`)
         const data = response.data as Task
         if ((taskContentVersion.get(taskId) ?? 0) === version) {
           // 拷贝后入缓存：避免与响应对象共享引用（响应对象可能在别处被合并修改）
@@ -526,7 +564,7 @@ export function useTaskViewModel() {
   }
 
   const fetchTaskParts = async (taskId: string) => {
-    const response = await axios.get(apiBaseUrl + "/tasks/" + taskId + "/parts")
+    const response = await apiClient.get(`/tasks/${taskId}/parts`)
     if (selectedTask.value?.id === taskId) {
       taskParts.value = response.data
     }
@@ -541,8 +579,8 @@ export function useTaskViewModel() {
 
     loadingPartIndex.value = partIndex
     try {
-      const response = await axios.get(
-        apiBaseUrl + "/tasks/" + taskId + "/parts/" + partIndex,
+      const response = await apiClient.get(
+        `/tasks/${taskId}/parts/${partIndex}`,
       )
       const detail = response.data as TaskPart
       if (selectedTask.value?.id === taskId) {
@@ -614,7 +652,7 @@ export function useTaskViewModel() {
 
     void (async () => {
       try {
-        const detailPromise = axios.get(`${apiBaseUrl}/tasks/${task.id}?include_content=false`)
+        const detailPromise = apiClient.get(`/tasks/${task.id}?include_content=false`)
         const partsPromise = task.has_parts
           ? fetchTaskParts(task.id)
           : Promise.resolve([] as TaskPart[])
@@ -703,7 +741,7 @@ export function useTaskViewModel() {
   )
 
   const retryFailedParts = async (taskId: string) => {
-    await axios.post(apiBaseUrl + "/tasks/" + taskId + "/retry-failed-parts")
+    await apiClient.post(`/tasks/${taskId}/retry-failed-parts`)
     // 重试后分片内容会变化（DB 中 content 已置 NULL）：
     // 失效 per-task 完整内容缓存与分片详情缓存，避免返回旧内容；
     // 同时递增版本，使在途的旧完整响应不写回缓存。
@@ -761,21 +799,34 @@ export function useTaskViewModel() {
 
   const connectWebSocket = () => {
     ws = new WebSocket(wsBaseUrl)
-    
+
     ws.onopen = () => {
       console.log('WebSocket connected')
+      // 重连成功：退避复位到 3s
+      reconnectAttempts = 0
       // Fetch latest state on reconnection to sync any missed updates
       fetchTasks()
       fetchQueueSnapshot()
+      // 上传配置对账（P2-C）：后端运行期改 max_upload_mb 后预检不陈旧
+      fetchUploadConfig()
       // Also refresh the selected task details if one is selected
       const currentTask = selectedTask.value
       if (currentTask) {
         selectTask(currentTask)
       }
     }
-    
+
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
+      // 畸形帧（非 JSON）防护（P2-A）：console.warn + 跳过该帧，
+      // 不影响后续消息；ping 分支在 parse 之后——防护包裹整个消息处理。
+      // 协议边界：WS 帧为宽松结构，沿用原 any 语义（无隐式类型契约）。
+      let data: any
+      try {
+        data = JSON.parse(event.data)
+      } catch (parseErr) {
+        console.warn('忽略非 JSON 的 WS 消息:', event.data, parseErr)
+        return
+      }
       if (data.type === 'ping') {
         // 双向心跳：服务端每 ~30s 发 ping，回 pong 保持连接活性；
         // 非 OPEN 状态（连接建立中/关闭中）静默忽略。
@@ -787,6 +838,8 @@ export function useTaskViewModel() {
       // 未知 type 消息（旧客户端不认识的新协议扩展）走默认分支忽略，不崩溃。
       if (data.type === 'task_update') {
         const updatedTask = data.task
+        // 删除墓碑（P2-D）：已删任务的在途广播不得复活（合并/unshift 均忽略）
+        if (isTaskDeleted(updatedTask.id)) return
         const index = tasks.value.findIndex(t => t.id === updatedTask.id)
         if (index !== -1) {
           tasks.value[index] = { ...tasks.value[index], ...updatedTask }
@@ -850,19 +903,24 @@ export function useTaskViewModel() {
     }
 
     ws.onclose = () => {
-      console.log('WebSocket disconnected, retrying in 3s...')
-      setTimeout(connectWebSocket, 3000)
+      console.log('WebSocket disconnected, retrying...')
+      // 重连统一由 onclose 排定（指数退避）；卸载后不再重连
+      scheduleReconnect()
     }
 
     ws.onerror = (err) => {
+      // 不主动 close（P2-A）：浏览器在 error 后必发 close 事件，由 onclose
+      // 统一排定重连；onerror 里 close 会再触发 onclose → 双调度。
       console.error('WebSocket error:', err)
-      ws?.close()
+      // 兜底重连（S1）：部分环境只发 error 不发 close（重连永久停滞风险）——
+      // 排定 ~5s 兜底定时器；onclose 已先行排定重连时作废（槽位互斥）。
+      scheduleReconnectErrorFallback()
     }
   }
 
   const fetchLlmProviders = async () => {
     try {
-      const response = await axios.get(`${apiBaseUrl}/llm/providers`)
+      const response = await apiClient.get('/llm/providers')
       llmProviders.value = response.data
     } catch (err) {
       console.error('Failed to fetch LLM providers:', err)
@@ -872,7 +930,7 @@ export function useTaskViewModel() {
 
   const fetchLlmSettings = async () => {
     try {
-      const response = await axios.get(`${apiBaseUrl}/llm/settings`)
+      const response = await apiClient.get('/llm/settings')
       llmSettings.value = response.data
     } catch (err) {
       console.error('Failed to fetch LLM settings:', err)
@@ -883,12 +941,12 @@ export function useTaskViewModel() {
   const updateLlmSettings = async (payload: UpdateLLMSettingsRequest) => {
     isUpdatingLlmSettings.value = true
     try {
-      const response = await axios.put(`${apiBaseUrl}/llm/settings`, payload)
+      const response = await apiClient.put('/llm/settings', payload)
       llmSettings.value = response.data
       return response.data as LLMSettings
     } catch (err) {
       console.error('Failed to update LLM settings:', err)
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         error.value = err.response.data?.detail || '更新 LLM 配置失败'
       } else {
         error.value = '更新 LLM 配置失败'
@@ -901,7 +959,7 @@ export function useTaskViewModel() {
 
   const fetchTranscriptionSettings = async () => {
     try {
-      const response = await axios.get(`${apiBaseUrl}/transcription/settings`)
+      const response = await apiClient.get('/transcription/settings')
       transcriptionSettings.value = response.data
     } catch (err) {
       console.error('Failed to fetch transcription settings:', err)
@@ -913,12 +971,12 @@ export function useTaskViewModel() {
     isUpdatingTranscriptionSettings.value = true
     error.value = null
     try {
-      const response = await axios.put(`${apiBaseUrl}/transcription/settings`, payload)
+      const response = await apiClient.put('/transcription/settings', payload)
       transcriptionSettings.value = response.data
       return response.data as TranscriptionSettings
     } catch (err) {
       console.error('Failed to update transcription settings:', err)
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         error.value = err.response.data?.detail || '更新转录配置失败'
       } else {
         error.value = '更新转录配置失败'
@@ -933,14 +991,14 @@ export function useTaskViewModel() {
     isValidatingModelPath.value = true
     modelPathValidationResult.value = null
     try {
-      const response = await axios.post(`${apiBaseUrl}/transcription/settings/validate-model-path`, request)
+      const response = await apiClient.post('/transcription/settings/validate-model-path', request)
       modelPathValidationResult.value = response.data
       return response.data as ModelPathValidationResult
     } catch (err) {
       console.error('Failed to validate model path:', err)
       const result: ModelPathValidationResult = {
         valid: false,
-        message: axios.isAxiosError(err) && err.response?.data?.detail
+        message: isAxiosError(err) && err.response?.data?.detail
           ? String(err.response.data.detail)
           : '验证请求失败',
         resolved_path: request.path,
@@ -958,7 +1016,7 @@ export function useTaskViewModel() {
   const scanVibeVoiceServices = async (): Promise<VibeVoiceServiceScanResult[]> => {
     isScanningVibeVoice.value = true
     try {
-      const response = await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-scan`)
+      const response = await apiClient.post('/transcription/settings/vibevoice-scan')
       return response.data as VibeVoiceServiceScanResult[]
     } catch (err) {
       console.error('Failed to scan VibeVoice services:', err)
@@ -971,7 +1029,7 @@ export function useTaskViewModel() {
   const startVibeVoiceService = async (modelPath: string, port: number, dtype: string): Promise<void> => {
     isStartingVibeVoice.value = true
     try {
-      await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-service/start`, {
+      await apiClient.post('/transcription/settings/vibevoice-service/start', {
         model_path: modelPath,
         port,
         dtype,
@@ -984,25 +1042,25 @@ export function useTaskViewModel() {
   const stopVibeVoiceService = async (): Promise<void> => {
     isStoppingVibeVoice.value = true
     try {
-      await axios.post(`${apiBaseUrl}/transcription/settings/vibevoice-service/stop`)
+      await apiClient.post('/transcription/settings/vibevoice-service/stop')
     } finally {
       isStoppingVibeVoice.value = false
     }
   }
 
   const fetchVibeVoiceServiceStatus = async (): Promise<VibeVoiceServiceStatus> => {
-    const response = await axios.get(`${apiBaseUrl}/transcription/settings/vibevoice-service/status`)
+    const response = await apiClient.get('/transcription/settings/vibevoice-service/status')
     vibevoiceServiceStatus.value = response.data
     return response.data as VibeVoiceServiceStatus
   }
 
   const testLlm = async () => {
     try {
-      const response = await axios.post(`${apiBaseUrl}/llm/test`)
+      const response = await apiClient.post('/llm/test')
       return response.data
     } catch (err) {
       console.error('Failed to test LLM:', err)
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         error.value = err.response.data?.detail || '测试 LLM 失败'
       } else {
         error.value = '测试 LLM 失败'
@@ -1013,7 +1071,7 @@ export function useTaskViewModel() {
 
   const fetchSummarizationSettings = async () => {
     try {
-      const response = await axios.get(`${apiBaseUrl}/summarization/settings`)
+      const response = await apiClient.get('/summarization/settings')
       summarizationSettings.value = response.data
     } catch (err) {
       console.error('Failed to fetch summarization settings:', err)
@@ -1024,12 +1082,12 @@ export function useTaskViewModel() {
   const updateSummarizationSettings = async (payload: UpdateSummarizationSettingsRequest) => {
     isUpdatingSummarizationSettings.value = true
     try {
-      const response = await axios.put(`${apiBaseUrl}/summarization/settings`, payload)
+      const response = await apiClient.put('/summarization/settings', payload)
       summarizationSettings.value = response.data
       return response.data as SummarizationSettings
     } catch (err) {
       console.error('Failed to update summarization settings:', err)
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         error.value = err.response.data?.detail || '更新总结配置失败'
       } else {
         error.value = '更新总结配置失败'
@@ -1043,7 +1101,7 @@ export function useTaskViewModel() {
   const readBilibiliCookieFromBrowser = async (): Promise<BilibiliCookieFromBrowserResult> => {
     isReadingBilibiliCookieFromBrowser.value = true
     try {
-      const response = await axios.post(`${apiBaseUrl}/transcription/settings/bilibili-cookie/from-browser`)
+      const response = await apiClient.post('/transcription/settings/bilibili-cookie/from-browser')
       const result = response.data as BilibiliCookieFromBrowserResult
       if (result.success) {
         // Refresh transcription settings to reflect the new cookie
@@ -1052,7 +1110,7 @@ export function useTaskViewModel() {
       return result
     } catch (err) {
       console.error('Failed to read Bilibili cookie from browser:', err)
-      if (axios.isAxiosError(err) && err.response) {
+      if (isAxiosError(err) && err.response) {
         error.value = err.response.data?.detail || '从浏览器读取 Cookie 失败'
       } else {
         error.value = '从浏览器读取 Cookie 失败'
@@ -1065,7 +1123,7 @@ export function useTaskViewModel() {
 
   const checkBilibiliVideoInfo = async (url: string): Promise<BilibiliVideoInfo | null> => {
     try {
-      const response = await axios.post(`${apiBaseUrl}/bilibili/video-info`, { url })
+      const response = await apiClient.post('/bilibili/video-info', { url })
       return response.data as BilibiliVideoInfo
     } catch (err) {
       console.error('Failed to check Bilibili video info:', err)
@@ -1075,7 +1133,7 @@ export function useTaskViewModel() {
 
   const checkLocalPath = async (filePath: string): Promise<LocalPathCheckResult | null> => {
     try {
-      const response = await axios.get(`${apiBaseUrl}/local-path/check`, {
+      const response = await apiClient.get('/local-path/check', {
         params: { file_path: filePath }
       })
       return response.data as LocalPathCheckResult
@@ -1087,7 +1145,7 @@ export function useTaskViewModel() {
 
   const scanLocalFolder = async (folderPath: string): Promise<LocalFolderScanResult | null> => {
     try {
-      const response = await axios.get(`${apiBaseUrl}/local-folder/scan`, {
+      const response = await apiClient.get('/local-folder/scan', {
         params: { folder_path: folderPath }
       })
       return response.data as LocalFolderScanResult
@@ -1114,7 +1172,7 @@ export function useTaskViewModel() {
       } else {
         // 分别模式：逐个提交
         for (const path of paths) {
-          await axios.post(`${apiBaseUrl}/upload/local-path`, {
+          await apiClient.post('/upload/local-path', {
             file_path: path,
             summary_mode: summaryMode.value,
             ...(summaryMode.value === 'none'
@@ -1163,7 +1221,7 @@ export function useTaskViewModel() {
           ? { generate_topic: generateTopic.value }
           : {}),
       }
-      await axios.post(`${apiBaseUrl}/tasks/`, payload, {
+      await apiClient.post('/tasks/', payload, {
         signal: abortSignal || controller.signal
       })
     } catch (err) {
@@ -1202,6 +1260,18 @@ export function useTaskViewModel() {
   })
 
   onUnmounted(() => {
+    // 先置位卸载标志：ws.close() 触发的 onclose 不得再排定重连（P2-A）
+    wsDisposed = true
+    // 主动清理排定的重连定时器（S3）：即使回调已有 wsDisposed 双检查
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    // 清理墓碑过期清理定时器（S3）
+    for (const timer of tombstoneCleanupTimers.values()) {
+      clearTimeout(timer)
+    }
+    tombstoneCleanupTimers.clear()
     if (ws) {
       ws.close()
     }
@@ -1347,11 +1417,18 @@ export function useTaskViewModel() {
         return false
       }
       try {
-        await axios.delete(`${apiBaseUrl}/tasks/${taskId}`)
+        await apiClient.delete(`/tasks/${taskId}`)
         tasks.value = tasks.value.filter(t => t.id !== taskId)
         if (selectedTask.value?.id === taskId) {
           selectedTask.value = null
         }
+        // 删除墓碑（P2-D）：记录 id 防止在途广播复活；60s 后过期清理（S3：
+        // 定时器 id 留存，onUnmounted 统一清理）
+        deletedTaskIds.set(taskId, Date.now() + TOMBSTONE_TTL_MS)
+        tombstoneCleanupTimers.set(taskId, setTimeout(() => {
+          tombstoneCleanupTimers.delete(taskId)
+          deletedTaskIds.delete(taskId)
+        }, TOMBSTONE_TTL_MS))
         return true
       } catch (err) {
         console.error('Failed to delete task:', err)
@@ -1364,13 +1441,13 @@ export function useTaskViewModel() {
         // summary_mode：优先显式模式（如补总结入口指定 standard/agent）；
         // 缺省沿用 UI 三态（none/standard/agent）。'none' 时后端会按
         // auto 判定兜底生成总结（见 llm_worker._resolve_effective_mode）。
-        await axios.post(`${apiBaseUrl}/tasks/${taskId}/re-summarize`, {
+        await apiClient.post(`/tasks/${taskId}/re-summarize`, {
           summary_mode: mode ?? summaryMode.value
         })
         // No need to do more, WS will update the status
       } catch (err) {
         console.error('Failed to re-summarize task:', err)
-        error.value = axios.isAxiosError(err) ? err.response?.data?.detail || "重新总结失败" : "重新总结失败"
+        error.value = isAxiosError(err) ? err.response?.data?.detail || "重新总结失败" : "重新总结失败"
       }
     },
     reTranscribe: async (taskId: string) => {
@@ -1392,13 +1469,13 @@ export function useTaskViewModel() {
         if (!confirm('重新转录将清除现有 AI 总结，确定继续？')) return
       }
       try {
-        await axios.post(`${apiBaseUrl}/tasks/${taskId}/re-transcribe`, {
+        await apiClient.post(`/tasks/${taskId}/re-transcribe`, {
           summary_mode: summaryMode.value
         })
         // No need to do more, WS will update the status
       } catch (err) {
         console.error('Failed to re-transcribe task:', err)
-        if (axios.isAxiosError(err) && err.response) {
+        if (isAxiosError(err) && err.response) {
           error.value = err.response.data?.detail || '重新转录失败'
         } else {
           error.value = '重新转录失败'
@@ -1407,11 +1484,11 @@ export function useTaskViewModel() {
     },
     reDownloadAudio: async (taskId: string) => {
       try {
-        await axios.post(`${apiBaseUrl}/tasks/${taskId}/re-download`)
+        await apiClient.post(`/tasks/${taskId}/re-download`)
         // No need to do more, WS will update the status
       } catch (err) {
         console.error('Failed to re-download task audio:', err)
-        if (axios.isAxiosError(err) && err.response) {
+        if (isAxiosError(err) && err.response) {
           error.value = err.response.data?.detail || '重新下载音频失败'
         } else {
           error.value = '重新下载音频失败'
@@ -1420,7 +1497,7 @@ export function useTaskViewModel() {
     },
     updateTaskTopic: async (taskId: string, newTopic: string) => {
       try {
-        await axios.patch(`${apiBaseUrl}/tasks/${taskId}`, { topic: newTopic })
+        await apiClient.patch(`/tasks/${taskId}`, { topic: newTopic })
         // WS will update the task list and selected task
       } catch (err) {
         console.error('Failed to update task topic:', err)
