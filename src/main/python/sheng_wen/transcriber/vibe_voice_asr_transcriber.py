@@ -20,6 +20,7 @@ from .transcriber import (
     TranscriptionError,
     TranscriptionResult,
 )
+from .vibevoice_log_noise import install_vibevoice_log_noise_filters
 
 
 class VibeVoiceAsrTranscriber(Transcriber):
@@ -85,6 +86,10 @@ class VibeVoiceAsrTranscriber(Transcriber):
         if not str(self.device).startswith("cuda"):
             raise ModelLoadError("VibeVoice-ASR requires CUDA and bfloat16 inference.")
 
+        # 过滤 vibevoice/transformers 加载期的三条已知装饰性警告（幂等），
+        # 避免每次加载刷屏、掩盖真实告警。见 vibevoice_log_noise.py。
+        install_vibevoice_log_noise_filters()
+
         start_time = time.time()
         try:
             torch_dtype = getattr(torch, self.dtype, None)
@@ -98,6 +103,15 @@ class VibeVoiceAsrTranscriber(Transcriber):
             self.processor = VibeVoiceASRProcessor.from_pretrained(
                 self.model_path,
                 language_model_pretrained_name=self.language_model_pretrained_name,
+            )
+            # checkpoint 缺 preprocessor_config.json 时库回退默认值——显式记录
+            # 生效的预处理参数，替代被过滤的 "Using default configuration" 行。
+            logger.info(
+                "[VibeVoiceAsrTranscriber] 生效的预处理参数: "
+                f"target_sample_rate={getattr(self.processor, 'target_sample_rate', None)}, "
+                f"speech_tok_compress_ratio="
+                f"{getattr(self.processor, 'speech_tok_compress_ratio', None)}, "
+                f"normalize_audio={getattr(self.processor, 'normalize_audio', None)}"
             )
             self.model = VibeVoiceASRForConditionalGeneration.from_pretrained(
                 self.model_path,
@@ -165,6 +179,21 @@ class VibeVoiceAsrTranscriber(Transcriber):
         if hasattr(output_ids, "sequences"):
             return output_ids.sequences
         return output_ids
+
+    @staticmethod
+    def _speech_audio_duration(
+        speech_tensors: Any, target_sample_rate: float | None
+    ) -> float:
+        """按 processor 实际采样率计算语音时长（秒），缺省回退 24000。
+
+        历史实现硬编码 24000Hz；与 checkpoint 缺 preprocessor_config.json 时
+        的库默认值一致，但若未来 checkpoint 自带不同采样率配置会静默算错
+        audio_duration → generation budget 失准，故改用 processor 的真实值。
+        """
+        rate = float(target_sample_rate or 24000.0)
+        if speech_tensors is not None and hasattr(speech_tensors, "shape"):
+            return float(speech_tensors.shape[-1]) / rate
+        return 0.0
 
     @staticmethod
     def _needs_chunking(audio_duration: float, threshold: float = 600.0) -> bool:
@@ -278,10 +307,9 @@ class VibeVoiceAsrTranscriber(Transcriber):
 
             input_length = inputs["input_ids"].shape[1]
             speech_tensors = inputs.get("speech_tensors")
-            audio_duration = (
-                float(speech_tensors.shape[-1]) / 24000.0
-                if speech_tensors is not None and hasattr(speech_tensors, "shape")
-                else 0.0
+            audio_duration = self._speech_audio_duration(
+                speech_tensors,
+                getattr(self.processor, "target_sample_rate", 24000.0),
             )
             effective_max_new_tokens = self._generation_budget(audio_duration)
             logger.info(
