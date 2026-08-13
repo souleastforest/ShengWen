@@ -31,7 +31,9 @@ class FileUploadWorker(Worker):
     ):
         super().__init__(name)
         self.next_worker = next_worker
-        self.output_dir = "temp"
+        from ..config.settings import config
+
+        self.output_dir = config.storage.resolved_base_dir
         os.makedirs(self.output_dir, exist_ok=True)
         # 上传大小上限跟随配置（storage.max_upload_mb，默认 2GB）。
         # 端点 /upload 已按同一配置拦截；此处兜底直连 payload 或配置漂移。
@@ -83,7 +85,9 @@ class FileUploadWorker(Worker):
             # 检查文件扩展名
             file_ext = os.path.splitext(filename)[1].lower()
             if file_ext not in self.SUPPORTED_EXTENSIONS:
-                error_msg = f"不支持的文件格式: {file_ext}。支持的格式: {', '.join(sorted(self.SUPPORTED_EXTENSIONS))}"
+                from ..utils.media import unsupported_format_message
+
+                error_msg = unsupported_format_message(file_ext)
                 logger.error(f"[{self.name}] {error_msg}")
                 if task_id:
                     await self._mark_task_failed(task_id, error_msg)

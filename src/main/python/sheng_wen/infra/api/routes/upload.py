@@ -13,7 +13,10 @@ from src.main.python.sheng_wen.db import TaskStatus, db
 from src.main.python.sheng_wen.infra.api.routes import deps
 from src.main.python.sheng_wen.infra.api.routes.schemas import LocalPathTaskCreate, Task
 from src.main.python.sheng_wen.infra.api.routes.websocket import notify_task_update
-from src.main.python.sheng_wen.utils.media import SUPPORTED_MEDIA_EXTENSIONS
+from src.main.python.sheng_wen.utils.media import (
+    SUPPORTED_MEDIA_EXTENSIONS,
+    unsupported_format_message,
+)
 
 
 router = APIRouter(prefix="")
@@ -45,17 +48,23 @@ async def upload_file(
     if file_ext not in SUPPORTED_MEDIA_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件格式: {file_ext}。支持的格式: {', '.join(sorted(SUPPORTED_MEDIA_EXTENSIONS))}",
+            detail=unsupported_format_message(file_ext),
         )
 
     max_upload_bytes = int(config.storage.max_upload_mb * 1024 * 1024)
+    # L4: 预检容差与上限联动——multipart 表单开销实际仅几 KB~几 MB，
+    # 上限极小时容差收缩（min(8MB, max(1MB, 上限/10))），避免容差反噬预检
+    tolerance_bytes = min(
+        _UPLOAD_PREFLIGHT_TOLERANCE_BYTES,
+        max(1024 * 1024, max_upload_bytes // 10),
+    )
 
     # 预检：Content-Length 明确超限（含表单开销容忍）时直接拒绝，不开始写盘
     content_length = request.headers.get("content-length")
     if (
         content_length
         and content_length.isdigit()
-        and int(content_length) > max_upload_bytes + _UPLOAD_PREFLIGHT_TOLERANCE_BYTES
+        and int(content_length) > max_upload_bytes + tolerance_bytes
     ):
         raise HTTPException(
             status_code=413,
@@ -63,7 +72,7 @@ async def upload_file(
         )
 
     task_id = str(uuid.uuid4())
-    temp_dir = "temp"
+    temp_dir = config.storage.resolved_base_dir
     os.makedirs(temp_dir, exist_ok=True)
     temp_file_path = os.path.join(temp_dir, f"{task_id}_temp{file_ext}")
 
@@ -84,6 +93,19 @@ async def upload_file(
             raise HTTPException(
                 status_code=413,
                 detail=f"文件过大 ({total_written / 1024 / 1024:.1f}MB)，最大支持 {max_upload_bytes / 1024 / 1024:.0f}MB",
+            )
+
+        # M3: 断连核对——优雅断连（代理/取消）时 read 正常结束但字节数不足，
+        # 与 Content-Length 交叉核对（差 = 表单开销 + 文件缺口，容忍内视为正常）
+        if (
+            content_length
+            and content_length.isdigit()
+            and int(content_length) - total_written > tolerance_bytes
+        ):
+            os.remove(temp_file_path)
+            raise HTTPException(
+                status_code=400,
+                detail=f"上传中断：实际接收 {total_written} 字节，与声明大小不符，请重新上传",
             )
 
         resolved_summary_mode = deps._normalize_summary_mode(summary_mode)
@@ -213,13 +235,23 @@ async def upload_local_path(payload: LocalPathTaskCreate, request: Request):
     if file_ext not in SUPPORTED_MEDIA_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件格式: {file_ext}。支持的格式: {', '.join(sorted(SUPPORTED_MEDIA_EXTENSIONS))}",
+            detail=unsupported_format_message(file_ext),
+        )
+
+    # M1: 与 multipart 通道同源的上限检查（loopback 直读也不豁免），
+    # 避免超长音频/视频无上限进入转录管线
+    file_size = os.path.getsize(local_path)
+    max_upload_bytes = int(config.storage.max_upload_mb * 1024 * 1024)
+    if file_size > max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大 ({file_size / 1024 / 1024:.1f}MB)，最大支持 {max_upload_bytes / 1024 / 1024:.0f}MB",
         )
 
     task_id = str(uuid.uuid4())
     title = os.path.splitext(os.path.basename(local_path))[0] or "Local File"
     resolved_summary_mode = deps._normalize_summary_mode(payload.summary_mode)
-    os.makedirs("temp", exist_ok=True)
+    os.makedirs(config.storage.resolved_base_dir, exist_ok=True)
     task_data = {
         "id": task_id,
         "video_url": f"file://{local_path}",

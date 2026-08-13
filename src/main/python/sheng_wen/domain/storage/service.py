@@ -51,7 +51,9 @@ class StorageReclaimService:
         notifier: Callable[[str, dict], Any] | None = None,
     ) -> None:
         self._repo = repository or TempFileRepository()
-        self._base_dir = base_dir if base_dir is not None else config.storage.base_dir
+        self._base_dir = (
+            base_dir if base_dir is not None else config.storage.resolved_base_dir
+        )
         self._storage_config = storage_config
         self._db = db
         self._snapshots_provider = snapshots_provider

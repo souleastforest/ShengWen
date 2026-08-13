@@ -412,6 +412,8 @@ export function useTaskViewModel() {
         return
       }
       console.error('Failed to upload file:', err)
+      // 上传失败（含后端 413）清空文件选择，避免残留文件可重复提交
+      selectedFile.value = null
       error.value = getAxiosErrorMessage(err, '上传失败')
     } finally {
       if (submitAbortController === controller) {

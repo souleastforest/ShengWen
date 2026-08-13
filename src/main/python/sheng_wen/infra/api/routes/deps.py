@@ -174,11 +174,13 @@ def _resolve_local_media_file(task_id: str, task: dict) -> str | None:
             return candidate
 
     for ext in SUPPORTED_MEDIA_EXTENSIONS:
-        candidate = os.path.join("temp", f"{task_id}{ext}")
+        candidate = os.path.join(config.storage.resolved_base_dir, f"{task_id}{ext}")
         if os.path.exists(candidate):
             return candidate
 
-    for path in glob.glob(os.path.join("temp", f"{task_id}.*")):
+    for path in glob.glob(
+        os.path.join(config.storage.resolved_base_dir, f"{task_id}.*")
+    ):
         ext = os.path.splitext(path)[1].lower()
         if ext in SUPPORTED_MEDIA_EXTENSIONS and os.path.exists(path):
             return path

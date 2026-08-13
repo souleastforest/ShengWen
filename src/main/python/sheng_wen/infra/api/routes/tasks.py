@@ -484,8 +484,11 @@ async def re_summarize_task(
         )
         return _with_part_stats(db.get_task(task_id))
 
-    temp_file = os.path.join("temp", f"{task_id}_re.txt")
-    os.makedirs("temp", exist_ok=True)
+    from src.main.python.sheng_wen.config.settings import config
+
+    storage_dir = config.storage.resolved_base_dir
+    temp_file = os.path.join(storage_dir, f"{task_id}_re.txt")
+    os.makedirs(storage_dir, exist_ok=True)
     with open(temp_file, "w", encoding="utf-8") as f:
         f.write(task["transcript"])
 
@@ -733,6 +736,30 @@ async def delete_task(task_id: str, request: Request):
         logger.info(
             f"[delete_task] 任务 {task_id} 取消结果: " + ", ".join(cancellation_reports)
         )
+
+    # H1: 上传任务（文件位于存储目录内）删除时同步清理其私有文件。
+    # 否则 2GB 级文件滞留最长 2h（retention_failed_sec），占用 10G cap
+    # 并可能先于孤儿清扫触发其他 COMPLETED 任务媒体的误回收。
+    # local-path 直读任务的文件是用户原始文件（不在存储目录内），不清理。
+    try:
+        from src.main.python.sheng_wen.config.settings import config
+
+        storage_dir = config.storage.resolved_base_dir
+        url = str(task.get("video_url") or "")
+        if url.startswith("file://"):
+            url_path = os.path.abspath(url.removeprefix("file://"))
+            if url_path.startswith(os.path.abspath(storage_dir) + os.sep):
+                import glob
+
+                for pattern in (f"{task_id}.*", f"{task_id}_*"):
+                    for path in glob.glob(os.path.join(storage_dir, pattern)):
+                        try:
+                            os.remove(path)
+                            logger.info(f"[delete_task] 清理上传任务文件: {path}")
+                        except OSError as e:
+                            logger.warning(f"[delete_task] 清理文件失败: {path}: {e}")
+    except Exception as e:
+        logger.warning(f"[delete_task] 清理任务 {task_id} 存储文件失败: {e}")
 
     delete_task_parts(task_id)
     db.delete_task(task_id)

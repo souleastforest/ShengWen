@@ -197,6 +197,15 @@ class StorageConfig:
     base_dir: str = "temp"
     max_upload_mb: float = 2048  # 单文件上传上限（2G，流式写盘边写边限）
 
+    @property
+    def resolved_base_dir(self) -> str:
+        """解析为绝对路径（相对路径基于项目根，消除 cwd 漂移）。
+
+        所有写盘方（upload/worker/reclaimer）必须统一使用该属性而非硬编码 "temp"，
+        否则改配置后文件脱离回收器扫描范围（M2）。
+        """
+        return _resolve_project_path(self.base_dir)
+
 
 @dataclass
 class ObservabilityConfig:

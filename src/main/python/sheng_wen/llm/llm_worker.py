@@ -100,6 +100,7 @@ class LLMWorker(Worker):
     async def _process_multipart_resummarize(self, payload: dict[str, Any]) -> None:
         from ..task_parts import get_task_parts, update_task_part
 
+        storage_dir = config.storage.resolved_base_dir
         task_id = str(payload.get("task_id") or "")
         parts = get_task_parts(task_id)
         for part in parts:
@@ -122,11 +123,13 @@ class LLMWorker(Worker):
                     "summary": None,
                 },
             )
-            temp_file = os.path.join("temp", "{}_p{}_re.txt".format(task_id, index + 1))
-            output_file = os.path.join(
-                "temp", "{}_p{}_re_summary.md".format(task_id, index + 1)
+            temp_file = os.path.join(
+                storage_dir, "{}_p{}_re.txt".format(task_id, index + 1)
             )
-            os.makedirs("temp", exist_ok=True)
+            output_file = os.path.join(
+                storage_dir, "{}_p{}_re_summary.md".format(task_id, index + 1)
+            )
+            os.makedirs(storage_dir, exist_ok=True)
             with open(temp_file, "w", encoding="utf-8") as file:
                 file.write(transcript)
             try:
@@ -157,9 +160,9 @@ class LLMWorker(Worker):
         if not successful:
             await self._mark_failed(task_id, "所有分P均无法重新生成总结")
             return
-        overview_file = os.path.join("temp", "{}_overview_re.txt".format(task_id))
+        overview_file = os.path.join(storage_dir, "{}_overview_re.txt".format(task_id))
         overview_output = os.path.join(
-            "temp", "{}_overview_re_summary.md".format(task_id)
+            storage_dir, "{}_overview_re_summary.md".format(task_id)
         )
         with open(overview_file, "w", encoding="utf-8") as file:
             file.write("请根据以下各分P总结生成整套视频的总体概览。\n\n")

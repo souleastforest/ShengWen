@@ -37,7 +37,9 @@ class VideoDownloaderWorker(Worker):
         self.next_worker = next_worker
         self.summary_worker = summary_worker
         self.transcription_settings_manager = transcription_settings_manager
-        self.output_dir = "temp"
+        from ..config.settings import config
+
+        self.output_dir = config.storage.resolved_base_dir
         os.makedirs(self.output_dir, exist_ok=True)
 
     @staticmethod
@@ -569,6 +571,7 @@ class VideoDownloaderWorker(Worker):
                 and not payload.get("multipart_part")
             ):
                 from ..llm.llm_worker import generate_topic_for_task
+
                 self._submit_coro(
                     generate_topic_for_task(self.summary_worker, task_id, transcript)
                 )
@@ -936,6 +939,7 @@ class VideoDownloaderWorker(Worker):
             # self._loop 守卫：未启动的事件循环（如同步单测）下不创建未 await 的协程。
             if self._loop and bool(payload.get("generate_topic", True)):
                 from ..llm.llm_worker import generate_topic_for_task
+
                 self._submit_coro(
                     generate_topic_for_task(
                         self.summary_worker,
@@ -1203,9 +1207,9 @@ class VideoDownloaderWorker(Worker):
 
                 if payload.get("bilibili_batch_child"):
                     intermediate_file_path = self.next_worker.process_task(next_payload)
-                    summary_mode = str(
-                        next_payload.get("summary_mode") or ""
-                    ).strip().lower()
+                    summary_mode = (
+                        str(next_payload.get("summary_mode") or "").strip().lower()
+                    )
                     if summary_mode == "none":
                         # 仅转录模式：TranscriberWorker 已将分P置为 COMPLETED，跳过 AI 总结
                         logger.info(

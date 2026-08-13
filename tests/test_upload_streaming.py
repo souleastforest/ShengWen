@@ -226,6 +226,60 @@ async def test_upload_unsupported_ext_rejects_400():
 
 
 @pytest.mark.asyncio
+async def test_upload_local_path_oversize_rejects_413(tmp_path, monkeypatch):
+    """M1: local-path 通道与 multipart 同源上限——超限 413，任务不创建。"""
+    app = _make_app()
+    media = tmp_path / "huge.mp4"
+    media.write_bytes(os.urandom(64 * 1024))
+
+    monkeypatch.setattr(
+        upload_module,
+        "config",
+        type("FakeConfig", (), {"storage": StorageConfig(max_upload_mb=0.002)})(),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/upload/local-path",
+            json={"file_path": str(media), "summary_mode": "none"},
+        )
+
+    assert resp.status_code == 413, resp.text
+    assert "最大支持" in resp.json()["detail"]
+    assert db.list_tasks() == []
+
+
+@pytest.mark.asyncio
+async def test_upload_interrupted_detects_content_length_mismatch(
+    track_created, monkeypatch
+):
+    """M3: 断连核对——接收字节与 Content-Length 差异超容忍 → 400 + 文件清理 + 任务未创建。
+
+    模拟"优雅断连"（read 正常结束但字节不足）：将容忍压为 0，multipart 表单开销
+    （数百 B）即构成超阈值缺口。
+    """
+    app = _make_app()
+    monkeypatch.setattr(upload_module, "_UPLOAD_PREFLIGHT_TOLERANCE_BYTES", 0)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        files = {"file": ("part.mp4", os.urandom(64 * 1024), "video/mp4")}
+        resp = await client.post("/upload", files=files)
+
+    assert resp.status_code == 400, resp.text
+    assert "上传中断" in resp.json()["detail"]
+    assert db.list_tasks() == []
+    # 无残留临时文件（快照对比）
+    before = set(os.listdir(TEMP_DIR)) if os.path.isdir(TEMP_DIR) else set()
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        files = {"file": ("part.mp4", os.urandom(64 * 1024), "video/mp4")}
+        await client.post("/upload", files=files)
+    after = set(os.listdir(TEMP_DIR)) if os.path.isdir(TEMP_DIR) else set()
+    assert not (after - before), f"中断清理未生效，新增残留: {after - before}"
+
+
+@pytest.mark.asyncio
 async def test_upload_local_path_persists_source_name(tmp_path):
     """/upload/local-path：source_name 取文件名。"""
     app = _make_app()
