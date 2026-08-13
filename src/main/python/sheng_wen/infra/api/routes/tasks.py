@@ -496,7 +496,7 @@ async def re_summarize_task(
         {
             "task_id": task_id,
             "intermediate_file_path": temp_file,
-            "output_file": os.path.join("temp", f"{task_id}_re_summary.md"),
+            "output_file": os.path.join(storage_dir, f"{task_id}_re_summary.md"),
             "summary_mode": resolved_summary_mode,
         }
     )
@@ -625,7 +625,6 @@ async def re_transcribe_task(
             build_transcriber_payload(
                 task_id=task_id,
                 media_path=local_media_file,
-                output_dir="temp",
                 summary_mode=resolved_summary_mode,
                 generate_topic=resolved_generate_topic,
             )
@@ -740,7 +739,10 @@ async def delete_task(task_id: str, request: Request):
     # H1: 上传任务（文件位于存储目录内）删除时同步清理其私有文件。
     # 否则 2GB 级文件滞留最长 2h（retention_failed_sec），占用 10G cap
     # 并可能先于孤儿清扫触发其他 COMPLETED 任务媒体的误回收。
-    # local-path 直读任务的文件是用户原始文件（不在存储目录内），不清理。
+    # 边界说明：local-path 直读任务的文件通常在存储目录外（用户原始文件，不清理）；
+    # 若用户经 local-path 选择了恰好位于存储目录内的文件，删除时同样会清理
+    # （该文件本就属托管目录，reclaimer 亦会回收）。残余竞态：清理与
+    # FileUploadWorker 的 move 并发时可能残留孤儿文件，由 reclaimer 兜底。
     try:
         from src.main.python.sheng_wen.config.settings import config
 

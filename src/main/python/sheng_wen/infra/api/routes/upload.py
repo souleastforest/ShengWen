@@ -24,6 +24,9 @@ router = APIRouter(prefix="")
 # multipart 请求体的 boundary 等表单开销容忍（Content-Length 含表单开销，比文件本身略大；
 # 实际开销仅几 KB~几 MB，8MB 已覆盖且避免超限请求先写满再拒绝）
 _UPLOAD_PREFLIGHT_TOLERANCE_BYTES = 8 * 1024 * 1024
+# 断连核对容差（I-3）：与预检容差解耦——表单开销实际仅几百 B~几 KB，
+# 固定 1MB 即可容纳，同时能拦截 <8MB 的真实断连截断
+_UPLOAD_CONTENT_LENGTH_MISMATCH_TOLERANCE_BYTES = 1 * 1024 * 1024
 _UPLOAD_CHUNK_BYTES = 1024 * 1024  # 流式写盘分块大小（1MB）
 
 
@@ -96,13 +99,20 @@ async def upload_file(
             )
 
         # M3: 断连核对——优雅断连（代理/取消）时 read 正常结束但字节数不足，
-        # 与 Content-Length 交叉核对（差 = 表单开销 + 文件缺口，容忍内视为正常）
+        # 与 Content-Length 交叉核对（差 = 表单开销 + 文件缺口，独立小容差，
+        # 与预检容差解耦以免 <8MB 的截断静默通过）
         if (
             content_length
             and content_length.isdigit()
-            and int(content_length) - total_written > tolerance_bytes
+            and int(content_length) - total_written
+            > _UPLOAD_CONTENT_LENGTH_MISMATCH_TOLERANCE_BYTES
         ):
-            os.remove(temp_file_path)
+            try:
+                os.remove(temp_file_path)
+            except OSError as e:
+                from loguru import logger
+
+                logger.warning(f"[upload] 中断清理失败: {e}")
             raise HTTPException(
                 status_code=400,
                 detail=f"上传中断：实际接收 {total_written} 字节，与声明大小不符，请重新上传",

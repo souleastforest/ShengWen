@@ -256,11 +256,13 @@ async def test_upload_interrupted_detects_content_length_mismatch(
 ):
     """M3: 断连核对——接收字节与 Content-Length 差异超容忍 → 400 + 文件清理 + 任务未创建。
 
-    模拟"优雅断连"（read 正常结束但字节不足）：将容忍压为 0，multipart 表单开销
-    （数百 B）即构成超阈值缺口。
+    模拟"优雅断连"（read 正常结束但字节不足）：将断连核对容差压为 0，
+    multipart 表单开销（数百 B）即构成超阈值缺口。
     """
     app = _make_app()
-    monkeypatch.setattr(upload_module, "_UPLOAD_PREFLIGHT_TOLERANCE_BYTES", 0)
+    monkeypatch.setattr(
+        upload_module, "_UPLOAD_CONTENT_LENGTH_MISMATCH_TOLERANCE_BYTES", 0
+    )
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
