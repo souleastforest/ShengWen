@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { PhPencilSimple, PhCheck, PhX, PhArrowSquareOut, PhCopy } from '@phosphor-icons/vue'
-import type { Task } from '../types'
+import { TaskStatus, type Task } from '../types'
 import { formatDuration, formatTranscriptionDuration, formatConversionRatio, formatDateTime } from '../utils/formatters'
 import { ref, nextTick, computed } from 'vue'
 import { getAudioStatusInfo, isLocalFileUrl } from '../utils/audioStatus'
@@ -48,6 +48,15 @@ const copyVideoUrl = async () => {
 const audioStatus = computed(() =>
   getAudioStatusInfo(props.task.audio_downloaded, props.task.audio_missing_reason),
 )
+
+// 转录分片进度（仅转录阶段且非 multipart 父任务——分P进度由 Sidebar part 分支展示）：
+// done||0 兜底、total>0 才显示、done 按 total 截断（与 Sidebar 状态标签对齐）
+const asrChunkLabel = computed(() => {
+  const total = Number(props.task.asr_chunk_total || 0)
+  if (total <= 0) return null
+  const done = Number(props.task.asr_chunk_done || 0)
+  return `${Math.min(done, total)}/${total}`
+})
 </script>
 
 <template>
@@ -159,10 +168,22 @@ const audioStatus = computed(() =>
             }}
           </strong>
         </span>
+        <!-- 分块进度：总结分块（summary_chunk_*）进度，语义与下方转录分片独立 -->
         <span v-if="task.summary_chunk_total && task.summary_chunk_total > 0" class="flex items-center">
           分块进度
           <strong class="ml-1 text-slate-800 font-semibold">
             {{ task.summary_chunk_done || 0 }}/{{ task.summary_chunk_total }}
+          </strong>
+        </span>
+        <!-- 转录分片：仅转录阶段且非 multipart 父任务（asr_chunk_*）显示；
+             done||0 兜底、total>0 才显示、done 按 total 截断 -->
+        <span
+          v-if="task.status === TaskStatus.TRANSCRIBING && !task.has_parts && asrChunkLabel"
+          class="flex items-center"
+        >
+          转录分片
+          <strong class="ml-1 text-slate-800 font-semibold">
+            {{ asrChunkLabel }}
           </strong>
         </span>
         <span class="flex items-center">
