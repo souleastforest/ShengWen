@@ -736,30 +736,31 @@ async def delete_task(task_id: str, request: Request):
             f"[delete_task] 任务 {task_id} 取消结果: " + ", ".join(cancellation_reports)
         )
 
-    # H1: 上传任务（文件位于存储目录内）删除时同步清理其私有文件。
+    # H1: file:// 任务（上传/local-path）删除时同步清理其存储目录内私有文件。
     # 否则 2GB 级文件滞留最长 2h（retention_failed_sec），占用 10G cap
     # 并可能先于孤儿清扫触发其他 COMPLETED 任务媒体的误回收。
-    # 边界说明：local-path 直读任务的文件通常在存储目录外（用户原始文件，不清理）；
-    # 若用户经 local-path 选择了恰好位于存储目录内的文件，删除时同样会清理
-    # （该文件本就属托管目录，reclaimer 亦会回收）。残余竞态：清理与
-    # FileUploadWorker 的 move 并发时可能残留孤儿文件，由 reclaimer 兜底。
+    # 说明：local-path 直读任务的文件经 FileUploadWorker 处理时会被 move 进
+    # 存储目录（既有行为）——因此统一按 task_id 前缀清理存储目录内文件即可；
+    # 文件尚未 move（如 UPLOADING 阶段删除）时存储目录内无该任务文件，无害。
+    # 安全性：task_id 为 uuid4 且限定 storage 目录 + 前缀，不会触及其他任务文件；
+    # 用户在存储目录外的原始文件不在清理范围。
+    # 残余竞态：清理与 FileUploadWorker 的 move 并发时可能残留孤儿文件，
+    # 由 reclaimer 兜底。
     try:
         from src.main.python.sheng_wen.config.settings import config
 
         storage_dir = config.storage.resolved_base_dir
         url = str(task.get("video_url") or "")
         if url.startswith("file://"):
-            url_path = os.path.abspath(url.removeprefix("file://"))
-            if url_path.startswith(os.path.abspath(storage_dir) + os.sep):
-                import glob
+            import glob
 
-                for pattern in (f"{task_id}.*", f"{task_id}_*"):
-                    for path in glob.glob(os.path.join(storage_dir, pattern)):
-                        try:
-                            os.remove(path)
-                            logger.info(f"[delete_task] 清理上传任务文件: {path}")
-                        except OSError as e:
-                            logger.warning(f"[delete_task] 清理文件失败: {path}: {e}")
+            for pattern in (f"{task_id}.*", f"{task_id}_*"):
+                for path in glob.glob(os.path.join(storage_dir, pattern)):
+                    try:
+                        os.remove(path)
+                        logger.info(f"[delete_task] 清理上传任务文件: {path}")
+                    except OSError as e:
+                        logger.warning(f"[delete_task] 清理文件失败: {path}: {e}")
     except Exception as e:
         logger.warning(f"[delete_task] 清理任务 {task_id} 存储文件失败: {e}")
 
