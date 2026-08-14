@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { PhX, PhVideo, PhSpinner } from '@phosphor-icons/vue'
 import type { BilibiliVideoInfo } from '../types'
+import { formatDuration } from '../utils/formatters'
 
 const props = defineProps<{
   isOpen: boolean
@@ -18,15 +19,9 @@ const selectedIndices = ref<Set<number>>(new Set())
 const processingMode = ref<'merge' | 'separate'>('merge')
 
 // 计算属性
-const formattedDuration = (seconds: number): string => {
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const secs = seconds % 60
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
-  }
-  return `${minutes}:${String(secs).padStart(2, '0')}`
-}
+// B 站时长源为后端 int() 整数秒；floor + 不补小时/分钟位 + 无效 '0:00' 保持旧实现输出。
+const formattedDuration = (seconds: number): string =>
+  formatDuration(seconds, { rounding: 'floor', pad: false, placeholder: '0:00' })
 
 const totalSelectedDuration = computed(() => {
   if (!props.videoInfo?.parts) return 0

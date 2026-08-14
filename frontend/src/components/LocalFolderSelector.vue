@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { PhX, PhFile, PhSpinner, PhFolder } from '@phosphor-icons/vue'
 import type { LocalFolderScanResult } from '../types'
+import { formatFileSize } from '../utils/formatters'
 
 const props = defineProps<{
   isOpen: boolean
@@ -16,14 +17,6 @@ const emit = defineEmits<{
 
 const selectedPaths = ref<Set<string>>(new Set())
 const processingMode = ref<'merge' | 'separate'>('merge')
-
-// 格式化文件大小
-const formatFileSize = (bytes: number): string => {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB'
-  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
-}
 
 // 计算总大小
 const totalSelectedSize = computed(() => {

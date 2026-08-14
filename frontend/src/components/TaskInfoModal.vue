@@ -4,6 +4,7 @@ import { PhInfo, PhX, PhArrowSquareOut, PhDownloadSimple, PhArrowClockwise, PhCo
 import { TaskStatus, type Task } from '../types'
 import { getAudioStatusInfo, canReDownloadAudio, isLocalFileUrl } from '../utils/audioStatus'
 import { copyText } from '../utils/clipboard'
+import { getStatusLabel, getStatusClass } from '../shared/utils/taskStatus'
 
 const show = defineModel<boolean>('show', { required: true })
 
@@ -39,30 +40,6 @@ const audioStatus = computed(() =>
     props.selectedTask?.audio_missing_reason,
   ),
 )
-
-const getStatusLabel = (status: TaskStatus) => {
-  switch (status) {
-    case TaskStatus.COMPLETED: return '完成'
-    case TaskStatus.FAILED: return '失败'
-    case TaskStatus.PARTIAL: return '部分完成'
-    case TaskStatus.PENDING: return '等待中'
-    case TaskStatus.DOWNLOADING: return '下载中'
-    case TaskStatus.UPLOADING: return '上传中'
-    case TaskStatus.TRANSCRIBING: return '转录中'
-    case TaskStatus.SUMMARIZING: return '总结中'
-    default: return status
-  }
-}
-
-const getStatusClass = (status: TaskStatus) => {
-  switch (status) {
-    case TaskStatus.COMPLETED: return 'text-emerald-600 bg-emerald-50'
-    case TaskStatus.FAILED: return 'text-red-600 bg-red-50'
-    case TaskStatus.PARTIAL: return 'text-amber-600 bg-amber-50'
-    case TaskStatus.PENDING: return 'text-slate-400 bg-slate-50'
-    default: return 'text-blue-600 bg-blue-50'
-  }
-}
 </script>
 
 <template>

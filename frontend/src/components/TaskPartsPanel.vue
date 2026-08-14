@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { TaskPart } from '../types'
+import { formatDuration } from '../utils/formatters'
+import { getPartStatusLabel, getPartStatusClass } from '../shared/utils/taskStatus'
 
 const props = defineProps<{
   parts: TaskPart[]
@@ -41,24 +43,6 @@ watch(
 const panelHeight = ref<number | null>(null)
 const isResizing = ref(false)
 const failedParts = computed(() => props.parts.filter((part) => part.status === 'FAILED'))
-const statusLabel = (status: TaskPart['status']) => {
-  switch (status) {
-    case 'COMPLETED': return '已完成'
-    case 'FAILED': return '失败'
-    case 'PROCESSING':
-    case 'DOWNLOADING':
-    case 'TRANSCRIBING':
-    case 'SUMMARIZING': return '处理中'
-    default: return '等待中'
-  }
-}
-
-const statusClass = (status: TaskPart['status']) => {
-  if (status === 'COMPLETED') return 'text-emerald-600 bg-emerald-50'
-  if (status === 'FAILED') return 'text-red-600 bg-red-50'
-  if (status === 'PENDING') return 'text-slate-400 bg-slate-50'
-  return 'text-blue-600 bg-blue-50'
-}
 
 const getPartDetail = (part: TaskPart) => props.partDetails?.[part.part_index] || part
 
@@ -68,15 +52,6 @@ const togglePart = (partIndex: number) => {
   if (expanding) {
     emit('expand', partIndex)
   }
-}
-
-const formatDuration = (seconds?: number) => {
-  const value = Math.max(0, Math.round(Number(seconds || 0)))
-  const minutes = Math.floor(value / 60)
-  const remaining = value % 60
-  return minutes
-    ? minutes + '分' + String(remaining).padStart(2, '0') + '秒'
-    : remaining + '秒'
 }
 
 const getMaxPanelHeight = () => Math.max(180, Math.round(window.innerHeight * 0.8))
@@ -178,8 +153,8 @@ onBeforeUnmount(stopPanelResize)
         <button type="button" class="flex w-full items-center gap-3 text-left" @click="togglePart(part.part_index)">
           <span class="w-10 shrink-0 text-xs font-semibold text-slate-500">P{{ part.part_index + 1 }}</span>
           <span class="min-w-0 flex-1 truncate text-sm text-slate-700">{{ part.title || '未命名分P' }}</span>
-          <span class="shrink-0 text-xs text-slate-400">{{ formatDuration(part.duration) }}</span>
-          <span class="shrink-0 rounded-full px-2 py-0.5 text-xs" :class="statusClass(part.status)">{{ statusLabel(part.status) }}</span>
+          <span class="shrink-0 text-xs text-slate-400">{{ formatDuration(part.duration, { format: 'chinese' }) }}</span>
+          <span class="shrink-0 rounded-full px-2 py-0.5 text-xs" :class="getPartStatusClass(part.status)">{{ getPartStatusLabel(part.status) }}</span>
           <span class="w-10 shrink-0 text-right text-xs text-slate-400">{{ Math.round(part.progress || 0) }}%</span>
         </button>
         <div v-if="part.status === 'FAILED' && part.error_message" class="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
