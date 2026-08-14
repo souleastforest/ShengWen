@@ -173,6 +173,7 @@ frontend/src/
 ## 5. 质量门与流程
 
 - **每包完成标准**：① vitest 全量通过；② `vue-tsc -b` + `npm run build` 通过；③ code-reviewer 子代理对抗验证（阻塞项清零——重点：空结果/异常吞没、竞态、边界输入、seam 破坏）；④ 定向 e2e 按主题批次执行（21001 + playwright），相邻模式不破坏。
+- **⚠️ 类型门禁（P4 起强制）**：根 tsconfig 是 solution-style（`files: []` + references），`vue-tsc --noEmit`（无 `-b`）**不检查任何文件、恒 exit 0**——P1–P3 的 `--noEmit` 验收环节实际未生效（真实门禁在 `npm run build` 的 `vue-tsc -b` 内一直生效，故无类型回归；教训记录于 P4 批次）。验证一律显式 `vue-tsc -b`。
 - **PR 流程**（Q5B）：每包 GitHub PR → merge 进 `refactor/frontend-design`（回滚点 = 每个 merge commit）；每主题批次结束时汇总给用户确认；A 阶段整体完成后 PR → public。
 - **前端改动必须 `npm run build` 重建 dist**（21010 静态包约束，CLAUDE.md 强制）。
 
@@ -199,6 +200,8 @@ frontend/src/
 - 非分P任务超长总结（>12000 字）总结 tab 永久截断无入口（code-reviewer S-2：`summary.length >= 12000` 时也显示展开入口）
 - XSS 向量 e2e 用例（img onerror / script / javascript: href / svg xlink / style url()）纳入后续 e2e 批次（code-reviewer S-3）
 - WS onmessage 畸形帧防护（非 JSON 帧 JSON.parse 抛错不崩溃）——code-reviewer F5 确认 P2 范围，fix/realtime-progress 分支不做，待本 backlog 排期
+- e2e/ 无 tsconfig 项目覆盖（tsconfig.app.json 仅 src/**），vue-tsc -b 不检查 spec——类型单源化收益未兑现；与 P5 的 vitest 误收录处理绑定（vitest.config.ts exclude e2e/ + 补 tsconfig.e2e.json 或 e2e 类型检查步骤）（code-reviewer P2-1，2026-08-14）
+- `submitLocalPath` 已随 P4 修订类型化（LocalPathCreateTaskRequest）——P2-2 已落地，此条关闭
 
 ## 8. 文件变更清单（删除/改名，需用户确认后执行）
 
