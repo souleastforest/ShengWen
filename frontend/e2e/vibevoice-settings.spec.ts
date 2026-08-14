@@ -1,34 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
-
-type TranscriptionSettings = {
-  device: 'cpu' | 'cuda'
-  model_source: 'auto_download' | 'manual_path'
-  model_size: 'tiny' | 'base' | 'small' | 'medium' | 'large'
-  model_path: string
-  model_path_valid: boolean
-  model_path_message: string
-  model_path_resolved: string
-  required_model_files: string[]
-  cuda_available: boolean
-  available_devices: Array<'cpu' | 'cuda'>
-  has_nvidia_gpu: boolean
-  torch_installed: boolean
-  torch_cuda_built: boolean
-  ctranslate2_installed: boolean
-  ctranslate2_cuda_device_count: number
-  cuda_reason: string
-  cuda_message: string
-  enable_bilibili_subtitle_fetch: boolean
-  has_bilibili_sessdata: boolean
-  bilibili_cookie_source: string
-  bilibili_sessdata_masked: string
-  transcriber_type: 'fast_whisper' | 'vibe_voice_asr'
-  vibevoice_language_model: string
-  vibevoice_max_new_tokens: number
-  vibevoice_dtype: 'bfloat16' | 'float16'
-  vibevoice_inference_mode: 'local' | 'api'
-  vibevoice_api_url: string
-}
+// 类型契约去重：与 src/types.ts 的 TranscriptionSettings 单源（27 字段副本移除，
+// 运行时形状不变——defaultTranscriptionSettings 仍返回相同对象）
+import type { TranscriptionSettings } from '../src/types'
 
 const defaultTranscriptionSettings = (
   overrides: Partial<TranscriptionSettings> = {},
