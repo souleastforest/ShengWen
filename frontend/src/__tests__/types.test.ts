@@ -9,6 +9,7 @@ import type {
   Task,
   AudioMissingReason,
   CreateTaskRequest,
+  LocalPathCreateTaskRequest,
   ReSummarizeRequest,
   ReTranscribeRequest,
   TaskPart,
@@ -234,6 +235,26 @@ describe('P4 类型契约：请求与分P形状', () => {
       bilibili_parts: { mode: 'separate', indices: [1, 2] },
     }
     expect(separateRequest.bilibili_parts).toEqual({ mode: 'separate', indices: [1, 2] })
+  })
+
+  it('LocalPathCreateTaskRequest 形状与 submitLocalPathTask 调用点 payload 对齐', () => {
+    // 编译期：调用点 payload（useTaskViewModel.ts submitLocalPathTask）满足类型
+    const callSitePayload: LocalPathCreateTaskRequest = {
+      file_path: '/media/video.mp4',
+      summary_mode: 'none',
+      generate_topic: true,
+    }
+    expect(callSitePayload).toEqual({
+      file_path: '/media/video.mp4',
+      summary_mode: 'none',
+      generate_topic: true,
+    })
+    // 标准/Agent 模式不发送 generate_topic
+    const standardMode: LocalPathCreateTaskRequest = {
+      file_path: '/media/video.mp4',
+      summary_mode: 'standard',
+    }
+    expect(standardMode.generate_topic).toBeUndefined()
   })
 
   it('ReSummarizeRequest 形状与 reSummarize 调用点 payload 对齐', () => {

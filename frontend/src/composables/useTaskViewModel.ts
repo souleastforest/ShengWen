@@ -9,6 +9,7 @@ import type {
   Task,
   TaskPart,
   CreateTaskRequest,
+  LocalPathCreateTaskRequest,
   ReSummarizeRequest,
   ReTranscribeRequest,
   SummaryMode,
@@ -427,13 +428,14 @@ export function useTaskViewModel() {
     isSubmitting.value = true
     error.value = null
     try {
-      await apiClient.post('/upload/local-path', {
+      const payload: LocalPathCreateTaskRequest = {
         file_path: normalized,
         summary_mode: summaryMode.value,
         ...(summaryMode.value === 'none'
           ? { generate_topic: generateTopic.value }
           : {}),
-      }, {
+      }
+      await apiClient.post('/upload/local-path', payload, {
         signal: controller.signal
       })
       localFilePath.value = ''

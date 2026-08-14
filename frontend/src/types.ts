@@ -97,6 +97,17 @@ export interface CreateTaskRequest {
 }
 
 /**
+ * POST /upload/local-path 请求体（后端 LocalPathTaskCreate，见
+ * routes/schemas.py:11-20）。generate_topic 仅在仅转录模式随开关显式发送；
+ * 标准/Agent 模式不发送该字段。
+ */
+export interface LocalPathCreateTaskRequest {
+  file_path: string;
+  summary_mode?: SummaryMode;
+  generate_topic?: boolean;
+}
+
+/**
  * POST /tasks/{task_id}/re-summarize 请求体（后端 ReSummarizeRequest，见
  * routes/schemas.py:60）。summary_mode 缺省时后端沿用任务已存值。
  */

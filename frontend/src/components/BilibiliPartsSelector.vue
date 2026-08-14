@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { PhX, PhVideo, PhSpinner } from '@phosphor-icons/vue'
-import type { BilibiliVideoInfo } from '../types'
+import type { BilibiliVideoInfo, BilibiliPartsConfig } from '../types'
 import { formatDuration } from '../utils/formatters'
 
 const props = defineProps<{
@@ -12,7 +12,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  confirm: [config: { mode: 'merge' | 'separate'; indices: number[] }]
+  confirm: [config: BilibiliPartsConfig]
 }>()
 
 const selectedIndices = ref<Set<number>>(new Set())
