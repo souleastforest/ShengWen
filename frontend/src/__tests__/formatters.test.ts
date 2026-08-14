@@ -98,7 +98,7 @@ describe('formatFileSize：档位边界', () => {
 
 describe('formatDuration：clock（默认，旧 utils/formatters 语义）', () => {
   it('无效输入 → "--"（与旧实现一致）', () => {
-    for (const input of [undefined, 0, -5, Number.NaN] as const) {
+    for (const input of [undefined, null, 0, -5, Number.NaN] as const) {
       expect(formatDuration(input)).toBe('--')
     }
   })
@@ -122,7 +122,7 @@ describe('formatDuration：clock（默认，旧 utils/formatters 语义）', () 
 
 describe('formatDuration：chinese（旧 TaskPartsPanel 语义）', () => {
   it('无效输入 → "0秒"（与旧实现一致）', () => {
-    for (const input of [undefined, 0, -5] as const) {
+    for (const input of [undefined, null, 0, -5] as const) {
       expect(formatDuration(input, { format: 'chinese' })).toBe('0秒')
     }
   })
@@ -162,6 +162,13 @@ describe('formatDuration：B 站风格（floor + 不补小时/分钟位 + 无效
     expect(biliStyle(3599)).toBe('59:59')
     expect(biliStyle(3600)).toBe('1:00:00')
     expect(biliStyle(3661)).toBe('1:01:01')
+  })
+
+  it('整数秒假设锁定：floor 风格对浮点输入按整数截断（不复现旧 FP 噪声输出）', () => {
+    // 后端 bilibili 路由 duration 强制 int()，浮点输入不可达；此处锁死截断语义
+    // （旧实现浮点域会输出 '59:59.6' 这类 FP 噪声，属 P3 有意修正，禁止回归）
+    expect(biliStyle(3599.6)).toBe('59:59')
+    expect(biliStyle(7325.9)).toBe('2:02:05')
   })
 })
 

@@ -1,6 +1,10 @@
 /** 时长输出风格：clock=冒号时钟（MM:SS / H:MM:SS），chinese=中文分秒（X分XX秒 / X秒）。默认 clock */
 export type DurationFormatStyle = 'clock' | 'chinese'
-/** 秒数取整：round=四舍五入（默认），floor=向下取整（B 站时长源旧行为） */
+/**
+ * 秒数取整：round=四舍五入（默认），floor=向下取整（B 站时长源旧行为）。
+ * floor 风格假设输入为整数秒（后端 duration 强制 int()）：对浮点输入按整数截断，
+ * 不复现旧实现的浮点域 FP 噪声输出（如 '59:59.6'）——此为 P3 有意修正，勿"顺手修浮点"。
+ */
 export type DurationRounding = 'round' | 'floor'
 
 export interface FormatDurationOptions {
@@ -17,7 +21,8 @@ export interface FormatDurationOptions {
  * - 默认 clock：TaskMetaCard / 导出图（旧 utils/formatters.ts：round、全补零、无效 '--'）；
  * - { format: 'chinese' }：TaskPartsPanel（round、无效 '0秒'、分钟不设小时档 → 3600 = '60分00秒'）；
  * - { rounding: 'floor', pad: false, placeholder: '0:00' }：BilibiliPartsSelector
- *   （floor、不补小时/分钟位、无效 '0:00'；B 站时长源为后端 int() 整数秒）。
+ *   （floor、不补小时/分钟位、无效 '0:00'）。floor 风格假设输入为整数秒（后端 duration
+ *   强制 int()），浮点输入按整数截断——旧实现的 '59:59.6' 属 FP 噪声缺陷，P3 已修正。
  */
 export const formatDuration = (seconds?: number, options: FormatDurationOptions = {}): string => {
   const { format = 'clock', rounding = 'round', placeholder = '--', pad = true } = options

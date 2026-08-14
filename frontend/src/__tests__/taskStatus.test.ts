@@ -5,8 +5,9 @@
  * TaskPartsPanel 维护一份分P状态映射——P3 收敛为 src/shared/utils/taskStatus.ts 单源。
  *
  * 验收（行为保持）：
- * 1. 遍历 TaskStatus 全部枚举值，三函数（label/class/icon）均有映射——新增枚举值未映射即红；
- * 2. 每个枚举值的输出与 P3 前各消费点的旧实现逐值相等（对比断言：旧实现输出作为基准字面量）；
+ * 1. 遍历 TaskStatus 全部取值（const 对象 + 联合类型，types.ts 共 8 个 value），
+ *    三函数（label/class/icon）均有映射——新增不同 value 未映射即红；
+ * 2. 每个 value 的输出与 P3 前各消费点的旧实现逐值相等（对比断言：旧实现输出作为基准字面量）；
  * 3. 分P词汇表（后端 PART_STATUSES + 历史遗留 PROCESSING）与旧 TaskPartsPanel 输出逐值相等；
  * 4. 未知状态兜底行为与旧实现一致。
  */
@@ -77,8 +78,8 @@ const OLD_PART_CLASSES: Record<string, string> = {
 }
 const OLD_PART_CLASS_DEFAULT = 'text-blue-600 bg-blue-50'
 
-describe('taskStatus 单源映射：任务级（TaskStatus 枚举驱动）', () => {
-  it('全枚举覆盖：每个枚举值均有 label/class/icon 映射（未映射即红）', () => {
+describe('taskStatus 单源映射：任务级（TaskStatus const 对象 + 联合类型驱动）', () => {
+  it('全取值覆盖：每个 value 均有 label/class/icon 映射（新增不同 value 未映射即红）', () => {
     expect(ALL_STATUSES.length).toBeGreaterThan(0)
     for (const status of ALL_STATUSES) {
       const label = getStatusLabel(status)
@@ -87,7 +88,7 @@ describe('taskStatus 单源映射：任务级（TaskStatus 枚举驱动）', () 
       expect(label, `label 未映射: ${status}`).toBeTruthy()
       expect(cls, `class 未映射: ${status}`).toBeTruthy()
       expect(icon, `icon 未映射: ${status}`).toBeTruthy()
-      // 已知枚举值不得原样透出原始状态字符串（新增枚举值未加映射即红）
+      // 已知 value 不得原样透出原始状态字符串（新增不同 value 未加映射即红）
       expect(label, `label 仍是原始状态: ${status}`).not.toBe(status)
     }
   })

@@ -5,7 +5,8 @@
  * 禁止在组件内各自维护状态映射表（避免漂移）。
  *
  * 词汇表（两类，语义不同，勿互相合并）：
- * - 任务级：TaskStatus（types.ts）8 个枚举值，getStatusLabel/getStatusClass/getStatusIcon；
+ * - 任务级：TaskStatus（types.ts 的 const 对象 `{...} as const` + `typeof` 联合类型，
+ *   共 8 个取值，非 TS enum），getStatusLabel/getStatusClass/getStatusIcon；
  * - 分P 级：后端 task_parts.PART_STATUSES（PENDING / DOWNLOADING / TRANSCRIBING /
  *   SUMMARIZING / COMPLETED / FAILED）＋ 历史遗留 'PROCESSING' 兜底（后端已不再产出，
  *   保留映射防旧数据回归），getPartStatusLabel/getPartStatusClass。
