@@ -22,6 +22,8 @@ export interface TaskPart {
   summary?: string;
   audio_duration?: number;
   transcription_time?: number;
+  // 后端 task_parts 行更新时间（get_task_parts 全量列，见 task_parts.py:38）
+  updated_at?: string;
 }
 
 export type TaskStatus = typeof TaskStatus[keyof typeof TaskStatus];
@@ -89,6 +91,27 @@ export interface CreateTaskRequest {
   quality: string;
   summary_mode?: SummaryMode;
   // 仅转录（summary_mode='none'）时是否在转录完成后自动生成标题（默认开启）
+  generate_topic?: boolean;
+  // B 站分 P 处理配置（仅多 P 视频需要；mode=merge 合并 / separate 拆分）
+  bilibili_parts?: BilibiliPartsConfig;
+}
+
+/**
+ * POST /tasks/{task_id}/re-summarize 请求体（后端 ReSummarizeRequest，见
+ * routes/schemas.py:60）。summary_mode 缺省时后端沿用任务已存值。
+ */
+export interface ReSummarizeRequest {
+  summary_mode?: SummaryMode;
+}
+
+/**
+ * POST /tasks/{task_id}/re-transcribe 请求体（后端 ReTranscribeRequest，见
+ * routes/schemas.py:67）。summary_mode 缺省沿用任务已存值；generate_topic
+ * 为重新转录后的"总结标题"开关，缺省沿用任务已存值（老任务默认 True），
+ * 前端当前不发送该字段。
+ */
+export interface ReTranscribeRequest {
+  summary_mode?: SummaryMode;
   generate_topic?: boolean;
 }
 

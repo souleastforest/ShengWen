@@ -9,6 +9,8 @@ import type {
   Task,
   TaskPart,
   CreateTaskRequest,
+  ReSummarizeRequest,
+  ReTranscribeRequest,
   SummaryMode,
   LLMProvider,
   LLMSettings,
@@ -1211,7 +1213,8 @@ export function useTaskViewModel() {
     error.value = null
 
     try {
-      const payload = {
+      // 形状与 submitTask 共用 CreateTaskRequest；bilibili_parts 恢复类型检查
+      const payload: CreateTaskRequest = {
         video_url: videoUrl,
         // quality 恒为默认值（无 UI 消费），显式常量保持行为等价
         quality: 'audio_only',
@@ -1441,9 +1444,10 @@ export function useTaskViewModel() {
         // summary_mode：优先显式模式（如补总结入口指定 standard/agent）；
         // 缺省沿用 UI 三态（none/standard/agent）。'none' 时后端会按
         // auto 判定兜底生成总结（见 llm_worker._resolve_effective_mode）。
-        await apiClient.post(`/tasks/${taskId}/re-summarize`, {
+        const payload: ReSummarizeRequest = {
           summary_mode: mode ?? summaryMode.value
-        })
+        }
+        await apiClient.post(`/tasks/${taskId}/re-summarize`, payload)
         // No need to do more, WS will update the status
       } catch (err) {
         console.error('Failed to re-summarize task:', err)
@@ -1469,9 +1473,11 @@ export function useTaskViewModel() {
         if (!confirm('重新转录将清除现有 AI 总结，确定继续？')) return
       }
       try {
-        await apiClient.post(`/tasks/${taskId}/re-transcribe`, {
+        // generate_topic 不发送：缺省沿用任务已存值（见 ReTranscribeRequest 契约）
+        const payload: ReTranscribeRequest = {
           summary_mode: summaryMode.value
-        })
+        }
+        await apiClient.post(`/tasks/${taskId}/re-transcribe`, payload)
         // No need to do more, WS will update the status
       } catch (err) {
         console.error('Failed to re-transcribe task:', err)

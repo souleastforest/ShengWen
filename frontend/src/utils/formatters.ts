@@ -10,7 +10,7 @@ export type DurationRounding = 'round' | 'floor'
 export interface FormatDurationOptions {
   format?: DurationFormatStyle
   rounding?: DurationRounding
-  /** 无效输入（0/负数/NaN/undefined）占位文本，默认 '--'；chinese 风格忽略（固定 '0秒'） */
+  /** 无效输入（0/负数/NaN/null/undefined）占位文本，默认 '--'；chinese 风格忽略（固定 '0秒'） */
   placeholder?: string
   /** clock 风格下小时/无小时分支的分钟是否补零（默认 true）；B 站旧样式不补（'1:05'），传 false 保持 */
   pad?: boolean
@@ -24,7 +24,7 @@ export interface FormatDurationOptions {
  *   （floor、不补小时/分钟位、无效 '0:00'）。floor 风格假设输入为整数秒（后端 duration
  *   强制 int()），浮点输入按整数截断——旧实现的 '59:59.6' 属 FP 噪声缺陷，P3 已修正。
  */
-export const formatDuration = (seconds?: number, options: FormatDurationOptions = {}): string => {
+export const formatDuration = (seconds?: number | null, options: FormatDurationOptions = {}): string => {
   const { format = 'clock', rounding = 'round', placeholder = '--', pad = true } = options
   const numeric = Number(seconds)
   const valid = seconds !== undefined && seconds !== null && !Number.isNaN(numeric) && numeric > 0

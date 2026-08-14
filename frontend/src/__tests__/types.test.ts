@@ -8,6 +8,10 @@ import type {
   QueueResponse,
   Task,
   AudioMissingReason,
+  CreateTaskRequest,
+  ReSummarizeRequest,
+  ReTranscribeRequest,
+  TaskPart,
 } from '../types'
 
 describe('VibeVoice runtime values for typed shapes', () => {
@@ -199,5 +203,94 @@ describe('VibeVoice runtime values for typed shapes', () => {
     const subtitleOnly: AudioMissingReason = 'subtitle_only'
     const reclaimed: AudioMissingReason = 'reclaimed'
     expect([subtitleOnly, reclaimed]).toEqual(['subtitle_only', 'reclaimed'])
+  })
+})
+
+describe('P4 类型契约：请求与分P形状', () => {
+  it('CreateTaskRequest 含 bilibili_parts 分P配置（submitTaskWithParts 调用点契约）', () => {
+    // 编译期：全部文档化字段必须是 CreateTaskRequest 合法键（缺失时 vue-tsc 报错）
+    const requestKeys: (keyof CreateTaskRequest)[] = [
+      'video_url',
+      'quality',
+      'summary_mode',
+      'generate_topic',
+      'bilibili_parts',
+    ]
+    expect(requestKeys).toContain('bilibili_parts')
+
+    // 编译期 + 运行时：与 submitTaskWithParts 实际 payload 同形（useTaskViewModel.ts:1214-1223）
+    const mergeRequest: CreateTaskRequest = {
+      video_url: 'https://www.bilibili.com/video/BV1xx411c7mD',
+      quality: 'audio_only',
+      summary_mode: 'none',
+      bilibili_parts: { mode: 'merge', indices: [0, 1] },
+    }
+    expect(mergeRequest.bilibili_parts).toEqual({ mode: 'merge', indices: [0, 1] })
+
+    const separateRequest: CreateTaskRequest = {
+      video_url: 'https://www.bilibili.com/video/BV1xx411c7mD',
+      quality: 'audio_only',
+      summary_mode: 'standard',
+      bilibili_parts: { mode: 'separate', indices: [1, 2] },
+    }
+    expect(separateRequest.bilibili_parts).toEqual({ mode: 'separate', indices: [1, 2] })
+  })
+
+  it('ReSummarizeRequest 形状与 reSummarize 调用点 payload 对齐', () => {
+    // 编译期：调用点 payload（useTaskViewModel.ts reSummarize）满足类型
+    const callSitePayload: ReSummarizeRequest = { summary_mode: 'standard' }
+    expect(callSitePayload).toEqual({ summary_mode: 'standard' })
+    // 缺省：不传 summary_mode 时后端沿用任务已存值
+    const defaultPayload: ReSummarizeRequest = {}
+    expect(defaultPayload).toEqual({})
+  })
+
+  it('ReTranscribeRequest 形状与 reTranscribe 调用点 payload 对齐', () => {
+    // 编译期：调用点 payload（useTaskViewModel.ts reTranscribe）满足类型
+    const callSitePayload: ReTranscribeRequest = { summary_mode: 'none' }
+    expect(callSitePayload).toEqual({ summary_mode: 'none' })
+    // generate_topic 缺省沿用任务已存值（前端当前不发送该字段）
+    const defaultPayload: ReTranscribeRequest = {}
+    expect(defaultPayload).toEqual({})
+    const withTopic: ReTranscribeRequest = {
+      summary_mode: 'standard',
+      generate_topic: false,
+    }
+    expect(withTopic).toEqual({ summary_mode: 'standard', generate_topic: false })
+  })
+
+  it('TaskPart 形状与后端 task_parts 序列化对齐（含 updated_at）', () => {
+    // 编译期：后端 get_task_parts 全量列（src/main/python/sheng_wen/task_parts.py:74-77）
+    // 必须全部是 TaskPart 合法键（缺失字段时 vue-tsc 报错）
+    const backendColumns: (keyof TaskPart)[] = [
+      'task_id',
+      'part_index',
+      'cid',
+      'title',
+      'duration',
+      'status',
+      'progress',
+      'error_message',
+      'transcript',
+      'summary',
+      'audio_duration',
+      'transcription_time',
+      'updated_at',
+    ]
+    expect(backendColumns).toContain('updated_at')
+    expect(backendColumns).toContain('transcription_time')
+
+    // 编译期 + 运行时：含 updated_at 的分P对象
+    const part: TaskPart = {
+      task_id: 'task-1',
+      part_index: 2,
+      cid: 54321,
+      title: '第二P',
+      duration: 300,
+      status: 'COMPLETED',
+      progress: 1,
+      updated_at: '2026-08-14T00:00:00+00:00',
+    }
+    expect(part.updated_at).toBe('2026-08-14T00:00:00+00:00')
   })
 })
