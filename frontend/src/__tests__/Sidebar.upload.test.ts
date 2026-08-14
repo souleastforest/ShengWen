@@ -102,7 +102,8 @@ describe('对抗性：文件大小预检（2GB 上限）', () => {
     await input.trigger('change')
 
     expect(wrapper.text()).toContain('文件过大')
-    expect(wrapper.text()).toContain('1024.0 MB')
+    // P3 收敛：formatFileSize 补 GB 档（plan 明确修复）——1GB 上限显示 '1.00 GB' 而非旧错档 '1024.0 MB'
+    expect(wrapper.text()).toContain('1.00 GB')
     // 超限文件不进入选中态
     expect(wrapper.find('button[title="清除文件"]').exists()).toBe(false)
   })

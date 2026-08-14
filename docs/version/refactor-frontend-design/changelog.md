@@ -1,10 +1,28 @@
 # Refactor: 前端设计重构 — Change Log
 
 **Branch**: `refactor/frontend-design`（基于 `public @ 7fbab68`，== origin/public）
-**Date**: 2026-08-13
+**Date**: 2026-08-14
 
 ## Change Log
 
+- 2026-08-14: **P3 收敛完成**（refactor/p3-converge → 待合并进 refactor/frontend-design）。
+  - **状态映射单源化**（src/shared/utils/taskStatus.ts，types.ts const 对象 + 联合类型驱动）：
+    getStatusLabel/getStatusClass/getStatusIcon 三表合一，Sidebar/TaskInfoModal/TaskPartsPanel
+    三消费点改单点引用（Sidebar 状态筛选标签同源派生，消除第 4 处重复）；分P级
+    getPartStatusLabel/getPartStatusClass 一并收敛（'PROCESSING' 为后端已停产的遗留值，
+    保留兜底映射防旧数据回归）。各枚举取值输出与旧实现逐值一致。
+  - **formatters 统一**（utils/formatters.ts）：formatDuration 三处实现合一（clock 默认 /
+    chinese / floor+不补零，最小 options 驱动，各调用点输出逐字符不变，floor 假设整数秒）；
+    formatFileSize 收敛为 B/KB/MB/GB 四档（补 GB 档）。
+  - **唯一预期行为变化**：Sidebar 文件大小 ≥1GB 由错档 '1024.0 MB' 修正为 '2.00 GB'
+    （plan 明确修复，Sidebar.upload 断言同步更新）。
+  - **对抗验证**（code-reviewer）：通过（无 P0/P1），4 条 P2 建议已落地（floor 整数秒
+    假设注释、invalid/null 与整数秒锁定断言、'枚举'措辞精确为 const 对象 + 联合类型、
+    changelog 本条目）。
+  - **测试**：vitest 259 全绿（新增 taskStatus/formatters 共 23 用例：全取值覆盖——
+    新增不同 value 未映射即红、旧实现输出对拍、消费点 mount 断言）；vue-tsc/build 通过；
+    e2e spec 被 vitest 误收录为基线既有失败（与 P3 无关，主流程另行处理）。
+  - **流程档位**：T2（子代理实施 + 对抗验证）。
 - 2026-08-13: **P1 防线加固完成**（refactor/p1-defenses → PR #5，合并进 refactor/frontend-design）。
   - **XSS 单点净化**：App.vue markdown 管线出口（marked 编译后、postProcess 前）加 DOMPurify.sanitize
     `{ FORBID_ATTR: ['style'], USE_PROFILES: { html: true } }`（引入 dompurify 3.4.13，用户已批准）；

@@ -5,8 +5,6 @@ import {
   PhLink,
   PhUpload,
   PhSpinner,
-  PhCheckCircle,
-  PhXCircle,
   PhClock,
   PhX,
   PhTrash,
@@ -39,6 +37,8 @@ import {
   type QueueSnapshot
 } from '../types'
 import { getQueueInfo as resolveQueueInfo } from '../utils/queueStatus'
+import { formatFileSize } from '../utils/formatters'
+import { getStatusLabel, getStatusClass, getStatusIcon } from '../shared/utils/taskStatus'
 import ThemeSelector from './ThemeSelector.vue'
 
 const videoUrl = defineModel<string>('videoUrl', { required: true })
@@ -255,12 +255,6 @@ const handleClearSelectedFile = () => {
 // 文件大小预检错误（超 2GB 上限）
 const fileSizeError = ref<string | null>(null)
 
-const formatFileSize = (bytes: number) => {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
-}
-
 const resolveTaskTopic = (task: Task) => {
   return task.topic || (task.summary && task.summary.match(/\{\{topic:?\s*(.*?)\}\}/i)?.[1]) || task.title || task.video_url
 }
@@ -432,20 +426,6 @@ const handleTestLlm = async () => {
   }
 }
 
-const getStatusLabel = (status: TaskStatus) => {
-  switch (status) {
-    case TaskStatus.COMPLETED: return '完成'
-    case TaskStatus.FAILED: return '失败'
-    case TaskStatus.PARTIAL: return '部分完成'
-    case TaskStatus.PENDING: return '等待中'
-    case TaskStatus.DOWNLOADING: return '下载中'
-    case TaskStatus.UPLOADING: return '上传中'
-    case TaskStatus.TRANSCRIBING: return '转录中'
-    case TaskStatus.SUMMARIZING: return '总结中'
-    default: return status
-  }
-}
-
 const getTaskStatusLabel = (task: Task) => {
   const base = getStatusLabel(task.status)
   const total = Number(task.part_count || 0)
@@ -480,16 +460,6 @@ const getTaskProgress = (task: Task) => {
   return Math.max(0, Math.min(100, Number(task.progress || 0)))
 }
 
-const getStatusClass = (status: TaskStatus) => {
-  switch (status) {
-    case TaskStatus.COMPLETED: return 'text-emerald-600 bg-emerald-50'
-    case TaskStatus.FAILED: return 'text-red-600 bg-red-50'
-    case TaskStatus.PARTIAL: return 'text-amber-600 bg-amber-50'
-    case TaskStatus.PENDING: return 'text-slate-400 bg-slate-50'
-    default: return 'text-blue-600 bg-blue-50'
-  }
-}
-
 // 在队列快照中查找任务排队信息（waiting_task_ids 中则排队，active 不算排队）
 const getQueueInfo = (task: Task) => resolveQueueInfo(task.id, props.queues ?? [])
 
@@ -500,16 +470,6 @@ const getQueueBadgeText = (task: Task): string | null => {
 }
 
 const isTaskQueued = (task: Task): boolean => Boolean(getQueueInfo(task)?.queued)
-
-const getStatusIcon = (status: TaskStatus) => {
-  switch (status) {
-    case TaskStatus.COMPLETED: return PhCheckCircle
-    case TaskStatus.FAILED: return PhXCircle
-    case TaskStatus.PARTIAL: return PhInfo
-    case TaskStatus.PENDING: return PhClock
-    default: return PhSpinner
-  }
-}
 
 const formatTaskDate = (dateString: string) => {
   const date = new Date(dateString)
@@ -568,14 +528,7 @@ const buildModifiedInfo = (task: Task) => {
 
 const statusOptions: Array<{ value: 'all' | TaskStatus, label: string }> = [
   { value: 'all', label: '全部状态' },
-  { value: TaskStatus.PENDING, label: '等待中' },
-  { value: TaskStatus.DOWNLOADING, label: '下载中' },
-  { value: TaskStatus.UPLOADING, label: '上传中' },
-  { value: TaskStatus.TRANSCRIBING, label: '转录中' },
-  { value: TaskStatus.SUMMARIZING, label: '总结中' },
-  { value: TaskStatus.COMPLETED, label: '完成' },
-  { value: TaskStatus.FAILED, label: '失败' },
-  { value: TaskStatus.PARTIAL, label: '部分完成' },
+  ...Object.values(TaskStatus).map((value) => ({ value, label: getStatusLabel(value) })),
 ]
 
 const managedResults = computed<ManagedTaskResult[]>(() => {
