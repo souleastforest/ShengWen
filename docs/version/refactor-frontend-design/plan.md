@@ -123,18 +123,31 @@ frontend/src/
 
 **测试**：全量 vitest 为行为网；ToastContainer 单例 DOM 断言。
 
-### P6 结构拆分（纯搬移，新组件直接落位 features/）
+### P6 结构拆分（纯搬移，新组件直接落位 features/）— ✅ 已完成（2026-08-15，refactor/p6-structure）
 
-1. **Sidebar（1625 行）拆片**：
-   - `features/upload/components/UploadForm.vue`（提交三通道 + 大小预检）
-   - `features/task/components/TaskList.vue`、`TaskSearch.vue`
-   - `features/settings/components/SettingsFormLlm.vue` / `SettingsFormTranscription.vue` / `SettingsFormSummarization.vue`（props+emit，Sidebar 面板与 SettingsModal 双入口复用——Q8 语义以弹窗为准，夹逼与字段统一，消灭 400 行重复与漂移）
-2. **TaskContentArea（785 行）拆片**：`features/transcription/components/MermaidBlock.vue`（命令式 DOM 封装，renderVersion 防竞态保留）、`MarkdownContent.vue`；markdown 编译管线（App.vue `:782-789` 自定义 renderer + postProcessCompiledMarkdown）下沉为 `features/transcription/useMarkdownCompile.ts`。
-3. **App.vue 编排下沉**（部分）：useMultipartSummary 等可抽 composable 先行（App 1164 行本包只减不增）。
+1. **Sidebar（1586 行）拆片**：
+   - `features/upload/components/UploadForm.vue`（提交三通道 + 大小预检，props+emit 化）
+   - `features/task/components/TaskList.vue`、`TaskSearch.vue`（+ 域内共用 `taskDisplay.ts`）
+   - `features/settings/components/SettingsFormLlm.vue` / `SettingsFormTranscription.vue` / `SettingsFormSummarization.vue`（props+emit，Sidebar 面板与 SettingsModal 双入口复用——Q8 语义以弹窗为准，夹逼与字段统一，消灭约 400 行重复与漂移）
+2. **TaskContentArea（797 行 → 188 行）拆片**：`features/transcription/components/MermaidBlock.vue`（命令式 DOM 封装，display:contents 宿主，renderVersion 防竞态保留）、`MarkdownContent.vue`（渲染容器：标题收集/高亮/XSS DEV 断言）；markdown 编译管线（marked 自定义 renderer + DOMPurify 单点净化 + postProcessCompiledMarkdown）下沉为 `features/transcription/useMarkdownCompile.ts`（`compileMarkdownText` 纯函数 + 多P 分页状态机）。
+3. **App.vue 编排下沉**（1225 → 947 行，-22.7%）：useMarkdownCompile（多P 总结/编译管线）+ useSummaryImageWorkbench（一键成图工作台，features/transcription/composables/），App 只做装配。
 
-**测试**：seam 契约测试（拆出组件的 props/emits 面）+ 既有全量 vitest 为网；playwright 冒烟（提交/列表/设置弹窗/内容展示）。
+**测试**：seam 契约测试 9 文件 84 用例（先红后绿）+ Sidebar 任务筛选交互测试 3 用例 + SettingsModal 设置保存交互测试 5 用例；vitest 360 全绿（基线 268 + 新增 92）；vue-tsc -b / npm run build 通过；playwright 冒烟 16/16（21001：提交表单/任务列表/设置弹窗三 tab 字段/内容区原文 tab）。
 
-**验收**：行为等价（冒烟 + 全量测试）。巨型组件（Sidebar/SettingsModal）补首批组件级单测（TDD 模板，工具已就绪：@vue/test-utils + happy-dom）。
+**验收**：行为等价（冒烟 + 全量测试）。巨型组件（Sidebar/SettingsModal）补首批组件级单测（提交表单校验/任务筛选/设置保存）。
+
+> **实施注记（2026-08-15）**：
+> - 双入口复用统一决策：SettingsForm×3 以弹窗语义为准——转录表单补齐 transcriber_type/vibevoice_*/路径校验/浏览器读 Cookie 等字段；Agent 表单删除 Sidebar 旧版夹逼（min≥30s/max≥min/target 夹逼/autoAudio≥300），仅保留 max_agent_value_chars ≥100；LLM 表单补齐 extra_headers（anthropic）。
+> - Sidebar 内联设置面板为休眠 UI（`isSettingsPanelOpen` 恒 false，全仓无打开入口，审计确认），面板改用共享 SettingsForm×3 保持双入口一致；活动入口为 SettingsModal。Sidebar 新增 4 个转发 emit（readBilibiliCookieFromBrowser/validateModelPath/scanVibeVoiceServices/fetchVibeVoiceServiceStatus，均为加性 seam 变更）。
+> - `startTestLlm` emit 保留声明（SettingsModal 的 testLlm/startVibeVoiceService 同款先例）：共享 LLM 表单的"测试连接"走 updateLlmSettingsAndTest → Sidebar 映射为先保存（同步 emit）再 startTestLlm，与原 handleTestLlm 行为等价。
+>
+> **对抗评审修订（2026-08-15，P0 无，P1×2 必修已修 + P2×2 + 备注）**：
+> - **P1-1**（已修）：TaskSearch 拆片副本丢失 getTaskStatusLabel 的 ASR 分片分支（长音频任务搜索视图显示"转录中"而非"转录中 (3/10)"）。完整实现（含 ASR 分支）抽入 `taskDisplay.ts`，TaskList/TaskSearch 同源。TDD：TaskSearch 补 ASR/分P 标签同源断言 2 用例。
+> - **P1-2**（已修）：SettingsModal 切 tab 丢未保存表单状态（v-if 链销毁子组件实例）。改为 v-show 常挂载（表单实例/本地 ref 常驻，复现拆片前弹窗根层 ref 语义）。TDD：切 tab 输入保留断言 1 用例。
+> - **P2-3**（已修）：弹窗 fetchVibeVoiceServiceStatus 触发时机从"任意 tab 打开弹窗"漂移为"转录 tab 挂载"。v-show 常挂载后 SettingsFormTranscription 的 [isOpen, vibevoiceInferenceMode] watch 与拆片前弹窗根层 watch 同时机，精确复现旧行为（选 v-show 而非 KeepAlive：KeepAlive 停用期暂停 watcher，弹窗重开时缓存态下仍会漏拉）。TDD：弹窗打开即触发断言 1 用例。
+> - **P2-4**（已修）：App 与 useSummaryImageWorkbench 各 new 一个 useSummaryImageExporter，renderCanvasCache（实例级）预览/导出缓存断链（仅性能）。workbench 接受可选 `summaryImageExporter` 注入，App 传自己的单实例共享缓存。
+> - **P2-5**（记录）：Sidebar theme tab 条件链 v-if→v-else-if 变化（theme tab 无入口不可达，实为修复旧隐藏 bug：旧代码 theme 值下 manage 视图与 ThemeSelector 同时渲染）。
+> - 备注（已修）：SettingsFormTranscription.seam.test.ts 头注释 start/stopVibeVoiceService 为旧 modal 死声明（defineEmits 未声明），注释修正。
 
 ### P7 composable 域拆分（B 阶段第一个包，本分支只定规格不实施）
 

@@ -1,23 +1,12 @@
 <script setup lang="ts">
 import { computed, watch, ref, onMounted, onBeforeUnmount } from 'vue'
 import { PhMonitorPlay, PhList } from '@phosphor-icons/vue'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 import { useTaskViewModel } from './composables/useTaskViewModel'
 import { useMermaidViewer } from './composables/useMermaidViewer'
-import {
-  useSummaryImageExporter,
-  createDefaultSummaryImageExportSettings,
-  type SummaryImagePreviewPage,
-  type SummaryImageExportSettings,
-  type SummaryImageLayoutPreset,
-  type SummaryImageFormat,
-  type SummaryImageMetaMode,
-  type SummaryImageRenderProgress,
-} from './composables/useSummaryImageExporter'
+import { useSummaryImageExporter } from './composables/useSummaryImageExporter'
 import { useToast } from './composables/useToast'
-import { stripDoubleBracePlaceholders } from './utils/formatters'
-import { postProcessCompiledMarkdown } from './utils/markdownPostProcessor'
+import { useMarkdownCompile } from './features/transcription/useMarkdownCompile'
+import { useSummaryImageWorkbench } from './features/transcription/composables/useSummaryImageWorkbench'
 import type { Task, MarkdownHeadingItem, BilibiliVideoInfo, BilibiliPartsConfig, LocalFolderScanResult } from './types'
 import Sidebar from './components/Sidebar.vue'
 import FloatingToolbar from './components/FloatingToolbar.vue'
@@ -185,175 +174,9 @@ const {
   zoomOut,
 } = useMermaidViewer(mermaidViewerModalRef)
 
-const { exportSummaryAsImage, generateSummaryImagePreview } = useSummaryImageExporter()
-
-const SUMMARY_IMAGE_SETTINGS_STORAGE_KEY = 'ShengWen:summary-image-export-settings'
-
-const summaryLayoutOptions: Array<{ label: string; value: SummaryImageLayoutPreset }> = [
-  { label: '9:16 手机竖版', value: 'mobile-9-16' },
-  { label: '9:32 长屏', value: 'mobile-9-32' },
-  { label: '9:64 超长图', value: 'mobile-9-64' },
-  { label: '长图原始比例', value: 'long' },
-]
-
-const summaryMetaModeOptions: Array<{ label: string; value: SummaryImageMetaMode }> = [
-  { label: '每个图片顶端都显示元信息', value: 'all-pages' },
-  { label: '仅第一张图顶部显示元信息', value: 'first-page-only' },
-]
-
-const summaryFormatOptions: Array<{ label: string; value: SummaryImageFormat }> = [
-  { label: 'JPEG（推荐）', value: 'jpeg' },
-  { label: 'WebP（更小）', value: 'webp' },
-  { label: 'PNG（无损）', value: 'png' },
-]
-
-const summaryWidthOptions = [960, 1080, 1242, 1440]
-const summaryPixelRatioOptions = [1, 1.25, 1.5, 1.8, 2]
-
-const loadSummaryImageSettings = (): SummaryImageExportSettings => {
-  const defaults = createDefaultSummaryImageExportSettings()
-  try {
-    const raw = localStorage.getItem(SUMMARY_IMAGE_SETTINGS_STORAGE_KEY)
-    if (!raw) return defaults
-    const parsed = JSON.parse(raw) as Partial<SummaryImageExportSettings>
-    const merged: SummaryImageExportSettings = {
-      ...defaults,
-      ...parsed,
-    }
-    if (!summaryLayoutOptions.some((option) => option.value === merged.layoutPreset)) {
-      merged.layoutPreset = defaults.layoutPreset
-    }
-    if (!summaryMetaModeOptions.some((option) => option.value === merged.metaMode)) {
-      merged.metaMode = defaults.metaMode
-    }
-    return merged
-  } catch {
-    return defaults
-  }
-}
-
-const summaryImageSettings = ref<SummaryImageExportSettings>(loadSummaryImageSettings())
-const isSummaryImageSettingsOpen = ref(false)
-const isSummaryPreviewRendering = ref(false)
-const summaryRenderProgress = ref<{ current: number; total: number } | null>(null)
-const summaryPreviewDirty = ref(true)
-const summaryPreviewPages = ref<SummaryImagePreviewPage[]>([])
-const summaryPreviewActiveIndex = ref(0)
-const summaryPreviewTotalSizeKB = ref(0)
-const showAllPreviewPages = ref(false)
-
-const getSummaryImageExportPayload = () => {
-  if (!selectedTask.value?.summary) return null
-  return {
-    task: selectedTask.value,
-    topic: topic.value || selectedTask.value.title || 'AI 总结',
-    compiledMarkdown: compiledMarkdown.value,
-    rawSummary: selectedTask.value.summary,
-  }
-}
-
-const canRefreshSummaryPreview = computed(() => {
-  if (!isSummaryImageSettingsOpen.value) return false
-  if (!summaryPreviewDirty.value) return false
-  if (isSummaryPreviewRendering.value) return false
-  return !!getSummaryImageExportPayload()
-})
-
-const summaryRefreshButtonLabel = computed(() => {
-  if (isSummaryPreviewRendering.value) return '重新生成中...'
-  if (summaryPreviewDirty.value) return '参数已变更，点击刷新'
-  return '预览已是最新'
-})
-
-let summaryPreviewSequence = 0
-
-const refreshSummaryImagePreview = async (options?: { manual?: boolean; force?: boolean }) => {
-  if (!isSummaryImageSettingsOpen.value) return
-
-  const payload = getSummaryImageExportPayload()
-  if (!payload) return
-
-  if (!options?.force && !summaryPreviewDirty.value) return
-
-  if (options?.manual) {
-    info('正在重新生成预览图...')
-  }
-
-  const currentSequence = ++summaryPreviewSequence
-  isSummaryPreviewRendering.value = true
-  summaryRenderProgress.value = null
-  summaryPreviewPages.value = []
-
-  try {
-    const preview = await generateSummaryImagePreview(
-      payload,
-      summaryImageSettings.value,
-      (progress: SummaryImageRenderProgress) => {
-        summaryRenderProgress.value = { current: progress.current, total: progress.total }
-        if (progress.page) {
-          summaryPreviewPages.value = [...summaryPreviewPages.value, progress.page]
-        }
-      },
-    )
-    if (currentSequence !== summaryPreviewSequence) return
-
-    summaryPreviewTotalSizeKB.value = preview.totalSizeKB
-    summaryPreviewActiveIndex.value = Math.min(
-      summaryPreviewActiveIndex.value,
-      Math.max(0, preview.pages.length - 1),
-    )
-    summaryPreviewDirty.value = false
-
-    if (options?.manual) {
-      success(`预览已更新：共 ${preview.pages.length} 张，约 ${preview.totalSizeKB}KB`)
-    }
-  } catch (_error) {
-    if (currentSequence === summaryPreviewSequence) {
-      toastError('预览生成失败，请调整参数后重试')
-    }
-  } finally {
-    if (currentSequence === summaryPreviewSequence) {
-      isSummaryPreviewRendering.value = false
-      summaryRenderProgress.value = null
-    }
-  }
-}
-
-const handleOpenSummaryImageSettings = () => {
-  if (!selectedTask.value?.summary) {
-    toastError('暂无可导出的 AI 总结')
-    return
-  }
-
-  isSummaryImageSettingsOpen.value = true
-  showAllPreviewPages.value = false
-  summaryPreviewActiveIndex.value = 0
-  summaryPreviewDirty.value = true
-  void refreshSummaryImagePreview({ force: true })
-}
-
-const handleRefreshSummaryImagePreview = () => {
-  void refreshSummaryImagePreview({ manual: true })
-}
-
-const handleSelectPreviewPage = (index: number) => {
-  if (index < 0 || index >= summaryPreviewPages.value.length) return
-  summaryPreviewActiveIndex.value = index
-}
-
-const handlePreviewPagePrev = () => {
-  if (summaryPreviewActiveIndex.value <= 0) return
-  summaryPreviewActiveIndex.value -= 1
-}
-
-const handlePreviewPageNext = () => {
-  if (summaryPreviewActiveIndex.value >= summaryPreviewPages.value.length - 1) return
-  summaryPreviewActiveIndex.value += 1
-}
-
-const handleCloseSummaryImageSettings = () => {
-  isSummaryImageSettingsOpen.value = false
-}
+// 单实例 exporter：预览/导出共享 renderCanvasCache（对抗评审 P2-4）
+const summaryImageExporter = useSummaryImageExporter()
+const { exportSummaryAsImage } = summaryImageExporter
 
 const handleCloseViewer = () => {
   closeMermaidViewer()
@@ -487,6 +310,7 @@ const handleUpdateLlmSettings = async (payload: {
   api_key?: string
   model_id?: string
   temperature?: number
+  extra_headers?: Record<string, string>
 }) => {
   try {
     await updateLlmSettings(payload)
@@ -502,6 +326,7 @@ const handleUpdateLlmSettingsAndTest = async (payload: {
   api_key?: string
   model_id?: string
   temperature?: number
+  extra_headers?: Record<string, string>
 }) => {
   try {
     // 先保存配置
@@ -821,150 +646,6 @@ watch(error, (newError) => {
   }
 })
 
-watch(summaryImageSettings, (nextSettings) => {
-  try {
-    localStorage.setItem(SUMMARY_IMAGE_SETTINGS_STORAGE_KEY, JSON.stringify(nextSettings))
-  } catch {
-    // Ignore persistence failure.
-  }
-  if (isSummaryImageSettingsOpen.value) {
-    summaryPreviewDirty.value = true
-  }
-}, { deep: true })
-
-// 配置 marked 渲染器以支持 mermaid 类名
-const renderer = new marked.Renderer()
-renderer.code = ({ text, lang }) => {
-  if (lang === 'mermaid') {
-    return `<pre class="mermaid">${text}</pre>`
-  }
-  return `<pre><code class="language-${lang}">${text}</code></pre>`
-}
-marked.setOptions({ renderer })
-
-// Defer large summary compilation so the multipart preview stays interactive.
-const compiledMarkdown = ref('')
-const showFullMultipartSummary = ref(false)
-const multipartPage = ref(0)
-const multipartPageSize = 10
-let markdownCompileTimer: ReturnType<typeof setTimeout> | null = null
-let markdownCompileGeneration = 0
-
-const getMultipartOverview = (summary: string) => {
-  const marker = summary.search(/^#\s*分P总结.*$/m)
-  if (marker > 0) return summary.slice(0, marker).trim()
-  return summary.slice(0, 12000).trim()
-}
-
-const getMultipartPages = (summary: string) => {
-  const marker = summary.search(/^#\s*分P总结.*$/m)
-  if (marker < 0) return [summary]
-  const body = summary.slice(marker)
-  const matches = Array.from(body.matchAll(/^##\s+P\d+[:：].*$/gm))
-  if (!matches.length) return [body.trim()]
-  const sections = matches.map((match, index) => {
-    const start = match.index ?? 0
-    const nextMatch = matches[index + 1]
-    const end = nextMatch?.index ?? body.length
-    return body.slice(start, end).trim()
-  })
-  const pages: string[] = []
-  for (let index = 0; index < sections.length; index += multipartPageSize) {
-    pages.push(`# 分P总结\\n\\n${sections.slice(index, index + multipartPageSize).join('\\n\\n')}`)
-  }
-  return pages
-}
-
-const multipartPageCount = computed(() => {
-  const summary = selectedTask.value?.summary
-  if (!summary || !selectedTask.value?.has_parts) return 0
-  return getMultipartPages(summary).length
-})
-
-const scheduleMarkdownCompile = () => {
-  markdownCompileGeneration += 1
-  const generation = markdownCompileGeneration
-  if (markdownCompileTimer) {
-    clearTimeout(markdownCompileTimer)
-    markdownCompileTimer = null
-  }
-
-  compiledMarkdown.value = ''
-  const task = selectedTask.value
-  if (!task?.summary) return
-
-  markdownCompileTimer = setTimeout(() => {
-    markdownCompileTimer = null
-    if (generation !== markdownCompileGeneration || selectedTask.value?.id !== task.id) return
-
-    const summary = task.summary
-    if (!summary) return
-    let previewSummary = summary
-    if (task.has_parts) {
-      if (!showFullMultipartSummary.value) {
-        previewSummary = getMultipartOverview(summary)
-      } else {
-        const pages = getMultipartPages(summary)
-        previewSummary = pages[multipartPage.value] || pages[0] || ''
-      }
-    }
-    const cleanedSummary = stripDoubleBracePlaceholders(previewSummary)
-    // XSS 单点净化（管线出口）：marked 不做净化，LLM 内容（含原始 HTML）经
-    // marked 编译后立即 DOMPurify 白名单净化；postProcess 只追加可信 DOM
-    // （类名/时间芯片），不会重新引入未净化内容。TaskContentArea 的 v-html
-    // 只渲染本管线产物，禁止绕过此出口直接给 compiledMarkdown 赋值。
-    // 配置：FORBID_ATTR: ['style']（默认配置不过滤 style，LLM 输出可携带
-    // 追踪/遮罩 CSS）；USE_PROFILES: { html: true }（剔除 svg/mathML 面，
-    // 本管线不需要；Mermaid SVG 走 DOM API 不经此出口）。
-    const html = DOMPurify.sanitize(marked.parse(cleanedSummary) as string, {
-      FORBID_ATTR: ['style'],
-      USE_PROFILES: { html: true },
-    })
-    compiledMarkdown.value = postProcessCompiledMarkdown(html, {
-      videoUrl: task.video_url || '',
-    })
-  }, 120)
-}
-
-watch(
-  [() => selectedTask.value?.id, () => selectedTask.value?.summary, showFullMultipartSummary, multipartPage],
-  scheduleMarkdownCompile,
-  { immediate: true },
-)
-
-watch(
-  () => selectedTask.value?.id,
-  () => {
-    showFullMultipartSummary.value = false
-    multipartPage.value = 0
-  },
-)
-
-const expandMultipartSummary = async () => {
-  const task = selectedTask.value
-  if (!task) return
-  multipartPage.value = 0
-  try {
-    await fetchTaskFullContent(task.id)
-  } catch (error) {
-    console.error('Failed to load full multipart summary:', error)
-    return
-  }
-  // 等待期间用户可能已切换任务：任务身份重校验（与 copyContent/downloadContent
-  // 的 selectedTask.id 守卫模式一致），不得展开新任务的完整分P总结
-  if (!selectedTask.value || selectedTask.value.id !== task.id) return
-  showFullMultipartSummary.value = true
-}
-
-const collapseMultipartSummary = () => {
-  showFullMultipartSummary.value = false
-  multipartPage.value = 0
-}
-
-const changeMultipartPage = (page: number) => {
-  multipartPage.value = Math.max(0, Math.min(page, Math.max(0, multipartPageCount.value - 1)))
-}
-
 const topic = computed(() => {
   if (selectedTask.value?.topic) return selectedTask.value.topic
   if (!selectedTask.value?.summary) return ''
@@ -975,19 +656,51 @@ const topic = computed(() => {
   return ''
 })
 
-watch(
-  [
-    () => isSummaryImageSettingsOpen.value,
-    () => selectedTask.value?.id,
-    compiledMarkdown,
-    topic,
-  ],
-  () => {
-    if (isSummaryImageSettingsOpen.value) {
-      summaryPreviewDirty.value = true
-    }
-  },
-)
+// markdown 编译管线 + 多P 总结分页（features/transcription/useMarkdownCompile）
+const {
+  compiledMarkdown,
+  showFullMultipartSummary,
+  multipartPage,
+  multipartPageCount,
+  expandMultipartSummary,
+  collapseMultipartSummary,
+  changeMultipartPage,
+} = useMarkdownCompile({
+  selectedTask,
+  fetchTaskFullContent,
+})
+
+// 总结一键成图工作台编排（features/transcription/composables/useSummaryImageWorkbench）
+const {
+  summaryLayoutOptions,
+  summaryMetaModeOptions,
+  summaryFormatOptions,
+  summaryWidthOptions,
+  summaryPixelRatioOptions,
+  summaryImageSettings,
+  isSummaryImageSettingsOpen,
+  isSummaryPreviewRendering,
+  summaryRenderProgress,
+  summaryPreviewDirty,
+  summaryPreviewPages,
+  summaryPreviewActiveIndex,
+  summaryPreviewTotalSizeKB,
+  showAllPreviewPages,
+  canRefreshSummaryPreview,
+  summaryRefreshButtonLabel,
+  getSummaryImageExportPayload,
+  handleOpenSummaryImageSettings,
+  handleRefreshSummaryImagePreview,
+  handleSelectPreviewPage,
+  handlePreviewPagePrev,
+  handlePreviewPageNext,
+  handleCloseSummaryImageSettings,
+} = useSummaryImageWorkbench({
+  selectedTask,
+  topic,
+  compiledMarkdown,
+  summaryImageExporter,
+})
 </script>
 
 <template>
@@ -1060,6 +773,14 @@ watch(
       :isUpdatingTranscriptionSettings="isUpdatingTranscriptionSettings"
       :summarizationSettings="summarizationSettings"
       :isUpdatingSummarizationSettings="isUpdatingSummarizationSettings"
+      :isReadingBilibiliCookieFromBrowser="isReadingBilibiliCookieFromBrowser"
+      :modelPathValidationResult="modelPathValidationResult"
+      :isValidatingModelPath="isValidatingModelPath"
+      :vibevoiceServiceStatus="vibevoiceServiceStatus"
+      :isScanningVibeVoice="isScanningVibeVoice"
+      :isStartingVibeVoice="isStartingVibeVoice"
+      :isStoppingVibeVoice="isStoppingVibeVoice"
+      :clearModelPathValidation="clearModelPathValidation"
       @submit="handleSubmit"
       @cancelSubmit="cancelSubmitting"
       @selectTask="handleSelectTask"
@@ -1069,6 +790,10 @@ watch(
       @updateTranscriptionSettings="handleUpdateTranscriptionSettings"
       @updateSummarizationSettings="handleUpdateSummarizationSettings"
       @startTestLlm="handleTestLlm"
+      @readBilibiliCookieFromBrowser="handleReadBilibiliCookieFromBrowser"
+      @validateModelPath="handleValidateModelPath"
+      @scanVibeVoiceServices="handleScanVibeVoiceServices"
+      @fetchVibeVoiceServiceStatus="handleFetchVibeVoiceServiceStatus"
       @focusSearchMatch="handleFocusSearchMatch"
       @showInfo="(task) => { handleSelectTask(task); showInfoModal = true; }"
       @openSettings="isSettingsModalOpen = true"
