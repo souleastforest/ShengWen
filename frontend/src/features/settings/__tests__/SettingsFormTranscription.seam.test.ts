@@ -9,8 +9,9 @@
  *   isValidatingModelPath / vibevoiceServiceStatus / isScanningVibeVoice /
  *   isStartingVibeVoice / isStoppingVibeVoice / clearModelPathValidation / isOpen
  * - emits: updateTranscriptionSettings / readBilibiliCookieFromBrowser /
- *   validateModelPath / scanVibeVoiceServices / startVibeVoiceService /
- *   stopVibeVoiceService / fetchVibeVoiceServiceStatus
+ *   validateModelPath / scanVibeVoiceServices / fetchVibeVoiceServiceStatus
+ *   （startVibeVoiceService/stopVibeVoiceService 为旧 modal 死声明先例，未声明——
+ *   模板不触发，SettingsModal seam 保留声明，见 SettingsModal.vue）
  */
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'

@@ -161,42 +161,49 @@ const settingsTab = ref<'llm' | 'transcription' | 'summarization'>('llm')
               <PhX :size="20" />
             </button>
           </div>
-          <!-- 内容区：与 Sidebar 面板双入口复用的公共设置表单（Q8：语义以弹窗为准） -->
+          <!-- 内容区：与 Sidebar 面板双入口复用的公共设置表单（Q8：语义以弹窗为准）。
+               v-show 常挂载（对抗评审 P1-2/P2-3 修订）：切 tab 只切 DOM 可见性，
+               表单实例与本地 ref 常驻——未保存输入不丢失；SettingsFormTranscription
+               的 [isOpen, vibevoiceInferenceMode] watch 与拆片前弹窗根层 watch 同时机
+               （任意 tab 打开弹窗即按需拉取 VibeVoice 服务状态）。 -->
           <div class="flex-1 overflow-y-auto px-4 md:px-6 py-4 md:py-6 custom-scrollbar min-h-0">
-            <SettingsFormLlm
-              v-if="settingsTab === 'llm'"
-              :llm-providers="llmProviders"
-              :llm-settings="llmSettings"
-              :is-updating-llm-settings="isUpdatingLlmSettings"
-              :is-testing-llm="isTestingLlm"
-              @update-llm-settings="(payload) => emit('updateLlmSettings', payload)"
-              @update-llm-settings-and-test="(payload) => emit('updateLlmSettingsAndTest', payload)"
-            />
-            <SettingsFormTranscription
-              v-else-if="settingsTab === 'transcription'"
-              :transcription-settings="transcriptionSettings"
-              :is-updating-transcription-settings="isUpdatingTranscriptionSettings"
-              :is-reading-bilibili-cookie-from-browser="isReadingBilibiliCookieFromBrowser"
-              :model-path-validation-result="modelPathValidationResult"
-              :is-validating-model-path="isValidatingModelPath"
-              :vibevoice-service-status="vibevoiceServiceStatus"
-              :is-scanning-vibe-voice="isScanningVibeVoice"
-              :is-starting-vibe-voice="isStartingVibeVoice"
-              :is-stopping-vibe-voice="isStoppingVibeVoice"
-              :clear-model-path-validation="clearModelPathValidation"
-              :is-open="isOpen"
-              @update-transcription-settings="(payload) => emit('updateTranscriptionSettings', payload)"
-              @read-bilibili-cookie-from-browser="emit('readBilibiliCookieFromBrowser')"
-              @validate-model-path="(request) => emit('validateModelPath', request)"
-              @scan-vibe-voice-services="emit('scanVibeVoiceServices')"
-              @fetch-vibe-voice-service-status="emit('fetchVibeVoiceServiceStatus')"
-            />
-            <SettingsFormSummarization
-              v-else
-              :summarization-settings="summarizationSettings"
-              :is-updating-summarization-settings="isUpdatingSummarizationSettings"
-              @update-summarization-settings="(payload) => emit('updateSummarizationSettings', payload)"
-            />
+            <div v-show="settingsTab === 'llm'">
+              <SettingsFormLlm
+                :llm-providers="llmProviders"
+                :llm-settings="llmSettings"
+                :is-updating-llm-settings="isUpdatingLlmSettings"
+                :is-testing-llm="isTestingLlm"
+                @update-llm-settings="(payload) => emit('updateLlmSettings', payload)"
+                @update-llm-settings-and-test="(payload) => emit('updateLlmSettingsAndTest', payload)"
+              />
+            </div>
+            <div v-show="settingsTab === 'transcription'">
+              <SettingsFormTranscription
+                :transcription-settings="transcriptionSettings"
+                :is-updating-transcription-settings="isUpdatingTranscriptionSettings"
+                :is-reading-bilibili-cookie-from-browser="isReadingBilibiliCookieFromBrowser"
+                :model-path-validation-result="modelPathValidationResult"
+                :is-validating-model-path="isValidatingModelPath"
+                :vibevoice-service-status="vibevoiceServiceStatus"
+                :is-scanning-vibe-voice="isScanningVibeVoice"
+                :is-starting-vibe-voice="isStartingVibeVoice"
+                :is-stopping-vibe-voice="isStoppingVibeVoice"
+                :clear-model-path-validation="clearModelPathValidation"
+                :is-open="isOpen"
+                @update-transcription-settings="(payload) => emit('updateTranscriptionSettings', payload)"
+                @read-bilibili-cookie-from-browser="emit('readBilibiliCookieFromBrowser')"
+                @validate-model-path="(request) => emit('validateModelPath', request)"
+                @scan-vibe-voice-services="emit('scanVibeVoiceServices')"
+                @fetch-vibe-voice-service-status="emit('fetchVibeVoiceServiceStatus')"
+              />
+            </div>
+            <div v-show="settingsTab === 'summarization'">
+              <SettingsFormSummarization
+                :summarization-settings="summarizationSettings"
+                :is-updating-summarization-settings="isUpdatingSummarizationSettings"
+                @update-summarization-settings="(payload) => emit('updateSummarizationSettings', payload)"
+              />
+            </div>
           </div>
         </div>
       </div>

@@ -93,8 +93,15 @@ function createWrapper(overrides: Partial<typeof defaultProps> = {}) {
 }
 
 function findButtonByText(wrapper: VueWrapper, text: string) {
-  const button = wrapper.findAll('button').find((candidate) => candidate.text().includes(text))
-  expect(button, `Expected to find button containing "${text}"`).toBeTruthy()
+  // v-show 常挂载后隐藏 tab 的表单按钮仍在 DOM：跳过 v-show 隐藏容器（display:none）
+  // 内的按钮（happy-dom 无布局引擎，isVisible 恒 true，改用 inline style 判断）
+  const button = wrapper
+    .findAll('button')
+    .find((candidate) =>
+      candidate.text().includes(text)
+      && candidate.element.closest('[style*="display: none"]') === null,
+    )
+  expect(button, `Expected to find visible button containing "${text}"`).toBeTruthy()
   return button!
 }
 
@@ -180,5 +187,46 @@ describe('SettingsModal 设置保存交互', () => {
     expect(wrapper.findComponent(SettingsFormTranscription).exists()).toBe(true)
     await openTab(wrapper, 'Agent 设置')
     expect(wrapper.findComponent(SettingsFormSummarization).exists()).toBe(true)
+  })
+})
+
+describe('SettingsModal 对抗评审修订', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  it('P1-2：切 tab 保留未保存表单状态（LLM 输入 → 切走 → 切回仍在）', async () => {
+    const wrapper = createWrapper({
+      llmProviders: [
+        { id: 'openai', label: 'OpenAI', default_base_url: 'https://api.openai.com/v1', default_model_id: 'gpt-4o', description: '' },
+      ],
+      llmSettings: {
+        provider: 'openai', base_url: 'https://api.openai.com/v1', model_id: 'gpt-4o',
+        temperature: 0.7, context_window_size: 128000, has_api_key: false, api_key_hint: '', extra_headers: {},
+      },
+    })
+
+    // LLM tab：输入未保存的 Base URL
+    const baseUrlInput = wrapper.findAll('input').find((i) => (i.element as HTMLInputElement).placeholder === 'https://api.example.com/v1')!
+    await baseUrlInput.setValue('https://custom.example.com')
+
+    // 切到转录 tab 再切回
+    await openTab(wrapper, '转录设置')
+    await openTab(wrapper, 'LLM 配置')
+
+    const baseUrlAfter = wrapper.findAll('input').find((i) => (i.element as HTMLInputElement).placeholder === 'https://api.example.com/v1')!
+    expect((baseUrlAfter.element as HTMLInputElement).value).toBe('https://custom.example.com')
+  })
+
+  it('P2-3：API 推理模式打开弹窗即触发 fetchVibeVoiceServiceStatus（无需切到转录 tab）', async () => {
+    const wrapper = createWrapper({
+      isOpen: false,
+      transcriptionSettings: createTranscriptionSettings({ vibevoice_inference_mode: 'api' }),
+    })
+    expect(wrapper.emitted('fetchVibeVoiceServiceStatus')).toBeUndefined()
+
+    await wrapper.setProps({ isOpen: true })
+    expect(wrapper.emitted('fetchVibeVoiceServiceStatus')).toBeTruthy()
   })
 })
