@@ -29,6 +29,12 @@
     Sidebar 任务筛选交互 3 + SettingsModal 设置保存交互 5）；vue-tsc -b 通过；
     npm run build 通过；playwright 冒烟 16/16（21001：提交表单/任务列表/设置弹窗
     三 tab/内容区原文 tab，无未捕获页面错误）。
+  - **对抗评审修订（2026-08-15，P0 无）**：P1-1 TaskSearch 恢复 ASR 分片计数标签
+    （抽入 taskDisplay.ts 同源）；P1-2 SettingsModal 三表单 v-if 链改 v-show 常挂载
+    （切 tab 保留未保存输入）；P2-3 弹窗打开即按需拉取 VibeVoice 服务状态（v-show
+    下 watch 与拆片前根层语义同时机）；P2-4 App 传入单实例 exporter 共享预览/导出
+    canvas 缓存；P2-5 theme tab 条件链变化（不可达，修复旧隐藏 bug）记录。
+    TDD 新增 4 用例（先红后绿），vitest 364 全绿。
   - **流程档位**：T2（子代理实施）。
 - 2026-08-15: **P5 死代码与工程残留完成**（refactor/p5-cleanup，行为保持 Q6）。
   - **删除**（清单 §8，用户确认后执行）：TaskHeader.vue（零引用，TaskMetaCard 取代）、
