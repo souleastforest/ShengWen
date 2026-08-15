@@ -487,6 +487,7 @@ const handleUpdateLlmSettings = async (payload: {
   api_key?: string
   model_id?: string
   temperature?: number
+  extra_headers?: Record<string, string>
 }) => {
   try {
     await updateLlmSettings(payload)
@@ -502,6 +503,7 @@ const handleUpdateLlmSettingsAndTest = async (payload: {
   api_key?: string
   model_id?: string
   temperature?: number
+  extra_headers?: Record<string, string>
 }) => {
   try {
     // 先保存配置
@@ -1060,6 +1062,14 @@ watch(
       :isUpdatingTranscriptionSettings="isUpdatingTranscriptionSettings"
       :summarizationSettings="summarizationSettings"
       :isUpdatingSummarizationSettings="isUpdatingSummarizationSettings"
+      :isReadingBilibiliCookieFromBrowser="isReadingBilibiliCookieFromBrowser"
+      :modelPathValidationResult="modelPathValidationResult"
+      :isValidatingModelPath="isValidatingModelPath"
+      :vibevoiceServiceStatus="vibevoiceServiceStatus"
+      :isScanningVibeVoice="isScanningVibeVoice"
+      :isStartingVibeVoice="isStartingVibeVoice"
+      :isStoppingVibeVoice="isStoppingVibeVoice"
+      :clearModelPathValidation="clearModelPathValidation"
       @submit="handleSubmit"
       @cancelSubmit="cancelSubmitting"
       @selectTask="handleSelectTask"
@@ -1069,6 +1079,10 @@ watch(
       @updateTranscriptionSettings="handleUpdateTranscriptionSettings"
       @updateSummarizationSettings="handleUpdateSummarizationSettings"
       @startTestLlm="handleTestLlm"
+      @readBilibiliCookieFromBrowser="handleReadBilibiliCookieFromBrowser"
+      @validateModelPath="handleValidateModelPath"
+      @scanVibeVoiceServices="handleScanVibeVoiceServices"
+      @fetchVibeVoiceServiceStatus="handleFetchVibeVoiceServiceStatus"
       @focusSearchMatch="handleFocusSearchMatch"
       @showInfo="(task) => { handleSelectTask(task); showInfoModal = true; }"
       @openSettings="isSettingsModalOpen = true"
