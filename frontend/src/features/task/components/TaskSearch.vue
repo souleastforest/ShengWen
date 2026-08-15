@@ -13,6 +13,7 @@ import {
   buildMatchPreview,
   buildModifiedInfo,
   formatTaskDate,
+  getTaskStatusLabel,
   type MatchPreview,
   type SearchMatchSource,
 } from '../taskDisplay'
@@ -89,20 +90,6 @@ const managedResults = computed<ManagedTaskResult[]>(() => {
 
   return list
 })
-
-const getTaskStatusLabel = (task: Task) => {
-  const base = getStatusLabel(task.status)
-  const total = Number(task.part_count || 0)
-  const done = Number(task.part_completed || 0)
-  const failed = Number(task.part_failed || 0)
-  if (total > 0 && (task.status === TaskStatus.PARTIAL || task.status === TaskStatus.COMPLETED || task.status === TaskStatus.DOWNLOADING || task.status === TaskStatus.TRANSCRIBING || task.status === TaskStatus.SUMMARIZING)) {
-    return failed > 0 ? base + ' (' + done + '/' + total + '，失败 ' + failed + ')' : base + ' (' + done + '/' + total + ')'
-  }
-  if (task.status !== TaskStatus.SUMMARIZING) return base
-  const summaryTotal = Number(task.summary_chunk_total || 0)
-  const summaryDone = Number(task.summary_chunk_done || 0)
-  return summaryTotal > 0 ? '总结中 (' + Math.min(summaryDone, summaryTotal) + '/' + summaryTotal + ')' : base
-}
 
 const handleManagedResultClick = (result: ManagedTaskResult) => {
   emit('selectTask', result.task)

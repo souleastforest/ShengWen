@@ -81,6 +81,25 @@ describe('TaskSearch seam：过滤与排序', () => {
   })
 })
 
+describe('TaskSearch seam：状态标签与 TaskList 同源（对抗评审 P1-1）', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  it('ASR 分片计数：TRANSCRIBING 显示"转录中 (x/y)"（与 TaskList 共用 taskDisplay.getTaskStatusLabel）', () => {
+    const task = makeTask({ id: 't1', status: 'TRANSCRIBING', asr_chunk_total: 10, asr_chunk_done: 3 })
+    const wrapper = mountSearch([task])
+    expect(wrapper.text()).toContain('转录中 (3/10)')
+  })
+
+  it('分P任务状态标签带分片计数（与 TaskList 同源）', () => {
+    const task = makeTask({ id: 't1', status: 'PARTIAL', part_count: 3, part_completed: 2 })
+    const wrapper = mountSearch([task])
+    expect(wrapper.text()).toContain('部分完成 (2/3)')
+  })
+})
+
 describe('TaskSearch seam：emit', () => {
   it('点击结果行 emit selectTask', async () => {
     const task = makeTask({ id: 't1', topic: '主题' })
