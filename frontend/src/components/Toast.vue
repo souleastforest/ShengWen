@@ -45,18 +45,15 @@ const iconBgStyles = {
 const isHovered = ref(false)
 
 function handleClick() {
-  console.log('[Toast] Clicked')
   emit('close', props.id)
 }
 
 function handleMouseEnter() {
-  console.log('[Toast] Mouse enter')
   isHovered.value = true
   pauseToast(props.id)
 }
 
 function handleMouseLeave() {
-  console.log('[Toast] Mouse leave')
   isHovered.value = false
   resumeToast(props.id)
 }

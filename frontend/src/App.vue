@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch, ref } from 'vue'
+import { computed, watch, ref, onMounted, onBeforeUnmount } from 'vue'
 import { PhMonitorPlay, PhList } from '@phosphor-icons/vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -136,6 +136,42 @@ const mermaidViewerModalRef = ref<{
 
 // Toast 通知
 const { toasts, removeToast, success, info, error: toastError } = useToast()
+
+// Toast 容器响应式定位：桌面 bottom-right / 移动端（<768px）bottom-center。
+// P5 合并双容器（CSS `hidden md:block` / `block md:hidden`）为单实例 + position 切换——
+// 隐藏实例不再挂载、不再绑定 hover/pause 事件；匹配 Tailwind md 断点（768px）。
+const TOAST_MOBILE_QUERY = '(max-width: 767px)'
+const toastPosition = ref<'bottom-right' | 'bottom-center'>('bottom-right')
+let toastMediaQuery: MediaQueryList | null = null
+let detachToastMediaListener: (() => void) | null = null
+
+const handleToastViewportChange = (e: { matches: boolean }) => {
+  toastPosition.value = e.matches ? 'bottom-center' : 'bottom-right'
+}
+
+onMounted(() => {
+  if (typeof window === 'undefined') return
+  toastMediaQuery = window.matchMedia(TOAST_MOBILE_QUERY)
+  handleToastViewportChange(toastMediaQuery)
+  if (typeof toastMediaQuery.addEventListener === 'function') {
+    toastMediaQuery.addEventListener('change', handleToastViewportChange)
+    detachToastMediaListener = () => {
+      toastMediaQuery?.removeEventListener('change', handleToastViewportChange)
+    }
+  } else {
+    // 旧浏览器回退（legacy addListener）
+    toastMediaQuery.addListener(handleToastViewportChange)
+    detachToastMediaListener = () => {
+      toastMediaQuery?.removeListener(handleToastViewportChange)
+    }
+  }
+})
+
+onBeforeUnmount(() => {
+  detachToastMediaListener?.()
+  detachToastMediaListener = null
+  toastMediaQuery = null
+})
 
 const {
   showMermaidViewer,
@@ -956,17 +992,10 @@ watch(
 
 <template>
   <div class="flex h-[100dvh] w-full overflow-hidden bg-bg text-slate-800 font-sans relative">
-    <!-- Toast 通知容器 -->
+    <!-- Toast 通知容器（单实例：position 响应式切换，桌面 bottom-right / 移动 bottom-center） -->
     <ToastContainer
       :toasts="toasts"
-      position="bottom-right"
-      class="md:block hidden"
-      @close="removeToast"
-    />
-    <ToastContainer
-      :toasts="toasts"
-      position="bottom-center"
-      class="block md:hidden"
+      :position="toastPosition"
       @close="removeToast"
     />
 

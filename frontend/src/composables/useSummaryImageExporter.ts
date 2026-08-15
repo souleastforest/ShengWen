@@ -362,10 +362,6 @@ const applySummaryTypography = (
   restoreTimestampChipsToText(summaryContent)
 
   applySummaryTypographyStyles(summaryContent, theme, settings)
-
-  const exportConfig = theme.exportConfig
-  const baseFontSize = (exportConfig?.fontSize || SUMMARY_FONT_SIZE) * settings.fontScale
-  console.log('[Summary Typography] Base font size for body text:', baseFontSize, 'px')
 }
 
 const applySummaryTypographyStyles = (
@@ -634,10 +630,6 @@ const resolveMermaidFontSizePx = (
   const exportConfig = theme.exportConfig
   const baseFontSize = (exportConfig?.fontSize || SUMMARY_FONT_SIZE) * settings.fontScale
   const mermaidFontSize = Math.round(clampNumber(baseFontSize * MERMAID_FONT_RATIO, 12, 22, 16) * 10) / 10
-
-  console.log('[Mermaid Font Debug] Base font size:', baseFontSize)
-  console.log('[Mermaid Font Debug] MERMAID_FONT_RATIO:', MERMAID_FONT_RATIO)
-  console.log('[Mermaid Font Debug] Calculated mermaid font size:', mermaidFontSize)
 
   return mermaidFontSize
 }

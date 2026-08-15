@@ -113,7 +113,7 @@ frontend/src/
 3. `TaskPart` 类型强化（updated_at 等字段；e2e 27 字段类型副本改从 src/types 导入）。
 4. `types.test.ts` 补形状断言。
 
-### P5 死代码与工程残留
+### P5 死代码与工程残留 — ✅ 已完成（2026-08-15，refactor/p5-cleanup）
 
 1. **删除文件（清单 §8 交用户确认后执行）**：`TaskHeader.vue`（93 行，零引用，与 TaskMetaCard 主题编辑逻辑重复）、`HelloWorld.vue`（脚手架遗留）、脚手架 `vue.svg`（如存在）。
 2. **console.log 清理**：Toast.vue `:48/53/59`、useToast.ts `:67/78`、useMarkdownTheme `:86/89/117/160`、useSummaryImageExporter `:368/638-640`；WS 连接/断开关键日志保留并降级为 debug 条件输出。
@@ -200,17 +200,27 @@ frontend/src/
 - 非分P任务超长总结（>12000 字）总结 tab 永久截断无入口（code-reviewer S-2：`summary.length >= 12000` 时也显示展开入口）
 - XSS 向量 e2e 用例（img onerror / script / javascript: href / svg xlink / style url()）纳入后续 e2e 批次（code-reviewer S-3）
 - WS onmessage 畸形帧防护（非 JSON 帧 JSON.parse 抛错不崩溃）——code-reviewer F5 确认 P2 范围，fix/realtime-progress 分支不做，待本 backlog 排期
-- e2e/ 无 tsconfig 项目覆盖（tsconfig.app.json 仅 src/**），vue-tsc -b 不检查 spec——类型单源化收益未兑现；与 P5 的 vitest 误收录处理绑定（vitest.config.ts exclude e2e/ + 补 tsconfig.e2e.json 或 e2e 类型检查步骤）（code-reviewer P2-1，2026-08-14）
+- ~~e2e/ 无 tsconfig 项目覆盖（tsconfig.app.json 仅 src/**），vue-tsc -b 不检查 spec~~（code-reviewer P2-1，2026-08-14 → **2026-08-15 已解决**：vitest.config.ts exclude `e2e/**` + 新增 tsconfig.e2e.json 入根 references，`vue-tsc -b` 真实检查 e2e spec，类型单源化收益兑现；此条关闭）
 - `submitLocalPath` 已随 P4 修订类型化（LocalPathCreateTaskRequest）——P2-2 已落地，此条关闭
+- playwright.config.ts 无 tsconfig 项目覆盖（tsconfig.node.json 仅 vite.config.ts）——pre-existing（P4 前即有），与 P5-P2-1 类型门禁同族；绑定 P6 结构包补（playwright.config.ts 改配置时纳入 tsconfig 检查）（code-reviewer P5-P2-1，2026-08-15）
+- ToastContainer legacy `addListener` 回退分支与跨断点（桌面↔移动切换瞬间）hover pause/resume 行为无测试覆盖——低优先级，随后续 Toast 相关测试批次补（code-reviewer P5-P2-3，2026-08-15）
 
 ## 8. 文件变更清单（删除/改名，需用户确认后执行）
 
-| 操作 | 路径 | 身份判断 |
-|---|---|---|
-| 删除 | `frontend/src/components/TaskHeader.vue` | 93 行，全仓零引用，功能已被 TaskMetaCard 取代（审计确认） |
-| 删除 | `frontend/src/components/HelloWorld.vue` | 脚手架遗留，零引用 |
-| 删除 | `frontend/public/vue.svg`（如存在） | 脚手架遗留，零引用 |
-| git rm --cached | `frontend/.vite/deps/*`（4 文件） | vite 预构建旧缓存（4 月产物），无业务价值 |
-| 清理 | `frontend/.ruff_cache` | 后端 ruff 缓存误落前端目录，纯缓存 |
+> **P5 已全部执行（2026-08-15）**。执行时修正两处路径偏差：`vue.svg` 实际在
+> `frontend/src/assets/`（原记 `frontend/public/`）；新增根目录 `.codex`（0 字节空文件）。
+
+| 操作 | 路径 | 身份判断 | 状态 |
+|---|---|---|---|
+| 删除 | `frontend/src/components/TaskHeader.vue` | 93 行，全仓零引用，功能已被 TaskMetaCard 取代（审计确认） | ✅ 已执行 |
+| 删除 | `frontend/src/components/HelloWorld.vue` | 脚手架遗留，零引用 | ✅ 已执行 |
+| 删除 | `frontend/src/assets/vue.svg`（路径修正：原记 public/） | 脚手架遗留，零引用 | ✅ 已执行 |
+| git rm | `frontend/.vite/deps/*`（4 文件） | vite 预构建旧缓存（4 月产物），无业务价值；.gitignore 已补 `.vite/` | ✅ 已执行 |
+| 清理 | `frontend/.ruff_cache` | 后端 ruff 缓存误落前端目录，纯缓存 | ✅ 已执行 |
+| 删除 | 根目录 `<MagicMock*` ×20 | loguru 测试日志残留（480K，mtime 2026-08-13，未追踪） | ✅ 已执行 |
+| 删除 | 根目录 `.codex` | 0 字节空占位文件（未追踪） | ✅ 已执行 |
+
+**保留（禁止删除）**：`recovered_urls.txt`（DB 事故恢复记录，2411B，原位保留；
+建议后续归档进 docs/ 或仓库外备份目录）。
 
 > 每包实施前若有新增删除项，由子代理列清单 → 主流程确认 → 执行。
