@@ -174,7 +174,9 @@ const {
   zoomOut,
 } = useMermaidViewer(mermaidViewerModalRef)
 
-const { exportSummaryAsImage } = useSummaryImageExporter()
+// 单实例 exporter：预览/导出共享 renderCanvasCache（对抗评审 P2-4）
+const summaryImageExporter = useSummaryImageExporter()
+const { exportSummaryAsImage } = summaryImageExporter
 
 const handleCloseViewer = () => {
   closeMermaidViewer()
@@ -697,6 +699,7 @@ const {
   selectedTask,
   topic,
   compiledMarkdown,
+  summaryImageExporter,
 })
 </script>
 

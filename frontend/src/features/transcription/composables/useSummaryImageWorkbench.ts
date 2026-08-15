@@ -68,10 +68,15 @@ export function useSummaryImageWorkbench(options: {
   selectedTask: Readonly<Ref<Task | null>>
   topic: Readonly<Ref<string>>
   compiledMarkdown: Readonly<Ref<string>>
+  /**
+   * 可注入的 exporter 实例（对抗评审 P2-4）：renderCanvasCache 为实例级缓存，
+   * App 传入自己的实例使预览/导出共享同一缓存（默认独立实例，功能等价仅无缓存共享）。
+   */
+  summaryImageExporter?: ReturnType<typeof useSummaryImageExporter>
 }) {
-  const { selectedTask, topic, compiledMarkdown } = options
+  const { selectedTask, topic, compiledMarkdown, summaryImageExporter } = options
   const { info, success, error: toastError } = useToast()
-  const { generateSummaryImagePreview } = useSummaryImageExporter()
+  const { generateSummaryImagePreview } = summaryImageExporter ?? useSummaryImageExporter()
 
   const summaryImageSettings = ref<SummaryImageExportSettings>(loadSummaryImageSettings())
   const isSummaryImageSettingsOpen = ref(false)
