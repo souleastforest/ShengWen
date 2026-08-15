@@ -5,6 +5,28 @@
 
 ## Change Log
 
+- 2026-08-15: **P5 死代码与工程残留完成**（refactor/p5-cleanup，行为保持 Q6）。
+  - **删除**（清单 §8，用户确认后执行）：TaskHeader.vue（零引用，TaskMetaCard 取代）、
+    HelloWorld.vue、src/assets/vue.svg（脚手架）；.vite/deps 4 个预构建缓存 git rm +
+    .gitignore 补 `.vite/`/`test-results`；.ruff_cache、根目录 20 个 `<MagicMock*`
+    loguru 测试日志残留、0 字节 .codex。recovered_urls.txt 按规保留未动。
+  - **console.log 清理**：Toast.vue/useToast/useMarkdownTheme/useSummaryImageExporter
+    共 13 处调试日志删除（连带清理仅被日志引用的死变量）；WS 连接/断开日志保留并降级为
+    DEV 条件 console.debug（import.meta.env.DEV 可摇树）。console.error/warn 未动。
+  - **双 ToastContainer 单例**：App.vue 两处 CSS 响应式实例合并为单实例 +
+    matchMedia 驱动 position 切换（桌面 bottom-right / 移动 bottom-center，断点对齐
+    Tailwind md）；ToastContainer props/事件面不变。TDD：新增
+    src/__tests__/App.toastContainer.test.ts 3 用例（单实例断言 + 双视口位置断言），
+    先红后绿。
+  - **dev proxy**：vite.config.ts 补 /bilibili、/local-path、/local-folder 三前缀
+    （本地开发 B 站分 P/本地路径/文件夹扫描此前必坏）；默认 target 8000→21001
+    （VITE_DEV_API_TARGET 覆盖保留）；新增 .env.example 文档化三个 VITE_* 变量。
+  - **vitest e2e 误收录修复（P4 P2-1）**：vitest.config.ts exclude `e2e/**`（展开
+    defaultExclude 保留默认排除）；新增 tsconfig.e2e.json 入根 references——
+    vue-tsc -b 真实检查 e2e spec，类型单源化收益兑现。基线 1 failed file → 全绿。
+  - **验证**：vitest 38 文件 268 用例全绿（265 基线 + 3 新增）；vue-tsc -b 通过；
+    npm run build 通过；eslint（项目无配置，跳过）。
+  - **流程档位**：T2（子代理实施，清理清单用户已确认）。
 - 2026-08-14: **P3 收敛完成**（refactor/p3-converge → 待合并进 refactor/frontend-design）。
   - **状态映射单源化**（src/shared/utils/taskStatus.ts，types.ts const 对象 + 联合类型驱动）：
     getStatusLabel/getStatusClass/getStatusIcon 三表合一，Sidebar/TaskInfoModal/TaskPartsPanel
