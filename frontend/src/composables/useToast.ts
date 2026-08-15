@@ -64,7 +64,6 @@ function pauseTimer(id: string) {
     clearTimeout(timerData.timer)
     timerData.remainingTime -= Date.now() - timerData.startTime
     timerData.timer = null
-    console.log('[useToast] Paused timer for', id, 'remaining:', timerData.remainingTime)
   }
 }
 
@@ -75,7 +74,6 @@ function resumeTimer(id: string) {
     timerData.timer = setTimeout(() => {
       removeToast(id)
     }, timerData.remainingTime)
-    console.log('[useToast] Resumed timer for', id, 'remaining:', timerData.remainingTime)
   }
 }
 

@@ -805,7 +805,10 @@ export function useTaskViewModel() {
     ws = new WebSocket(wsBaseUrl)
 
     ws.onopen = () => {
-      console.log('WebSocket connected')
+      // WS 连接生命周期日志仅 DEV 输出（生产构建 import.meta.env.DEV 为 false，被摇树）
+      if (import.meta.env.DEV) {
+        console.debug('WebSocket connected')
+      }
       // 重连成功：退避复位到 3s
       reconnectAttempts = 0
       // Fetch latest state on reconnection to sync any missed updates
@@ -907,7 +910,10 @@ export function useTaskViewModel() {
     }
 
     ws.onclose = () => {
-      console.log('WebSocket disconnected, retrying...')
+      // WS 连接生命周期日志仅 DEV 输出（生产构建 import.meta.env.DEV 为 false，被摇树）
+      if (import.meta.env.DEV) {
+        console.debug('WebSocket disconnected, retrying...')
+      }
       // 重连统一由 onclose 排定（指数退避）；卸载后不再重连
       scheduleReconnect()
     }

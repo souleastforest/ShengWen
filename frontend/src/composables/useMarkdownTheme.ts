@@ -83,10 +83,7 @@ export function useMarkdownTheme() {
     // 批量设置 CSS 变量
     Object.entries(theme.cssVariables).forEach(([key, value]) => {
       root.style.setProperty(key, value)
-      console.log(`[useMarkdownTheme] Set ${key} = ${value}`)
     })
-
-    console.log(`[useMarkdownTheme] Applied theme: ${theme.name} with ${Object.keys(theme.cssVariables).length} variables`)
   }
 
   /**
@@ -113,8 +110,6 @@ export function useMarkdownTheme() {
 
     // 持久化到 localStorage
     saveTheme(themeId)
-
-    console.log(`[useMarkdownTheme] Switched to theme: ${theme.name}`)
   }
 
   /**
@@ -157,7 +152,6 @@ export function useMarkdownTheme() {
     // 自动切换到新主题
     setTheme(customId)
 
-    console.log(`[useMarkdownTheme] Imported custom theme: ${themeName}`)
     return customId
   }
 
