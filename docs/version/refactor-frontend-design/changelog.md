@@ -5,6 +5,31 @@
 
 ## Change Log
 
+- 2026-08-15: **P6 结构拆分完成**（refactor/p6-structure → PR #10，行为保持 Q6，纯搬移）。
+  - **Sidebar（1586 行）拆片**：UploadForm（提交三通道+大小预检，props+emit 化）、
+    TaskList / TaskSearch（+ 域内 taskDisplay.ts 共用展示辅助）、SettingsForm×3 落位
+    features/；Sidebar 剩余部分引用拆出组件并转发事件（public seam 不变，selectTask
+    后关闭侧栏保留）。
+  - **设置双入口复用（Q8，弹窗语义为准）**：SettingsFormLlm/Transcription/Summarization
+    由 SettingsModal 与 Sidebar 面板共用，消灭约 400 行重复与漂移——转录表单补齐
+    transcriber_type/vibevoice_*/路径校验/浏览器读 Cookie；Agent 表单删除 Sidebar
+    旧版夹逼（仅保留 max_agent_value_chars≥100）；LLM 表单补齐 extra_headers。
+    Sidebar 新增 4 个加性转发 emit。注：Sidebar 内联面板为休眠 UI（isSettingsPanelOpen
+    恒 false，无打开入口），活动入口为 SettingsModal。
+  - **TaskContentArea（797 → 188 行）拆片**：MermaidBlock（命令式 DOM 封装，
+    display:contents 宿主 + renderVersion 防竞态）、MarkdownContent（渲染容器：
+    标题收集/IntersectionObserver、搜索高亮、XSS DEV 兜底断言）；.ss-mermaid-* 样式
+    随迁（含 C 阶段 backlog 的 .ss-mermaid-error 降级样式）。
+  - **markdown 编译管线下沉**：useMarkdownCompile.ts（marked renderer +
+    DOMPurify 单点净化 + postProcess 的 compileMarkdownText 纯函数 + 多P 分页状态机
+    useMultipartSummary 本质，120ms 防抖与身份守卫保留）。
+  - **App.vue 编排下沉**（1225 → 947 行，-22.7%）：useMarkdownCompile +
+    useSummaryImageWorkbench（一键成图工作台：持久化/预览序列防竞态/脏标记/分页）。
+  - **验证**：vitest 360 全绿（基线 268 + 新增 92：seam 契约 9 文件 84 用例 +
+    Sidebar 任务筛选交互 3 + SettingsModal 设置保存交互 5）；vue-tsc -b 通过；
+    npm run build 通过；playwright 冒烟 16/16（21001：提交表单/任务列表/设置弹窗
+    三 tab/内容区原文 tab，无未捕获页面错误）。
+  - **流程档位**：T2（子代理实施）。
 - 2026-08-15: **P5 死代码与工程残留完成**（refactor/p5-cleanup，行为保持 Q6）。
   - **删除**（清单 §8，用户确认后执行）：TaskHeader.vue（零引用，TaskMetaCard 取代）、
     HelloWorld.vue、src/assets/vue.svg（脚手架）；.vite/deps 4 个预构建缓存 git rm +
