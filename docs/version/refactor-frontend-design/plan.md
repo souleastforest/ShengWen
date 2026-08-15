@@ -202,6 +202,8 @@ frontend/src/
 - WS onmessage 畸形帧防护（非 JSON 帧 JSON.parse 抛错不崩溃）——code-reviewer F5 确认 P2 范围，fix/realtime-progress 分支不做，待本 backlog 排期
 - ~~e2e/ 无 tsconfig 项目覆盖（tsconfig.app.json 仅 src/**），vue-tsc -b 不检查 spec~~（code-reviewer P2-1，2026-08-14 → **2026-08-15 已解决**：vitest.config.ts exclude `e2e/**` + 新增 tsconfig.e2e.json 入根 references，`vue-tsc -b` 真实检查 e2e spec，类型单源化收益兑现；此条关闭）
 - `submitLocalPath` 已随 P4 修订类型化（LocalPathCreateTaskRequest）——P2-2 已落地，此条关闭
+- playwright.config.ts 无 tsconfig 项目覆盖（tsconfig.node.json 仅 vite.config.ts）——pre-existing（P4 前即有），与 P5-P2-1 类型门禁同族；绑定 P6 结构包补（playwright.config.ts 改配置时纳入 tsconfig 检查）（code-reviewer P5-P2-1，2026-08-15）
+- ToastContainer legacy `addListener` 回退分支与跨断点（桌面↔移动切换瞬间）hover pause/resume 行为无测试覆盖——低优先级，随后续 Toast 相关测试批次补（code-reviewer P5-P2-3，2026-08-15）
 
 ## 8. 文件变更清单（删除/改名，需用户确认后执行）
 
