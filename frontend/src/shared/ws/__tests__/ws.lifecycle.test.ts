@@ -1,35 +1,20 @@
 /**
- * 对抗性测试：WS 生命周期剩余加固（P2-A）
+ * P7 迁移/重写：useTaskViewModel.wsLifecycle.test.ts → shared/ws.ts
  *
- * 1. disposed 标志：组件卸载（onUnmounted）后，重连定时器/回调不得再创建新连接
- *    （当前因 App 永不卸载而潜伏；卸载后每 3s 泄漏新连接 = 实现缺陷）；
+ * 1. disposed 语义：dispose 后重连定时器/回调不得再创建新连接；
  * 2. 指数退避：重连间隔 3s→6s→12s→24s→封顶 30s；onopen 成功后复位到 3s；
  * 3. onerror 不主动 close：onerror 触发后不得再调用 ws.close()；重连定时器
  *    与 onerror 兜底（S1，~5s）共用同一槽位互斥，无双调度；
  * 4. onmessage 畸形帧（非 JSON）console.warn 并跳过该帧，不影响后续正常帧
  *    （ping 分支在 parse 之后——parse 防护包裹整个消息处理）；
- * 5. 定时器清理（S3）：重连/轮询/墓碑定时器 id 留存，onUnmounted 统一清理，
- *    卸载后无残留定时器。
- * 心跳 ping 分支、60s 轮询兜底保持不动（协议不变）。
+ * 5. dispose 清理重连定时器（无残留）。
+ * "task_update 进入任务列表"断言随 task 订阅回调迁 task 域
+ * （features/task/__tests__/state.queue.test.ts）。
  * 每个用例失败 = 实现缺陷。
  */
-import { defineComponent } from 'vue'
-import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import axios from 'axios'
-import { __resetTaskContentCaches, useTaskViewModel } from '../composables/useTaskViewModel'
-
-vi.mock('axios', () => ({
-  default: {
-    get: vi.fn(),
-    post: vi.fn(),
-    put: vi.fn(),
-    isAxiosError: vi.fn(),
-    isCancel: vi.fn(),
-  },
-}))
-
-const mockedAxios = vi.mocked(axios)
+import { useWebSocket } from '../../ws'
+import type { WsClient } from '../../ws'
 
 interface MockWebSocketInstance {
   send: ReturnType<typeof vi.fn>
@@ -44,33 +29,12 @@ interface MockWebSocketInstance {
 let wsInstances: MockWebSocketInstance[] = []
 let WebSocketMock: ReturnType<typeof vi.fn>
 
-const mountViewModel = () => {
-  let viewModel!: ReturnType<typeof useTaskViewModel>
-
-  const TestComponent = defineComponent({
-    setup() {
-      viewModel = useTaskViewModel()
-      return () => null
-    },
-  })
-
-  const wrapper = mount(TestComponent)
-  return { viewModel, wrapper }
-}
-
-describe('useTaskViewModel WS 生命周期加固（P2-A）', () => {
+describe('shared/ws WS 生命周期加固（P2-A，useTaskViewModel 迁移）', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
-    __resetTaskContentCaches()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-
-    mockedAxios.get.mockResolvedValue({ data: [] })
-    mockedAxios.isCancel.mockReturnValue(false)
-    mockedAxios.isAxiosError.mockImplementation((value): value is Error => {
-      return Boolean(value && typeof value === 'object' && 'isAxiosError' in value)
-    })
 
     wsInstances = []
     WebSocketMock = vi.fn(function MockWebSocket(this: MockWebSocketInstance) {
@@ -92,33 +56,33 @@ describe('useTaskViewModel WS 生命周期加固（P2-A）', () => {
     vi.unstubAllGlobals()
   })
 
-  it('A1 disposed：卸载后到达的 onclose 不再排定重连（不泄漏新连接）', async () => {
-    const { wrapper } = mountViewModel()
-    await flushPromises()
+  it('A1 disposed：dispose 后到达的 onclose 不再排定重连（不泄漏新连接）', async () => {
+    const ws: WsClient = useWebSocket()
+    ws.connect()
     expect(WebSocketMock).toHaveBeenCalledTimes(1)
 
-    wrapper.unmount()
-    // 模拟卸载后才到达的 close 事件（真实场景：unmount 内 ws.close() 触发 onclose）
+    ws.dispose()
+    // 模拟 dispose 后才到达的 close 事件（真实场景：dispose 内 ws.close() 触发 onclose）
     wsInstances[0]!.onclose?.()
 
     await vi.advanceTimersByTimeAsync(60_000)
     expect(WebSocketMock).toHaveBeenCalledTimes(1)
   })
 
-  it('A1 disposed：卸载前已排定的重连定时器，卸载后到期也不触发', async () => {
-    const { wrapper } = mountViewModel()
-    await flushPromises()
+  it('A1 disposed：dispose 前已排定的重连定时器，dispose 后到期也不触发', async () => {
+    const ws: WsClient = useWebSocket()
+    ws.connect()
 
     wsInstances[0]!.onclose?.() // 排定 3s 重连
-    wrapper.unmount() // 定时器未到即卸载
+    ws.dispose() // 定时器未到即 dispose
 
     await vi.advanceTimersByTimeAsync(10_000)
     expect(WebSocketMock).toHaveBeenCalledTimes(1)
   })
 
   it('A2 指数退避：3s→6s→12s→24s→封顶 30s；onopen 成功后复位到 3s', async () => {
-    const { wrapper } = mountViewModel()
-    await flushPromises()
+    const ws: WsClient = useWebSocket()
+    ws.connect()
     expect(WebSocketMock).toHaveBeenCalledTimes(1) // t=0 首次连接
 
     // 第一次断线 → 3s 后重连（t=3）
@@ -168,13 +132,11 @@ describe('useTaskViewModel WS 生命周期加固（P2-A）', () => {
     wsInstances[6]!.onclose?.()
     await vi.advanceTimersByTimeAsync(3_000)
     expect(WebSocketMock).toHaveBeenCalledTimes(8)
-
-    wrapper.unmount()
   })
 
   it('A3 onerror 不主动 close；onclose 退避与 onerror 兜底互斥（无双调度）', async () => {
-    const { wrapper } = mountViewModel()
-    await flushPromises()
+    const ws: WsClient = useWebSocket()
+    ws.connect()
 
     const first = wsInstances[0]!
     // 顺序：onerror 先行（排定 5s 兜底）→ onclose 到达（退避排定作废）
@@ -188,13 +150,11 @@ describe('useTaskViewModel WS 生命周期加固（P2-A）', () => {
     expect(WebSocketMock).toHaveBeenCalledTimes(2) // 5s 兜底恰好重连一次
     await vi.advanceTimersByTimeAsync(60_000)
     expect(WebSocketMock).toHaveBeenCalledTimes(2) // 无双调度
-
-    wrapper.unmount()
   })
 
   it('S1 onerror 兜底：只发 error 不发 close 时 5s 后重连一次', async () => {
-    const { wrapper } = mountViewModel()
-    await flushPromises()
+    const ws: WsClient = useWebSocket()
+    ws.connect()
 
     const first = wsInstances[0]!
     first.onerror?.(new Error('boom')) // 无 onclose
@@ -206,13 +166,11 @@ describe('useTaskViewModel WS 生命周期加固（P2-A）', () => {
 
     await vi.advanceTimersByTimeAsync(60_000)
     expect(WebSocketMock).toHaveBeenCalledTimes(2) // 不重复排定
-
-    wrapper.unmount()
   })
 
   it('S1 close-first：onclose 已先行排定退避时 onerror 兜底作废', async () => {
-    const { wrapper } = mountViewModel()
-    await flushPromises()
+    const ws: WsClient = useWebSocket()
+    ws.connect()
 
     const first = wsInstances[0]!
     first.onclose?.() // 3s 退避
@@ -222,23 +180,23 @@ describe('useTaskViewModel WS 生命周期加固（P2-A）', () => {
     expect(WebSocketMock).toHaveBeenCalledTimes(2) // 仅退避重连
     await vi.advanceTimersByTimeAsync(60_000)
     expect(WebSocketMock).toHaveBeenCalledTimes(2) // 兜底未再触发
-
-    wrapper.unmount()
   })
 
-  it('A4 畸形帧（非 JSON）console.warn 并跳过，后续正常帧仍处理', async () => {
-    const { viewModel, wrapper } = mountViewModel()
-    await flushPromises()
+  it('A4 畸形帧（非 JSON）console.warn 并跳过，后续正常帧仍分发到订阅', async () => {
+    const ws: WsClient = useWebSocket()
+    ws.connect()
 
     const warnSpy = vi.mocked(console.warn)
-    const ws = wsInstances[0]!
+    const handler = vi.fn()
+    ws.subscribe('task_update', handler)
+    const wsInstance = wsInstances[0]!
 
     // 畸形帧不得抛异常
-    expect(() => ws.onmessage?.({ data: 'not json' })).not.toThrow()
+    expect(() => wsInstance.onmessage?.({ data: 'not json' })).not.toThrow()
     expect(warnSpy).toHaveBeenCalledTimes(1)
 
-    // 后续正常帧（task_update）仍被处理：任务进入列表
-    ws.onmessage?.({
+    // 后续正常帧（task_update）仍被分发到订阅回调
+    wsInstance.onmessage?.({
       data: JSON.stringify({
         type: 'task_update',
         task: {
@@ -250,21 +208,22 @@ describe('useTaskViewModel WS 生命周期加固（P2-A）', () => {
         },
       }),
     })
-    expect(viewModel.tasks.value.map((t) => t.id)).toEqual(['t1'])
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(handler.mock.calls[0]![0]).toMatchObject({ type: 'task_update', task: { id: 't1' } })
     expect(warnSpy).toHaveBeenCalledTimes(1) // 正常帧不新增 warn
 
-    wrapper.unmount()
+    ws.dispose()
   })
 
-  it('S3 卸载清理全部定时器（重连/轮询无残留）', async () => {
-    const { wrapper } = mountViewModel()
-    await flushPromises()
+  it('S3 dispose 清理全部重连定时器（无残留）', async () => {
+    const ws: WsClient = useWebSocket()
+    ws.connect()
 
-    expect(vi.getTimerCount()).toBe(1) // 仅轮询 setInterval
+    expect(vi.getTimerCount()).toBe(0) // 无轮询（轮询属 task 域，随 task 生命周期）
     wsInstances[0]!.onclose?.() // 排定重连退避定时器
-    expect(vi.getTimerCount()).toBe(2)
+    expect(vi.getTimerCount()).toBe(1)
 
-    wrapper.unmount()
-    expect(vi.getTimerCount()).toBe(0) // 重连 + 轮询定时器均被清理
+    ws.dispose()
+    expect(vi.getTimerCount()).toBe(0) // 重连定时器被清理
   })
 })
