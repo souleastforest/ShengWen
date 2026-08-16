@@ -219,7 +219,7 @@ describe('P4 类型契约：请求与分P形状', () => {
     ]
     expect(requestKeys).toContain('bilibili_parts')
 
-    // 编译期 + 运行时：与 submitTaskWithParts 实际 payload 同形（useTaskViewModel.ts:1214-1223）
+    // 编译期 + 运行时：与 submitTaskWithParts 实际 payload 同形（features/upload/state.ts submitTaskWithParts）
     const mergeRequest: CreateTaskRequest = {
       video_url: 'https://www.bilibili.com/video/BV1xx411c7mD',
       quality: 'audio_only',
@@ -238,7 +238,7 @@ describe('P4 类型契约：请求与分P形状', () => {
   })
 
   it('LocalPathCreateTaskRequest 形状与 submitLocalPathTask 调用点 payload 对齐', () => {
-    // 编译期：调用点 payload（useTaskViewModel.ts submitLocalPathTask）满足类型
+    // 编译期：调用点 payload（features/upload/state.ts submitLocalPathTask）满足类型
     const callSitePayload: LocalPathCreateTaskRequest = {
       file_path: '/media/video.mp4',
       summary_mode: 'none',
@@ -258,7 +258,7 @@ describe('P4 类型契约：请求与分P形状', () => {
   })
 
   it('ReSummarizeRequest 形状与 reSummarize 调用点 payload 对齐', () => {
-    // 编译期：调用点 payload（useTaskViewModel.ts reSummarize）满足类型
+    // 编译期：调用点 payload（features/task/state.ts reSummarize）满足类型
     const callSitePayload: ReSummarizeRequest = { summary_mode: 'standard' }
     expect(callSitePayload).toEqual({ summary_mode: 'standard' })
     // 缺省：不传 summary_mode 时后端沿用任务已存值
@@ -267,7 +267,7 @@ describe('P4 类型契约：请求与分P形状', () => {
   })
 
   it('ReTranscribeRequest 形状与 reTranscribe 调用点 payload 对齐', () => {
-    // 编译期：调用点 payload（useTaskViewModel.ts reTranscribe）满足类型
+    // 编译期：调用点 payload（features/task/state.ts reTranscribe）满足类型
     const callSitePayload: ReTranscribeRequest = { summary_mode: 'none' }
     expect(callSitePayload).toEqual({ summary_mode: 'none' })
     // generate_topic 缺省沿用任务已存值（前端当前不发送该字段）
