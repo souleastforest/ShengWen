@@ -15,6 +15,9 @@ from src.main.python.sheng_wen.downloader.bilibili_author_resolver import (
     BilibiliAuthorResolveError,
     resolve_bilibili_author,
 )
+from src.main.python.sheng_wen.downloader.bilibili_headers import (
+    sanitize_cookie_value,
+)
 from src.main.python.sheng_wen.transcriber.transcriber import ModelLoadError
 from src.main.python.sheng_wen.utils.media import SUPPORTED_MEDIA_EXTENSIONS
 
@@ -80,7 +83,7 @@ def _is_bilibili_video_url(video_url: str) -> bool:
 
 
 def _sanitize_cookie_value(value: str | None) -> str:
-    return (value or "").strip().replace("\r", "").replace("\n", "")
+    return sanitize_cookie_value(value)
 
 
 def _resolve_default_summary_mode() -> str:
@@ -134,9 +137,11 @@ async def _resolve_author_once_in_background(task_id: str, video_url: str):
 
 async def _try_resolve_and_persist_author(task_id: str, video_url: str) -> bool:
     try:
+        from src.main.python.sheng_wen.api import transcription_settings_manager
         from src.main.python.sheng_wen.task_updater import update_and_notify
 
-        author_info = await resolve_bilibili_author(video_url)
+        sessdata, _ = transcription_settings_manager.resolve_bilibili_sessdata()
+        author_info = await resolve_bilibili_author(video_url, sessdata=sessdata)
         await update_and_notify(
             task_id,
             {
