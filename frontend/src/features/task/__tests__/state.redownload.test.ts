@@ -1,8 +1,14 @@
+/**
+ * P7 迁移：useTaskViewModel.redownload.test.ts → features/task/state.ts
+ * 用例逻辑原样保留，仅改引用（useTaskViewModel → useTaskState）与 setup。
+ */
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import axios from 'axios'
-import { useTaskViewModel } from '../composables/useTaskViewModel'
+import { useTaskState } from '../state'
+import { useWebSocket } from '../../../shared/ws'
+import type { TaskState } from '../state'
 
 vi.mock('axios', () => ({
   default: {
@@ -16,26 +22,28 @@ vi.mock('axios', () => ({
 
 const mockedAxios = vi.mocked(axios)
 
-const mountViewModel = () => {
-  let viewModel!: ReturnType<typeof useTaskViewModel>
-
+const mountTaskState = () => {
+  let task!: TaskState
+  let ws!: ReturnType<typeof useWebSocket>
   const TestComponent = defineComponent({
     setup() {
-      viewModel = useTaskViewModel()
+      task = useTaskState()
+      ws = useWebSocket()
+      task.syncWithWs(ws)
       return () => null
     },
   })
-
   const wrapper = mount(TestComponent)
-  return { viewModel, wrapper }
+  task.fetchTasks()
+  ws.connect()
+  return { task, ws, wrapper }
 }
 
-describe('useTaskViewModel reDownloadAudio', () => {
+describe('task 域 re-download（useTaskViewModel 迁移）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    // 默认所有 GET 返回空数组（onMounted 的列表与设置请求）
     mockedAxios.get.mockResolvedValue({ data: [] })
     mockedAxios.post.mockResolvedValue({ data: {} })
     mockedAxios.isCancel.mockReturnValue(false)
@@ -54,58 +62,58 @@ describe('useTaskViewModel reDownloadAudio', () => {
   })
 
   it('POST /tasks/{taskId}/re-download（无请求体），成功后不手动刷新任务列表', async () => {
-    const { viewModel, wrapper } = mountViewModel()
-    const fetchSpy = vi.spyOn(viewModel, 'fetchTasks')
+    const { task, wrapper } = mountTaskState()
+    const fetchSpy = vi.spyOn(task, 'fetchTasks')
 
-    await viewModel.reDownloadAudio('task-1')
+    await task.reDownloadAudio('task-1')
 
     expect(mockedAxios.post).toHaveBeenCalledTimes(1)
     expect(mockedAxios.post).toHaveBeenCalledWith('/tasks/task-1/re-download')
     // 成功不手动刷新：等待 WS 广播状态更新
     expect(fetchSpy).not.toHaveBeenCalled()
-    expect(viewModel.error.value).toBeNull()
+    expect(task.error.value).toBeNull()
 
     wrapper.unmount()
   })
 
   it('后端 detail 透传到 error（复刻 reTranscribe 的错误处理）', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.post.mockRejectedValue({
       isAxiosError: true,
       response: { data: { detail: '任务没有转录文本，请先重新转录' } },
     })
 
-    await viewModel.reDownloadAudio('task-1')
+    await task.reDownloadAudio('task-1')
 
-    expect(viewModel.error.value).toBe('任务没有转录文本，请先重新转录')
+    expect(task.error.value).toBe('任务没有转录文本，请先重新转录')
 
     wrapper.unmount()
   })
 
   it('非 axios 错误回退到默认文案', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.post.mockRejectedValue(new Error('network down'))
 
-    await viewModel.reDownloadAudio('task-1')
+    await task.reDownloadAudio('task-1')
 
-    expect(viewModel.error.value).toBe('重新下载音频失败')
+    expect(task.error.value).toBe('重新下载音频失败')
 
     wrapper.unmount()
   })
 
   it('404 任务不存在时透传后端 detail', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.post.mockRejectedValue({
       isAxiosError: true,
       response: { status: 404, data: { detail: '任务不存在' } },
     })
 
-    await viewModel.reDownloadAudio('task-missing')
+    await task.reDownloadAudio('task-missing')
 
-    expect(viewModel.error.value).toBe('任务不存在')
+    expect(task.error.value).toBe('任务不存在')
 
     wrapper.unmount()
   })

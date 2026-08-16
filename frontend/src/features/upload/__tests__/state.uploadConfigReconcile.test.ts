@@ -1,17 +1,22 @@
 /**
- * 对抗性测试：WS onopen 对账并入 fetchUploadConfig（P2-C）
+ * P7 迁移：useTaskViewModel.uploadConfigReconcile.test.ts → upload/task 域
  *
  * 需求：后端运行期修改 storage.max_upload_mb 后，前端上传预检不得陈旧——
- * 现仅 onMounted 拉取一次 /upload/config；WS 重连 onopen 全量对账
- * （fetchTasks + fetchQueueSnapshot + selectTask）应并入 fetchUploadConfig()，
- * 使 uploadMaxBytes 与后端同源刷新。
+ * WS 重连 onopen 全量对账（fetchTasks + fetchQueueSnapshot + selectTask）
+ * 应并入 fetchUploadConfig()（P2-C）。拆分后对账由各域订阅层
+ * watch(status==='open') 驱动：task 域 fetchTasks/fetchQueueSnapshot，
+ * upload 域 fetchUploadConfig。
  * 失败 = 实现缺陷。
  */
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import axios from 'axios'
-import { __resetTaskContentCaches, useTaskViewModel } from '../composables/useTaskViewModel'
+import { useTaskState } from '../../task/state'
+import { useUploadState } from '../state'
+import { useWebSocket } from '../../../shared/ws'
+import type { TaskState } from '../../task/state'
+import type { UploadState } from '../state'
 
 vi.mock('axios', () => ({
   default: {
@@ -37,24 +42,32 @@ interface MockWebSocketInstance {
 
 let wsInstance: MockWebSocketInstance | null = null
 
-const mountViewModel = () => {
-  let viewModel!: ReturnType<typeof useTaskViewModel>
-
+const mountStates = () => {
+  let task!: TaskState
+  let upload!: UploadState
+  let ws!: ReturnType<typeof useWebSocket>
   const TestComponent = defineComponent({
     setup() {
-      viewModel = useTaskViewModel()
+      task = useTaskState()
+      upload = useUploadState()
+      ws = useWebSocket()
+      task.syncWithWs(ws)
+      upload.syncWithWs(ws)
       return () => null
     },
   })
-
   const wrapper = mount(TestComponent)
-  return { viewModel, wrapper }
+  // 模拟 App.vue onMounted：初始拉取 + WS 连接
+  task.fetchTasks()
+  task.fetchQueueSnapshot()
+  upload.fetchUploadConfig()
+  ws.connect()
+  return { task, upload, ws, wrapper }
 }
 
-describe('useTaskViewModel WS onopen 对账并入 fetchUploadConfig（P2-C）', () => {
+describe('WS onopen 对账并入 fetchUploadConfig（P2-C，域拆分迁移）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    __resetTaskContentCaches()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
@@ -85,26 +98,26 @@ describe('useTaskViewModel WS onopen 对账并入 fetchUploadConfig（P2-C）', 
       return Promise.resolve({ data: [] })
     })
 
-    const { viewModel, wrapper } = mountViewModel()
+    const { upload, wrapper } = mountStates()
     await flushPromises()
-    expect(viewModel.uploadMaxBytes.value).toBe(512 * 1024 * 1024)
+    expect(upload.uploadMaxBytes.value).toBe(512 * 1024 * 1024)
 
     // 后端运行期上调上限 → WS 重连 onopen 对账应重新拉取（不陈旧）
     configMb = 1024
     wsInstance!.onopen?.()
     await flushPromises()
 
-    expect(viewModel.uploadMaxBytes.value).toBe(1024 * 1024 * 1024)
+    expect(upload.uploadMaxBytes.value).toBe(1024 * 1024 * 1024)
 
     const configCalls = () =>
       mockedAxios.get.mock.calls.filter(([u]) => String(u).endsWith('/upload/config')).length
-    expect(configCalls()).toBe(2) // onMounted 1 次 + onopen 对账 1 次
+    expect(configCalls()).toBe(2) // 挂载 1 次 + onopen 对账 1 次
 
     wrapper.unmount()
   })
 
   it('onopen 对账其余部分不受影响：fetchTasks + fetchQueueSnapshot 仍被调用', async () => {
-    const { wrapper } = mountViewModel()
+    const { wrapper } = mountStates()
     await flushPromises()
 
     wsInstance!.onopen?.()
@@ -114,8 +127,8 @@ describe('useTaskViewModel WS onopen 对账并入 fetchUploadConfig（P2-C）', 
       mockedAxios.get.mock.calls.filter(([url]) => url === '/tasks/').length
     const queueCalls = () =>
       mockedAxios.get.mock.calls.filter(([url]) => url === '/tasks/queue').length
-    expect(tasksCalls()).toBe(2) // onMounted + onopen
-    expect(queueCalls()).toBe(2) // onMounted + onopen
+    expect(tasksCalls()).toBe(2) // 挂载 + onopen
+    expect(queueCalls()).toBe(2) // 挂载 + onopen
 
     wrapper.unmount()
   })

@@ -1,9 +1,15 @@
+/**
+ * P7 迁移：useTaskViewModel.queue.test.ts → features/task/state.ts（队列快照）
+ * 用例逻辑原样保留；onopen 对账现由订阅层 watch(status==='open') 驱动。
+ */
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import axios from 'axios'
-import { useTaskViewModel } from '../composables/useTaskViewModel'
-import type { QueueSnapshot } from '../types'
+import { useTaskState } from '../state'
+import { useWebSocket } from '../../../shared/ws'
+import type { TaskState } from '../state'
+import type { QueueSnapshot } from '../../../types'
 
 vi.mock('axios', () => ({
   default: {
@@ -18,27 +24,34 @@ vi.mock('axios', () => ({
 const mockedAxios = vi.mocked(axios)
 
 interface MockWebSocketInstance {
+  send: ReturnType<typeof vi.fn>
+  readyState: number
   close: ReturnType<typeof vi.fn>
   onopen: (() => void) | null
   onmessage: ((event: { data: string }) => void) | null
   onclose: (() => void) | null
-  onerror: (() => void) | null
+  onerror: ((err?: unknown) => void) | null
 }
 
 let wsInstance: MockWebSocketInstance | null = null
 
-const mountViewModel = () => {
-  let viewModel!: ReturnType<typeof useTaskViewModel>
-
+const mountTaskState = () => {
+  let task!: TaskState
+  let ws!: ReturnType<typeof useWebSocket>
   const TestComponent = defineComponent({
     setup() {
-      viewModel = useTaskViewModel()
+      task = useTaskState()
+      ws = useWebSocket()
+      task.syncWithWs(ws)
       return () => null
     },
   })
-
   const wrapper = mount(TestComponent)
-  return { viewModel, wrapper }
+  // 模拟 App.vue onMounted：初始列表/队列拉取 + WS 连接
+  task.fetchTasks()
+  task.fetchQueueSnapshot()
+  ws.connect()
+  return { task, ws, wrapper }
 }
 
 const makeQueue = (overrides?: Partial<QueueSnapshot>): QueueSnapshot => ({
@@ -66,12 +79,12 @@ const taskUpdateMessage = (taskId: string, queues?: QueueSnapshot[]) => {
   return JSON.stringify(payload)
 }
 
-describe('useTaskViewModel 队列快照', () => {
+describe('task 域队列快照（useTaskViewModel 迁移）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    // onMounted 的列表与设置请求默认返回空数组
+    // 初始拉取默认返回空数组
     mockedAxios.get.mockResolvedValue({ data: [] })
     mockedAxios.isCancel.mockReturnValue(false)
     mockedAxios.isAxiosError.mockImplementation((value): value is Error => {
@@ -91,7 +104,7 @@ describe('useTaskViewModel 队列快照', () => {
   })
 
   it('fetchQueueSnapshot 拉取 /tasks/queue 并填充 queues', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     const snapshot: QueueSnapshot[] = [
       makeQueue({ name: 'VideoDownloaderWorker', waiting_task_ids: ['task-1'] }),
@@ -106,17 +119,17 @@ describe('useTaskViewModel 队列快照', () => {
       return Promise.resolve({ data: [] })
     })
 
-    await viewModel.fetchQueueSnapshot()
+    await task.fetchQueueSnapshot()
     await flushPromises()
 
     expect(mockedAxios.get).toHaveBeenCalledWith('/tasks/queue')
-    expect(viewModel.queues.value).toEqual(snapshot)
+    expect(task.queues.value).toEqual(snapshot)
 
     wrapper.unmount()
   })
 
-  it('ws onopen 时拉取 /tasks/queue 快照（与 fetchTasks 并列）', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+  it('ws onopen 时拉取 /tasks/queue 快照（与 fetchTasks 并列，订阅层对账）', async () => {
+    const { task, wrapper } = mountTaskState()
 
     const snapshot: QueueSnapshot[] = [
       makeQueue({ name: 'TranscriberWorker', waiting_task_ids: ['task-1'] }),
@@ -133,13 +146,13 @@ describe('useTaskViewModel 队列快照', () => {
     await flushPromises()
 
     expect(mockedAxios.get).toHaveBeenCalledWith('/tasks/queue')
-    expect(viewModel.queues.value).toEqual(snapshot)
+    expect(task.queues.value).toEqual(snapshot)
 
     wrapper.unmount()
   })
 
   it('task_update 携带 queues 字段时更新快照', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     const initial: QueueSnapshot[] = [makeQueue()]
     mockedAxios.get.mockImplementation((url: string) => {
@@ -150,7 +163,7 @@ describe('useTaskViewModel 队列快照', () => {
     })
     wsInstance!.onopen?.()
     await flushPromises()
-    expect(viewModel.queues.value).toEqual(initial)
+    expect(task.queues.value).toEqual(initial)
 
     const updated: QueueSnapshot[] = [
       makeQueue({
@@ -163,13 +176,13 @@ describe('useTaskViewModel 队列快照', () => {
     wsInstance!.onmessage?.({ data: taskUpdateMessage('task-1', updated) })
     await flushPromises()
 
-    expect(viewModel.queues.value).toEqual(updated)
+    expect(task.queues.value).toEqual(updated)
 
     wrapper.unmount()
   })
 
   it('旧版 task_update 无 queues 字段时保留现有快照（向后兼容）', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     const initial: QueueSnapshot[] = [
       makeQueue({ name: 'LLMWorker', waiting_task_ids: ['task-1'] }),
@@ -182,19 +195,36 @@ describe('useTaskViewModel 队列快照', () => {
     })
     wsInstance!.onopen?.()
     await flushPromises()
-    expect(viewModel.queues.value).toEqual(initial)
+    expect(task.queues.value).toEqual(initial)
 
     // 不带 queues 字段的旧消息
     wsInstance!.onmessage?.({ data: taskUpdateMessage('task-2') })
     await flushPromises()
 
-    expect(viewModel.queues.value).toEqual(initial)
+    expect(task.queues.value).toEqual(initial)
+
+    wrapper.unmount()
+  })
+
+  it('畸形帧跳过不影响后续正常帧：task_update 广播仍进入任务列表（wsLifecycle A4 迁移）', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { task, wrapper } = mountTaskState()
+    await flushPromises()
+
+    // 畸形帧不得抛异常、不得影响后续处理
+    expect(() => {
+      wsInstance!.onmessage?.({ data: 'not json' })
+    }).not.toThrow()
+
+    // 后续正常帧（task_update）：任务进入列表（unshift）
+    wsInstance!.onmessage?.({ data: taskUpdateMessage('t1') })
+    expect(task.tasks.value.map((t) => t.id)).toEqual(['t1'])
 
     wrapper.unmount()
   })
 
   it('/tasks/queue 请求失败时保留上一次快照，不影响主流程', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     const initial: QueueSnapshot[] = [makeQueue({ waiting_task_ids: ['task-1'] })]
     mockedAxios.get.mockImplementation((url: string) => {
@@ -207,10 +237,10 @@ describe('useTaskViewModel 队列快照', () => {
     await flushPromises()
 
     mockedAxios.get.mockRejectedValueOnce(new Error('network down'))
-    await viewModel.fetchQueueSnapshot()
+    await task.fetchQueueSnapshot()
     await flushPromises()
 
-    expect(viewModel.queues.value).toEqual(initial)
+    expect(task.queues.value).toEqual(initial)
 
     wrapper.unmount()
   })

@@ -1,5 +1,5 @@
 /**
- * 对抗性测试：共享 axios 实例（P2-B，src/shared/api/client.ts）
+ * P7 迁移：sharedApiClient.test.ts → shared/api/__tests__/client.seam.test.ts
  *
  * 1. 实例化配置：baseURL 收敛 VITE_API_BASE_URL（测试环境未设置 → ''）、
  *    timeout 默认 60s（DEFAULT_TIMEOUT_MS）；
@@ -8,8 +8,8 @@
  *    慢链路大文件上传；
  * 3. 错误提取统一：getAxiosErrorMessage / isCanceledRequest 从 client 导出，
  *    语义与既有逻辑一致（detail 字符串 / 数组 msg / fallback+message / 取消识别）；
- * 4. useTaskViewModel 全部 HTTP 走共享实例（无裸 axios 调用——错误路径
- *    不产生"获取任务列表失败"等 UI 错误即证明调用未落回裸 axios）。
+ * 4. B5 更新：三个 state 域（task/upload/settings）全部 HTTP 走共享实例
+ *    （无裸 axios 调用——错误路径不产生 UI 错误即证明调用未落回裸 axios）。
  * 每个用例失败 = 实现缺陷。
  */
 import { defineComponent } from 'vue'
@@ -46,45 +46,58 @@ import {
   getAxiosErrorMessage,
   isCanceledRequest,
   DEFAULT_TIMEOUT_MS,
-} from '../shared/api/client'
-import { useTaskViewModel } from '../composables/useTaskViewModel'
+} from '../client'
+import { useTaskState } from '../../../features/task/state'
+import { useUploadState } from '../../../features/upload/state'
+import { useSettingsState } from '../../../features/settings/state'
+import { useWebSocket } from '../../ws'
+import type { TaskState } from '../../../features/task/state'
+import type { UploadState } from '../../../features/upload/state'
+import type { SettingsState } from '../../../features/settings/state'
 
 const mockedInstance = vi.mocked(apiClient)
 
-const mountViewModel = () => {
-  let viewModel!: ReturnType<typeof useTaskViewModel>
-
+const mountStates = () => {
+  let task!: TaskState
+  let upload!: UploadState
+  let settings!: SettingsState
+  let ws!: ReturnType<typeof useWebSocket>
   const TestComponent = defineComponent({
     setup() {
-      viewModel = useTaskViewModel()
+      task = useTaskState()
+      upload = useUploadState()
+      settings = useSettingsState()
+      ws = useWebSocket()
+      task.syncWithWs(ws)
+      upload.syncWithWs(ws)
       return () => null
     },
   })
-
   const wrapper = mount(TestComponent)
-  return { viewModel, wrapper }
+  return { task, upload, settings, ws, wrapper }
 }
 
-describe('P2-B 共享 axios 实例（shared/api/client）', () => {
+describe('P2-B 共享 axios 实例（shared/api/client，P7 seam 迁移）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     mockedInstance.get.mockResolvedValue({ data: [] })
+    vi.stubGlobal('WebSocket', vi.fn(function () { return { close: vi.fn() } }))
   })
 
   it('B1 实例化配置：baseURL 收敛 + timeout 默认 60s', () => {
     expect(createConfig).toEqual({ baseURL: '', timeout: 60_000 })
     expect(DEFAULT_TIMEOUT_MS).toBe(60_000)
-    expect(apiClient).toBe(mockInstance) // useTaskViewModel 与 client 共用同一实例
+    expect(apiClient).toBe(mockInstance) // 各 state 域与 client 共用同一实例
   })
 
   it('B2 上传调用点（/upload）不设超时（timeout: 0，保持旧行为）', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { upload, wrapper } = mountStates()
     await flushPromises()
 
     const file = new File(['content'], 'a.mp4', { type: 'video/mp4' })
-    await viewModel.uploadFile(file)
+    await upload.uploadFile(file)
 
     const postCall = mockedInstance.post.mock.calls.find(([url]) => url === '/upload')
     expect(postCall).toBeDefined()
@@ -140,9 +153,16 @@ describe('P2-B 共享 axios 实例（shared/api/client）', () => {
     expect(isCanceledRequest({ code: 'ERR_CANCELED' })).toBe(false)
   })
 
-  it('B5 useTaskViewModel 全部 HTTP 走共享实例（无裸 axios 调用）', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+  it('B5 三个 state 域全部 HTTP 走共享实例（无裸 axios 调用）', async () => {
+    const { task, upload, settings, wrapper } = mountStates()
     await flushPromises()
+
+    // 三域代表调用（App.vue onMounted 装配面）
+    await task.fetchTasks()
+    await task.fetchQueueSnapshot()
+    await upload.fetchUploadConfig()
+    await settings.fetchLlmProviders()
+    await settings.fetchTranscriptionSettings()
 
     const calledUrls = mockedInstance.get.mock.calls.map(([url]) => url)
     expect(calledUrls).toContain('/tasks/')
@@ -153,7 +173,9 @@ describe('P2-B 共享 axios 实例（shared/api/client）', () => {
 
     // 裸 axios 的 default 无 get/post 等方法——若仍有调用点落回裸 axios，
     // fetchTasks 等会抛 TypeError 并设置 error.value（行为可观测）。
-    expect(viewModel.error.value).toBeNull()
+    expect(task.error.value).toBeNull()
+    expect(upload.error.value).toBeNull()
+    expect(settings.error.value).toBeNull()
 
     wrapper.unmount()
   })

@@ -1,9 +1,15 @@
+/**
+ * P7 迁移：useTaskViewModel.transcript.test.ts → features/task/state.ts（原文懒加载）
+ * 用例逻辑原样保留，仅改引用（useTaskViewModel → useTaskState）与 setup。
+ */
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import axios from 'axios'
-import { __resetTaskContentCaches, useTaskViewModel } from '../composables/useTaskViewModel'
-import type { Task } from '../types'
+import { __resetTaskContentCaches, useTaskState } from '../state'
+import { useWebSocket } from '../../../shared/ws'
+import type { TaskState } from '../state'
+import type { Task } from '../../../types'
 
 vi.mock('axios', () => ({
   default: {
@@ -28,28 +34,31 @@ const completedTask: Task = {
   summary_chunk_done: 1,
 }
 
-const mountViewModel = () => {
-  let viewModel!: ReturnType<typeof useTaskViewModel>
-
+const mountTaskState = () => {
+  let task!: TaskState
+  let ws!: ReturnType<typeof useWebSocket>
   const TestComponent = defineComponent({
     setup() {
-      viewModel = useTaskViewModel()
+      task = useTaskState()
+      ws = useWebSocket()
+      task.syncWithWs(ws)
       return () => null
     },
   })
-
   const wrapper = mount(TestComponent)
-  return { viewModel, wrapper }
+  task.fetchTasks()
+  ws.connect()
+  return { task, ws, wrapper }
 }
 
-describe('useTaskViewModel transcript lazy loading', () => {
+describe('task 域 transcript lazy loading（useTaskViewModel 迁移）', () => {
   beforeEach(() => {
     // module 级 per-task 缓存跨测试实例共享，必须重置，否则内容会被上个测试污染
     __resetTaskContentCaches()
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
 
-    // 默认所有 GET 返回空数组（onMounted 的列表与设置请求）
+    // 默认所有 GET 返回空数组（初始列表拉取）
     mockedAxios.get.mockResolvedValue({ data: [] })
     mockedAxios.isCancel.mockReturnValue(false)
     mockedAxios.isAxiosError.mockImplementation((value): value is Error => {
@@ -67,7 +76,7 @@ describe('useTaskViewModel transcript lazy loading', () => {
   })
 
   it('selectTask 详情请求使用 include_content=false，transcript 被后端剥离为 null', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     // 轻量详情响应：transcript 为 null（后端 pop 后经 response_model 序列化为 null）
     mockedAxios.get.mockImplementation((url: string) => {
@@ -77,17 +86,17 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
 
     expect(mockedAxios.get).toHaveBeenCalledWith('/tasks/task-1?include_content=false')
-    expect(viewModel.selectedTask.value?.transcript).toBeNull()
+    expect(task.selectedTask.value?.transcript).toBeNull()
 
     wrapper.unmount()
   })
 
-  it('切换到“原文”tab 时按需加载 include_content=true 完整内容并填充 transcript', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+  it('切换到"原文"tab 时按需加载 include_content=true 完整内容并填充 transcript', async () => {
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.get.mockImplementation((url: string) => {
       if (url === '/tasks/task-1?include_content=false') {
@@ -99,21 +108,21 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
-    expect(viewModel.selectedTask.value?.transcript).toBeNull()
+    expect(task.selectedTask.value?.transcript).toBeNull()
 
-    viewModel.activeTab.value = 'transcript'
+    task.activeTab.value = 'transcript'
     await flushPromises()
 
     expect(mockedAxios.get).toHaveBeenCalledWith('/tasks/task-1?include_content=true')
-    expect(viewModel.selectedTask.value?.transcript).toBe('完整转录原文')
+    expect(task.selectedTask.value?.transcript).toBe('完整转录原文')
 
     wrapper.unmount()
   })
 
   it('已加载的 transcript 不会在选择同一任务时被轻量详情响应覆盖', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     let includeFull = false
     mockedAxios.get.mockImplementation((url: string) => {
@@ -127,17 +136,17 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
-    viewModel.activeTab.value = 'transcript'
+    task.activeTab.value = 'transcript'
     await flushPromises()
     expect(includeFull).toBe(true)
-    expect(viewModel.selectedTask.value?.transcript).toBe('完整转录原文')
+    expect(task.selectedTask.value?.transcript).toBe('完整转录原文')
 
     // 重新点击同一任务：轻量详情返回后不应丢失已加载的 transcript
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
-    expect(viewModel.selectedTask.value?.transcript).toBe('完整转录原文')
+    expect(task.selectedTask.value?.transcript).toBe('完整转录原文')
 
     wrapper.unmount()
   })
@@ -148,7 +157,7 @@ describe('useTaskViewModel transcript lazy loading', () => {
       clipboard: { writeText: writeTextMock },
     })
 
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.get.mockImplementation((url: string) => {
       if (url === '/tasks/task-1?include_content=false') {
@@ -160,11 +169,11 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
 
-    // 停留在“总结”tab 直接复制转录（悬浮工具栏场景）
-    const result = await viewModel.copyContent('transcript')
+    // 停留在"总结"tab 直接复制转录（悬浮工具栏场景）
+    const result = await task.copyContent('transcript')
 
     expect(result).toBe(true)
     expect(mockedAxios.get).toHaveBeenCalledWith('/tasks/task-1?include_content=true')
@@ -179,7 +188,7 @@ describe('useTaskViewModel transcript lazy loading', () => {
       clipboard: { writeText: writeTextMock },
     })
 
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.get.mockImplementation((url: string) => {
       if (url.includes('/tasks/task-1')) {
@@ -188,10 +197,10 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
 
-    const result = await viewModel.copyContent('transcript')
+    const result = await task.copyContent('transcript')
 
     expect(result).toBe(false)
     expect(writeTextMock).not.toHaveBeenCalled()
@@ -200,7 +209,7 @@ describe('useTaskViewModel transcript lazy loading', () => {
   })
 
   it('切换任务时（activeTab 已是 transcript）自动加载新任务的完整转录，不残留旧任务内容', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
     const taskA = { ...completedTask, id: 'task-a' }
     const taskB = { ...completedTask, id: 'task-b' }
 
@@ -220,25 +229,25 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(taskA)
+    task.selectTask(taskA)
     await flushPromises()
-    viewModel.activeTab.value = 'transcript'
+    task.activeTab.value = 'transcript'
     await flushPromises()
-    expect(viewModel.selectedTask.value?.transcript).toBe('A的完整转录')
+    expect(task.selectedTask.value?.transcript).toBe('A的完整转录')
 
     // 核心回归：activeTab 已是 'transcript'，切换任务时 watch 必须重新触发加载
-    viewModel.selectTask(taskB)
+    task.selectTask(taskB)
     await flushPromises()
 
     expect(mockedAxios.get).toHaveBeenCalledWith('/tasks/task-b?include_content=true')
-    expect(viewModel.selectedTask.value?.id).toBe('task-b')
-    expect(viewModel.selectedTask.value?.transcript).toBe('B的完整转录')
+    expect(task.selectedTask.value?.id).toBe('task-b')
+    expect(task.selectedTask.value?.transcript).toBe('B的完整转录')
 
     wrapper.unmount()
   })
 
   it('同任务重选/WS 重连时完整 summary 不被轻量响应的截断版覆盖', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.get.mockImplementation((url: string) => {
       if (url === '/tasks/task-1?include_content=false') {
@@ -250,20 +259,20 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
-    expect(viewModel.selectedTask.value?.summary).toBe('截断版总结')
+    expect(task.selectedTask.value?.summary).toBe('截断版总结')
 
-    viewModel.activeTab.value = 'transcript'
+    task.activeTab.value = 'transcript'
     await flushPromises()
-    expect(viewModel.selectedTask.value?.summary).toBe('完整总结')
-    expect(viewModel.selectedTask.value?.transcript).toBe('完整转录')
+    expect(task.selectedTask.value?.summary).toBe('完整总结')
+    expect(task.selectedTask.value?.transcript).toBe('完整转录')
 
     // 模拟 WS 重连 / 重新点击同一任务：轻量详情返回后不得覆盖已加载的完整内容
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
-    expect(viewModel.selectedTask.value?.summary).toBe('完整总结')
-    expect(viewModel.selectedTask.value?.transcript).toBe('完整转录')
+    expect(task.selectedTask.value?.summary).toBe('完整总结')
+    expect(task.selectedTask.value?.transcript).toBe('完整转录')
 
     wrapper.unmount()
   })
@@ -279,7 +288,7 @@ describe('useTaskViewModel transcript lazy loading', () => {
     })
     vi.stubGlobal('URL', MockURL as unknown as typeof URL)
 
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.get.mockImplementation((url: string) => {
       if (url === '/tasks/task-1?include_content=false') {
@@ -291,10 +300,10 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
 
-    await viewModel.downloadContent('transcript')
+    await task.downloadContent('transcript')
 
     expect(mockedAxios.get).toHaveBeenCalledWith('/tasks/task-1?include_content=true')
     expect(createObjectURLMock).toHaveBeenCalled()
@@ -304,7 +313,7 @@ describe('useTaskViewModel transcript lazy loading', () => {
   })
 
   it('A→B→A 往返切换时从 per-task 缓存恢复 A 的完整转录，不重复请求', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
     const taskA = { ...completedTask, id: 'task-a' }
     const taskB = { ...completedTask, id: 'task-b' }
 
@@ -324,21 +333,21 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(taskA)
+    task.selectTask(taskA)
     await flushPromises()
-    viewModel.activeTab.value = 'transcript'
+    task.activeTab.value = 'transcript'
     await flushPromises()
 
-    viewModel.selectTask(taskB)
+    task.selectTask(taskB)
     await flushPromises()
 
     // 回到 A：应立即恢复 A 的完整内容（缓存补齐），无需再次请求完整内容
-    viewModel.selectTask(taskA)
+    task.selectTask(taskA)
     await flushPromises()
 
-    expect(viewModel.selectedTask.value?.id).toBe('task-a')
-    expect(viewModel.selectedTask.value?.transcript).toBe('A的完整转录')
-    expect(viewModel.selectedTask.value?.summary).toBe('A的完整总结')
+    expect(task.selectedTask.value?.id).toBe('task-a')
+    expect(task.selectedTask.value?.transcript).toBe('A的完整转录')
+    expect(task.selectedTask.value?.summary).toBe('A的完整总结')
 
     const fullRequests = mockedAxios.get.mock.calls.filter(([url]) => String(url).includes('include_content=true'))
     expect(fullRequests).toHaveLength(2) // 仅 A 首次与 B 首次各一次
@@ -352,7 +361,7 @@ describe('useTaskViewModel transcript lazy loading', () => {
       clipboard: { writeText: writeTextMock },
     })
 
-    const { viewModel, wrapper } = mountViewModel()
+    const { task, wrapper } = mountTaskState()
 
     mockedAxios.get.mockImplementation((url: string) => {
       if (url === '/tasks/task-1?include_content=false') {
@@ -364,12 +373,12 @@ describe('useTaskViewModel transcript lazy loading', () => {
       return Promise.resolve({ data: [] })
     })
 
-    viewModel.selectTask(completedTask)
+    task.selectTask(completedTask)
     await flushPromises()
 
-    // 切到“原文”tab（watch 已排队）后立刻复制：两者触发同一按需加载
-    viewModel.activeTab.value = 'transcript'
-    const copyPromise = viewModel.copyContent('transcript')
+    // 切到"原文"tab（watch 已排队）后立刻复制：两者触发同一按需加载
+    task.activeTab.value = 'transcript'
+    const copyPromise = task.copyContent('transcript')
     await flushPromises()
     const result = await copyPromise
 
