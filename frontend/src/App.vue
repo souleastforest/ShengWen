@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, watch, ref, onMounted, onBeforeUnmount } from 'vue'
 import { PhMonitorPlay, PhList } from '@phosphor-icons/vue'
-import { useTaskViewModel } from './composables/useTaskViewModel'
+import { useWebSocket } from './shared/ws'
+import { useTaskState } from './features/task/state'
+import { useUploadState } from './features/upload/state'
+import { useSettingsState } from './features/settings/state'
 import { useMermaidViewer } from './composables/useMermaidViewer'
 import { useSummaryImageExporter } from './composables/useSummaryImageExporter'
 import { useToast } from './composables/useToast'
@@ -20,6 +23,16 @@ import BilibiliPartsSelector from './components/BilibiliPartsSelector.vue'
 import LocalFolderSelector from './components/LocalFolderSelector.vue'
 import ToastContainer from './components/ToastContainer.vue'
 
+// --- 域状态装配（P7：App.vue 只做装配，唯一允许跨域接线处） ---
+const task = useTaskState()
+const upload = useUploadState()
+const settings = useSettingsState()
+const ws = useWebSocket()
+// 事件 → 状态更新在订阅层做（规格 §5.2）；重连对账触发权归各域
+task.syncWithWs(ws)
+upload.syncWithWs(ws)
+
+// --- 模板消费面（与旧 useTaskViewModel 导出逐键对齐，零改动） ---
 const {
   tasks,
   selectedTask,
@@ -28,6 +41,20 @@ const {
   loadingPartIndex,
   fetchTaskPart,
   retryFailedParts,
+  selectTask,
+  fetchTaskFullContent,
+  downloadContent,
+  copyContent,
+  deleteTask,
+  reSummarize,
+  reTranscribe,
+  reDownloadAudio,
+  updateTaskTopic,
+  activeTab,
+  isSidebarOpen,
+  queues,
+} = task
+const {
   videoUrl,
   selectedFile,
   localFilePath,
@@ -37,8 +64,16 @@ const {
   isSubmitting,
   uploadProgress,
   uploadMaxBytes,
-  error,
-  activeTab,
+  submitTask,
+  cancelSubmitting,
+  checkBilibiliVideoInfo,
+  submitTaskWithParts,
+  isBilibiliUrl,
+  checkLocalPath,
+  scanLocalFolder,
+  submitLocalPathTasks,
+} = upload
+const {
   llmProviders,
   llmSettings,
   isUpdatingLlmSettings,
@@ -53,19 +88,7 @@ const {
   isScanningVibeVoice,
   isStartingVibeVoice,
   isStoppingVibeVoice,
-  queues,
-  submitTask,
-  cancelSubmitting,
-  selectTask,
-  fetchTaskFullContent,
-  downloadContent,
-  copyContent,
-  isSidebarOpen,
-  deleteTask,
-  reSummarize,
-  reTranscribe,
-  reDownloadAudio,
-  updateTaskTopic,
+  clearModelPathValidation,
   updateLlmSettings,
   updateTranscriptionSettings,
   validateModelPath,
@@ -73,17 +96,10 @@ const {
   startVibeVoiceService,
   stopVibeVoiceService,
   fetchVibeVoiceServiceStatus,
-  clearModelPathValidation,
   updateSummarizationSettings,
   testLlm,
   readBilibiliCookieFromBrowser,
-  checkBilibiliVideoInfo,
-  submitTaskWithParts,
-  isBilibiliUrl,
-  checkLocalPath,
-  scanLocalFolder,
-  submitLocalPathTasks,
-} = useTaskViewModel()
+} = settings
 
 // 状态变量
 const showInfoModal = ref(false)
@@ -154,12 +170,32 @@ onMounted(() => {
       toastMediaQuery?.removeListener(handleToastViewportChange)
     }
   }
+
+  // 域装配生命周期（D4：装配层持有 onMounted/onUnmounted）——
+  // 并发 8 个 fetch + ws.connect + 轮询兜底（与拆分前 onMounted 语义一致）
+  task.fetchTasks()
+  task.fetchQueueSnapshot()
+  upload.fetchUploadConfig()
+
+  settings.fetchLlmProviders()
+  settings.fetchLlmSettings()
+  settings.fetchTranscriptionSettings()
+  settings.fetchSummarizationSettings()
+  ws.connect()
+
+  // 轮询兜底：WS 断流时列表/队列仍低频刷新（fetchTasks 已有 P1 守卫，
+  // 不重置已选中任务的完整内容；与 WS 并行无害）。
+  task.startPolling()
 })
 
 onBeforeUnmount(() => {
   detachToastMediaListener?.()
   detachToastMediaListener = null
   toastMediaQuery = null
+
+  // 域装配生命周期：WS dispose + task 定时器清理（含轮询兜底）
+  ws.dispose()
+  task.dispose()
 })
 
 const {
@@ -211,13 +247,16 @@ const handleCopyTranscript = async () => {
 const handleReSummarize = (taskId: string, mode?: 'standard' | 'agent') => {
   const { info } = useToast()
   info(mode ? `正在以${mode === 'agent' ? ' Agent' : ''}模式生成 AI 总结...` : '正在重新生成 AI 总结...')
-  reSummarize(taskId, mode)
+  // D1：summary_mode 由装配层显式传参（task 域对 upload 零 import）；
+  // 缺省沿用 upload 域 UI 三态（与拆分前 mode ?? summaryMode.value 等价）
+  reSummarize(taskId, mode ?? upload.summaryMode.value)
 }
 
 const handleReTranscribe = (taskId: string) => {
   const { info } = useToast()
   info('正在重新转录原文...')
-  reTranscribe(taskId)
+  // D1：reTranscribe 新增可选 mode 参数，装配层传 upload.summaryMode.value
+  reTranscribe(taskId, upload.summaryMode.value)
 }
 
 // Sidebar 快速重跑：FAILED 任务行的小圆钮 → 复用同一 re-transcribe 通道
@@ -316,7 +355,7 @@ const handleUpdateLlmSettings = async (payload: {
     await updateLlmSettings(payload)
     success('LLM 配置已更新')
   } catch (_e) {
-    // 错误信息由 useTaskViewModel + Toast 统一处理
+    // 错误信息由各域 state 的 error 置值 + 装配层聚合 watch → Toast 统一处理
   }
 }
 
@@ -336,7 +375,7 @@ const handleUpdateLlmSettingsAndTest = async (payload: {
     // 配置保存成功后立即测试
     await handleTestLlm()
   } catch (_e) {
-    // 错误信息由 useTaskViewModel + Toast 统一处理
+    // 错误信息由各域 state 的 error 置值 + 装配层聚合 watch → Toast 统一处理
   }
 }
 
@@ -359,7 +398,7 @@ const handleUpdateTranscriptionSettings = async (payload: {
     await updateTranscriptionSettings(payload)
     success('转录配置已更新')
   } catch (_e) {
-    // 错误信息由 useTaskViewModel + Toast 统一处理
+    // 错误信息由各域 state 的 error 置值 + 装配层聚合 watch → Toast 统一处理
   }
 }
 
@@ -372,7 +411,7 @@ const handleReadBilibiliCookieFromBrowser = async () => {
       toastError(result.error || '读取失败')
     }
   } catch (_e) {
-    // 错误信息由 useTaskViewModel + Toast 统一处理
+    // 错误信息由各域 state 的 error 置值 + 装配层聚合 watch → Toast 统一处理
   }
 }
 
@@ -490,7 +529,7 @@ const handleSubmit = async () => {
   // URL 提交 - 检查是否为B站多P视频
   const url = videoUrl.value.trim()
   if (!url) {
-    error.value = '请输入有效视频链接，或粘贴包含链接的文本。'
+    upload.error.value = '请输入有效视频链接，或粘贴包含链接的文本。'
     return
   }
 
@@ -529,7 +568,7 @@ const handleBilibiliPartsConfirm = async (config: BilibiliPartsConfig) => {
     videoUrl.value = ''
     success('已提交任务')
   } catch (_e) {
-    // 错误信息由 useTaskViewModel + Toast 统一处理
+    // 错误信息由各域 state 的 error 置值 + 装配层聚合 watch → Toast 统一处理
   }
 }
 
@@ -550,7 +589,7 @@ const handleLocalFolderConfirm = async (config: { mode: 'merge' | 'separate'; pa
       success('已提交任务')
     }
   } catch (_e) {
-    // 错误信息由 useTaskViewModel + Toast 统一处理
+    // 错误信息由各域 state 的 error 置值 + 装配层聚合 watch → Toast 统一处理
   }
 }
 
@@ -627,7 +666,7 @@ const handleUpdateSummarizationSettings = async (payload: {
     await updateSummarizationSettings(payload)
     success('总结配置已更新')
   } catch (_e) {
-    // 错误信息由 useTaskViewModel + Toast 统一处理
+    // 错误信息由各域 state 的 error 置值 + 装配层聚合 watch → Toast 统一处理
   }
 }
 
@@ -639,8 +678,21 @@ const handleActiveHeadingIdUpdate = (headingId: string) => {
   activeHeadingId.value = headingId
 }
 
-// 错误处理
-watch(error, (newError) => {
+// 错误处理（D2：三域 error ref 聚合）。实现为三路独立 watch —— 语义等价平移：
+// 拆分前单一 error ref 每次 set（非 null）触发一次 toast；三路 watch 在各自 ref
+// 变化时触发，相同文案不重复弹（Vue 严格相等跳过）；避免"数组 watch 首非空优先"
+// 在跨域残留错误存在时遮蔽新错误文案（旧 ref 值不得压住新错误）。
+watch(task.error, (newError) => {
+  if (newError) {
+    toastError(newError)
+  }
+})
+watch(upload.error, (newError) => {
+  if (newError) {
+    toastError(newError)
+  }
+})
+watch(settings.error, (newError) => {
   if (newError) {
     toastError(newError)
   }
