@@ -619,8 +619,11 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
   const reSummarize = async (taskId: string, mode?: SummaryMode) => {
     try {
       // summary_mode：优先显式模式（如补总结入口指定 standard/agent）；
-      // 缺省沿用 UI 三态（none/standard/agent）。'none' 时后端会按
-      // auto 判定兜底生成总结（见 llm_worker._resolve_effective_mode）。
+      // 缺省即 'none'（D1 决策，与 reTranscribe 的缺省一致）——'none' 时后端
+      // 会按 auto 判定兜底生成总结（见 llm_worker._resolve_effective_mode）。
+      // App 装配层 handleReSummarize(taskId, mode ?? upload.summaryMode.value)
+      // 覆盖全部生产调用路径（mode 恒有值），域层缺省 'none' 仅为防御性兜底
+      // （对应旧实现 summaryMode.value 的 UI 初始值，不构成行为偏差）。
       // D1：显式 mode 参数由装配层传入 upload.summaryMode.value，本域不读 upload。
       const payload: ReSummarizeRequest = {
         summary_mode: mode ?? 'none'
