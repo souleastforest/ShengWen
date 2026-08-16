@@ -151,7 +151,7 @@ frontend/src/
 
 ### P7 composable 域拆分（B 阶段第一个包）— **✅ 已完成（2026-08-16，refactor/p7-implement → PR #11）**
 
-- `useTaskViewModel`（实测 1523 行）→ `features/{task,upload,settings}/state.ts` + `shared/ws.ts`；App.vue 只做装配（947 → 965 行，装配逻辑替换为三域接线 + ws 订阅 + 生命周期）。
+- `useTaskViewModel`（实测 1523 行）→ `features/{task,upload,settings}/state.ts` + `shared/ws.ts`；App.vue 只做装配（947 → 1002 行，+55 行为显式三域接线 + ws 订阅 + 生命周期 + D2 三路 error watch 的装配成本；原内联编排在 P6 已大部下沉，P7 后不再持有任何业务实现）。
 - 规格：p7-composable-spec.md（导出签名 public seam、api adapter 注入方式、测试迁移清单）。
 - **拆分表**（源 → 目标，行为逐条平移）：
 
