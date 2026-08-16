@@ -1,18 +1,17 @@
 /**
- * 对抗性测试：上传配置下发（fetchUploadConfig）
- *
- * 需求（code-reviewer I2 修复）：前端上传大小上限与后端同源——onMounted 拉取
- * GET /upload/config（storage.max_upload_mb），失败静默回退默认 2GB，不阻塞 UI。
- * 失败 = 实现缺陷。
+ * P7 迁移：useTaskViewModel.uploadConfig.test.ts → features/upload/state.ts
+ * 用例逻辑原样保留（fetchUploadConfig 语义）；uploadConfigReconcile（WS onopen
+ * 对账）见同目录 state.uploadConfigReconcile.test.ts。
  */
 import { mount, flushPromises } from '@vue/test-utils'
 import { defineComponent } from 'vue'
 import axios from 'axios'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  useTaskViewModel,
+  useUploadState,
   DEFAULT_MAX_UPLOAD_BYTES,
-} from '../composables/useTaskViewModel'
+} from '../state'
+import type { UploadState } from '../state'
 
 const mockedAxios = vi.mocked(axios)
 
@@ -26,28 +25,29 @@ vi.mock('axios', () => ({
   },
 }))
 
-const mountViewModel = () => {
-  let viewModel!: ReturnType<typeof useTaskViewModel>
+const mountUploadState = () => {
+  let upload!: UploadState
   const TestComponent = defineComponent({
     setup() {
-      viewModel = useTaskViewModel()
+      upload = useUploadState()
       return () => null
     },
   })
   const wrapper = mount(TestComponent)
-  return { viewModel, wrapper }
+  return { upload, wrapper }
 }
 
-describe('useTaskViewModel 上传配置下发', () => {
+describe('upload 域上传配置下发（useTaskViewModel 迁移）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     mockedAxios.get.mockResolvedValue({ data: [] })
+    vi.stubGlobal('WebSocket', vi.fn(function () { return { close: vi.fn() } }))
   })
 
-  it('onMounted 拉取 /upload/config 并应用后端上限', async () => {
-    // GET 按路径返回：其他设置请求返回空数组，/upload/config 返回 1GB
+  it('装配层挂载时拉取 /upload/config 并应用后端上限', async () => {
+    // GET 按路径返回：/upload/config 返回 1GB
     mockedAxios.get.mockImplementation((url: string) => {
       if (String(url).endsWith('/upload/config')) {
         return Promise.resolve({ data: { max_upload_mb: 1024 } })
@@ -55,10 +55,11 @@ describe('useTaskViewModel 上传配置下发', () => {
       return Promise.resolve({ data: [] })
     })
 
-    const { viewModel } = mountViewModel()
+    const { upload } = mountUploadState()
+    await upload.fetchUploadConfig()
     await flushPromises()
 
-    expect(viewModel.uploadMaxBytes.value).toBe(1024 * 1024 * 1024)
+    expect(upload.uploadMaxBytes.value).toBe(1024 * 1024 * 1024)
   })
 
   it('配置拉取失败时回退默认 2GB（不阻塞 UI）', async () => {
@@ -69,9 +70,10 @@ describe('useTaskViewModel 上传配置下发', () => {
       return Promise.resolve({ data: [] })
     })
 
-    const { viewModel } = mountViewModel()
+    const { upload } = mountUploadState()
+    await upload.fetchUploadConfig()
     await flushPromises()
 
-    expect(viewModel.uploadMaxBytes.value).toBe(DEFAULT_MAX_UPLOAD_BYTES)
+    expect(upload.uploadMaxBytes.value).toBe(DEFAULT_MAX_UPLOAD_BYTES)
   })
 })
