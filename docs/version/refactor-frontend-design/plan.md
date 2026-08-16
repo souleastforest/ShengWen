@@ -157,19 +157,19 @@ frontend/src/
 
   | 源（useTaskViewModel 1523 行） | 目标文件 | 目标行数 |
   |---|---|---|
-  | task 域 ~540（列表/选择/详情/分P/重试/删除/重转录/重总结/重下载/改主题/内容缓存/懒加载） | `features/task/state.ts` | 881 |
-  | upload 域 ~400（三通道提交/进度/取消/上传配置/本地路径批量/B站多P/URL 提取/env 判定） | `features/upload/state.ts` | 466 |
-  | settings 域 ~250（LLM/转录/总结三表单/vibevoice/校验/测试/Cookie） | `features/settings/state.ts` | 363 |
-  | WS 层 ~200（连接/退避/心跳/事件总线/onerror 兜底） | `shared/ws.ts` | 246 |
+  | task 域 ~540（列表/选择/详情/分P/重试/删除/重转录/重总结/重下载/改主题/内容缓存/懒加载） | `features/task/state.ts` | 853 |
+  | upload 域 ~400（三通道提交/进度/取消/上传配置/本地路径批量/B站多P/URL 提取/env 判定） | `features/upload/state.ts` | 470 |
+  | settings 域 ~250（LLM/转录/总结三表单/vibevoice/校验/测试/Cookie） | `features/settings/state.ts` | 342 |
+  | WS 层 ~200（连接/退避/心跳/事件总线/onerror 兜底） | `shared/ws.ts` | 231 |
   | 装配 ~250（return 63 键 + 生命周期） | App.vue（只做装配） | ~965 |
 
 - **决策执行记录（D1–D4）**：
   - **D1（summaryMode 归属 + reTranscribe 签名）**：按推荐 A 执行——summaryMode/generateTopic 归 `upload/state.ts`；`reTranscribe(taskId, mode?)` 新增可选 mode 参数（缺省 `'none'`，与旧 UI 三态初始值等价）；`reSummarize(taskId, mode?)` 缺省同样由装配层传入 `upload.summaryMode.value`（`handleReSummarize(taskId, mode ?? upload.summaryMode.value)`）。task 域对 upload **零 import**，依赖图严格无环。
-  - **D2（三域 error → toast 聚合）**：实现为**三路独立 watch**（`watch(task.error)` / `watch(upload.error)` / `watch(settings.error)`）而非字面数组 watch——等价平移"单一 error ref 每次 set（非 null）触发一次 toast"；数组 watch 在跨域残留错误存在时（如任务列表失败后上传失败）会以旧文案遮蔽新错误（首非空优先），三路 watch 无此偏差且相同文案不重复弹（Vue 严格相等）。toast 文案/触发时机与拆分前逐位一致。
+  - **D2（三域 error → toast 聚合）**：实现为**三路独立 watch**（`watch(task.error)` / `watch(upload.error)` / `watch(settings.error)`）而非字面数组 watch——等价平移"单一 error ref 每次 set（非 null）触发一次 toast"；数组 watch 在跨域残留错误存在时（如任务列表失败后上传失败）会以旧文案遮蔽新错误（首非空优先），三路 watch 无此偏差且相同文案不重复弹（Vue 严格相等）。**有意接受的行为差异**（对抗评审 P1-1，2026-08-16 记录）：同一 tick 内多域先后置 error 时，旧版单一 error ref 仅弹 1 条（后值遮蔽前值），新版最多弹 3 条（各域错误各自呈现，信息更完整，方向为"更多信息"而非信息丢失）。单域错误路径的 toast 文案与触发时机与拆分前逐位一致。
   - **D3（useTaskViewModel 兼容层）**：按推荐**直接删除**。生产消费点仅 App.vue（已改装配），16 个测试文件迁移后 grep 零 import 残留（仅文件头溯源注释提及旧文件名），`chore(p7): remove useTaskViewModel after domain split (zero refs)`。
   - **D4（生命周期宿主）**：按推荐装配层持有——App.vue `onMounted`（7 个并发 fetch + `ws.connect()` + `task.startPolling()`）与 `onBeforeUnmount`（`ws.dispose()` + `task.dispose()`）；各 state 不注册生命周期钩子；轮询/墓碑/分P刷新定时器由 task 域 `startPolling/stopPolling/dispose` 显式驱动。
 - **api adapter**：按规格 §4 方案 A（模块级单例 `apiClient` 沿用；`useTaskState(options?: { api? })` 可选签名保留为未来 seam 扩展，生产不传）。
-- **WS 挂接**：`shared/ws.ts` 无业务语义（连接/退避/心跳/事件总线）；事件 → 状态更新在订阅层（task 域 `task_update` 墓碑过滤/合并/缓存守卫、`progress_update` 写进度、`status==='open'` 重连对账；upload 域 `status==='open'` → fetchUploadConfig）。
+- **WS 挂接**：`shared/ws.ts` 无业务语义（连接/退避/心跳/事件总线）；事件 → 状态更新在订阅层（task 域 `task_update` 墓碑过滤/合并/缓存守卫、`progress_update` 写进度、`status==='open'` 重连对账；upload 域 `status==='open'` → fetchUploadConfig）。**防御性增强注记**（对抗评审 P2-3，2026-08-16）：`connect()` 幂等守卫——open 态重复 connect 为 no-op（旧实现无条件新建 WebSocket；当前调用路径——onMounted 一次 + 重连定时器在 close 后——无行为差异，守卫仅防未来误调）。
 - **测试迁移**：15 个 `useTaskViewModel.*.test.ts` + `sharedApiClient.test.ts` 按域迁移（断言原样保留，仅改引用/setup）：task 8 文件（taskContent/p1Defenses/transcript/summaryModeTab.task/queue/redownload/deleteTombstone/polling）+ upload 5 文件（summaryModeTab/payload/generateTopic/uploadConfig/uploadConfigReconcile）+ settings 1 文件（vibevoice）+ ws 2 文件（heartbeat/lifecycle 重写为 useWebSocket）+ shared/api 1 文件（client.seam，B5 改断言"三域全部走共享实例"）；Sidebar/TaskMetaCard 组件层断言留 `__tests__/summaryModeTab.adversarial.test.ts`；`App.p1Defenses/App.toastContainer` 零改动全绿 = App 装配 seam 未破坏的直接证据。
 - **新增 seam 契约测试**：`ws.seam`（11）/ `task.state.seam`（6）/ `upload.state.seam`（6）/ `settings.state.seam`（6）/ `App.p7Assembly`（3）+ queue 畸形帧后正常帧入列表（1）= 33 用例（TDD 先行，先红后绿）。
 - **验证表**：vitest 397 全绿（基线 364 + 新增 33，用例数只增不减）；`vue-tsc -b` 通过；`npm run build` 通过（dist 重建）；playwright 冒烟 19/19（21001：P6 场景复用 + 提交 payload 接线拦截 + WS 连接活性 + reTranscribe D1 显式 mode 无 confirm/有 confirm 双路径，均 abort 不落后端）；行为等价声明：App.vue 用户可见行为、WS 事件语义、任务/上传/设置数据流逐位等价。

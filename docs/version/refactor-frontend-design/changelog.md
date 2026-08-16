@@ -6,10 +6,10 @@
 ## Change Log
 
 - 2026-08-16: **P7 composable 域拆分完成**（refactor/p7-implement → PR #11，行为保持 Q6，逐逻辑块等价搬移）。
-  - **useTaskViewModel（实测 1523 行）按域拆分**：`features/task/state.ts`（881 行：列表/选择/详情/分P/重试/删除/重转录/重总结/重下载/改主题/per-task 内容缓存/懒加载/墓碑/轮询兜底）+ `features/upload/state.ts`（466 行：三通道提交/进度/取消/上传配置/本地路径批量/B站多P/URL 提取/env 判定 + `DEFAULT_MAX_UPLOAD_BYTES`）+ `features/settings/state.ts`（363 行：LLM/转录/总结三表单保存测试/vibevoice 扫描启停/校验/Cookie）+ `shared/ws.ts`（246 行：连接/指数退避 3s→30s 封顶/onerror 5s 兜底槽位互斥/心跳 ping-pong/畸形帧防护/事件总线）。
+  - **useTaskViewModel（实测 1523 行）按域拆分**：`features/task/state.ts`（853 行：列表/选择/详情/分P/重试/删除/重转录/重总结/重下载/改主题/per-task 内容缓存/懒加载/墓碑/轮询兜底）+ `features/upload/state.ts`（470 行：三通道提交/进度/取消/上传配置/本地路径批量/B站多P/URL 提取/env 判定 + `DEFAULT_MAX_UPLOAD_BYTES`）+ `features/settings/state.ts`（342 行：LLM/转录/总结三表单保存测试/vibevoice 扫描启停/校验/Cookie）+ `shared/ws.ts`（231 行：连接/指数退避 3s→30s 封顶/onerror 5s 兜底槽位互斥/心跳 ping-pong/畸形帧防护/事件总线）。
   - **App.vue 只做装配**：三域 state + ws 订阅接线 + 生命周期宿主（D4：onMounted 并发 7 fetch + ws.connect + startPolling；onBeforeUnmount ws.dispose + task.dispose）；模板消费面零改动。
   - **D1**：summaryMode/generateTopic 归 upload 域；`reTranscribe(taskId, mode?)` 新增可选参数（替代内读 summaryMode），App 装配层 `reTranscribe(taskId, upload.summaryMode.value)` 显式传参——task 对 upload 零 import，依赖图无环。
-  - **D2**：error→toast 装配层三路独立 watch 聚合（等价平移单一 error ref 语义；规避数组 watch 的旧文案遮蔽新错误偏差）。
+  - **D2**：error→toast 装配层三路独立 watch 聚合（等价平移单一 error ref 语义；规避数组 watch 的旧文案遮蔽新错误偏差）。**有意接受的行为差异**（对抗评审 P1-1，2026-08-16）：同一 tick 内多域先后置 error 时，旧版单一 error ref 仅弹 1 条（后值遮蔽前值），新版最多弹 3 条（各域错误各自呈现，信息更完整，非信息丢失）。
   - **D3**：全部迁移后 grep 零 import 残留，删除 useTaskViewModel.ts（`chore(p7): remove useTaskViewModel after domain split (zero refs)`）。
   - **api adapter**：规格 §4 方案 A——模块级单例 `apiClient` 沿用，`useTaskState(options?: { api? })` 可选签名保留为 seam 扩展。
   - **测试**：15 个 useTaskViewModel.* 测试 + sharedApiClient 按域迁移（断言原样保留）；新增 seam 契约测试 33 用例（TDD 先行）。`App.p1Defenses/App.toastContainer` 零改动全绿。
