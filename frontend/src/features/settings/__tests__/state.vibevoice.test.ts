@@ -1,9 +1,14 @@
+/**
+ * P7 迁移：useTaskViewModel.vibevoice.test.ts → features/settings/state.ts
+ * 用例逻辑原样保留，仅改引用（useTaskViewModel → useSettingsState）与 setup。
+ */
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import axios from 'axios'
-import { useTaskViewModel } from '../composables/useTaskViewModel'
-import type { ModelPathValidationRequest, ModelPathValidationResult } from '../types'
+import { useSettingsState } from '../state'
+import type { SettingsState } from '../state'
+import type { ModelPathValidationRequest, ModelPathValidationResult } from '../../../types'
 
 vi.mock('axios', () => ({
   default: {
@@ -17,32 +22,27 @@ vi.mock('axios', () => ({
 
 const mockedAxios = vi.mocked(axios)
 
-const createDeferred = <T>() => {
+function createDeferred<T>() {
   let resolve!: (value: T) => void
-  let reject!: (reason?: unknown) => void
-  const promise = new Promise<T>((res, rej) => {
+  const promise = new Promise<T>((res) => {
     resolve = res
-    reject = rej
   })
-
-  return { promise, resolve, reject }
+  return { promise, resolve }
 }
 
-const mountViewModel = () => {
-  let viewModel!: ReturnType<typeof useTaskViewModel>
-
+const mountSettingsState = () => {
+  let settings!: SettingsState
   const TestComponent = defineComponent({
     setup() {
-      viewModel = useTaskViewModel()
+      settings = useSettingsState()
       return () => null
     },
   })
-
   const wrapper = mount(TestComponent)
-  return { viewModel, wrapper }
+  return { settings, wrapper }
 }
 
-describe('useTaskViewModel VibeVoice model path validation', () => {
+describe('settings 域 VibeVoice model path validation（useTaskViewModel 迁移）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -69,7 +69,7 @@ describe('useTaskViewModel VibeVoice model path validation', () => {
     const deferred = createDeferred<{ data: ModelPathValidationResult }>()
     mockedAxios.post.mockReturnValueOnce(deferred.promise)
 
-    const { viewModel, wrapper } = mountViewModel()
+    const { settings, wrapper } = mountSettingsState()
     const request: ModelPathValidationRequest = {
       path: '/models/vibevoice',
       transcriber_type: 'vibe_voice_asr',
@@ -83,10 +83,10 @@ describe('useTaskViewModel VibeVoice model path validation', () => {
       details: {},
     }
 
-    const pending = viewModel.validateModelPath(request)
+    const pending = settings.validateModelPath(request)
 
-    expect(viewModel.isValidatingModelPath.value).toBe(true)
-    expect(viewModel.modelPathValidationResult.value).toBeNull()
+    expect(settings.isValidatingModelPath.value).toBe(true)
+    expect(settings.modelPathValidationResult.value).toBeNull()
     expect(mockedAxios.post).toHaveBeenCalledWith(
       '/transcription/settings/validate-model-path',
       request,
@@ -95,14 +95,14 @@ describe('useTaskViewModel VibeVoice model path validation', () => {
     deferred.resolve({ data: expectedResult })
 
     await expect(pending).resolves.toEqual(expectedResult)
-    expect(viewModel.modelPathValidationResult.value).toEqual(expectedResult)
-    expect(viewModel.isValidatingModelPath.value).toBe(false)
+    expect(settings.modelPathValidationResult.value).toEqual(expectedResult)
+    expect(settings.isValidatingModelPath.value).toBe(false)
 
     wrapper.unmount()
   })
 
   it('validateModelPath creates a fallback result on network error', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { settings, wrapper } = mountSettingsState()
     const request: ModelPathValidationRequest = {
       path: '/missing/model',
       transcriber_type: 'vibe_voice_asr',
@@ -113,8 +113,8 @@ describe('useTaskViewModel VibeVoice model path validation', () => {
 
     mockedAxios.post.mockRejectedValueOnce(networkError)
 
-    await expect(viewModel.validateModelPath(request)).rejects.toThrow('Network Error')
-    expect(viewModel.modelPathValidationResult.value).toEqual({
+    await expect(settings.validateModelPath(request)).rejects.toThrow('Network Error')
+    expect(settings.modelPathValidationResult.value).toEqual({
       valid: false,
       message: '验证请求失败',
       resolved_path: '/missing/model',
@@ -122,13 +122,13 @@ describe('useTaskViewModel VibeVoice model path validation', () => {
       has_processor_config: false,
       details: {},
     })
-    expect(viewModel.isValidatingModelPath.value).toBe(false)
+    expect(settings.isValidatingModelPath.value).toBe(false)
 
     wrapper.unmount()
   })
 
   it('validateModelPath uses response detail in the fallback result when available', async () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { settings, wrapper } = mountSettingsState()
     const request: ModelPathValidationRequest = {
       path: '/bad/model',
       transcriber_type: 'vibe_voice_asr',
@@ -144,8 +144,8 @@ describe('useTaskViewModel VibeVoice model path validation', () => {
 
     mockedAxios.post.mockRejectedValueOnce(responseError)
 
-    await expect(viewModel.validateModelPath(request)).rejects.toThrow('Request failed')
-    expect(viewModel.modelPathValidationResult.value).toEqual({
+    await expect(settings.validateModelPath(request)).rejects.toThrow('Request failed')
+    expect(settings.modelPathValidationResult.value).toEqual({
       valid: false,
       message: '缺少 config.json',
       resolved_path: '/bad/model',
@@ -153,15 +153,15 @@ describe('useTaskViewModel VibeVoice model path validation', () => {
       has_processor_config: false,
       details: {},
     })
-    expect(viewModel.isValidatingModelPath.value).toBe(false)
+    expect(settings.isValidatingModelPath.value).toBe(false)
 
     wrapper.unmount()
   })
 
   it('clearModelPathValidation resets the stored validation result', () => {
-    const { viewModel, wrapper } = mountViewModel()
+    const { settings, wrapper } = mountSettingsState()
 
-    viewModel.modelPathValidationResult.value = {
+    settings.modelPathValidationResult.value = {
       valid: true,
       message: 'OK',
       resolved_path: '/models/vibevoice',
@@ -170,9 +170,9 @@ describe('useTaskViewModel VibeVoice model path validation', () => {
       details: {},
     }
 
-    viewModel.clearModelPathValidation()
+    settings.clearModelPathValidation()
 
-    expect(viewModel.modelPathValidationResult.value).toBeNull()
+    expect(settings.modelPathValidationResult.value).toBeNull()
 
     wrapper.unmount()
   })
