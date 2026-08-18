@@ -104,5 +104,7 @@ async def get_bilibili_video_info(payload: BilibiliVideoInfoRequest):
             return BilibiliVideoInfo(
                 is_multi_part=False, title="", bvid=bvid, duration=0, parts=None
             )
-        logger.error("获取 B 站视频信息失败: {}", e, exc_info=True)
+        # loguru 不支持 exc_info 关键字（会作为 format kwargs 被静默丢弃，
+        # traceback 不记录）——用 opt(exception=e) 显式附加异常。
+        logger.opt(exception=e).error("获取 B 站视频信息失败: {}", e)
         raise HTTPException(status_code=500, detail=f"获取视频信息失败: {str(e)}")
