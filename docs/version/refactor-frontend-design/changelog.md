@@ -5,6 +5,21 @@
 
 ## Change Log
 
+- 2026-08-18: **bugfix: dispatch 失败任务不再静默卡 PENDING，转录器懒导入根因保留**（fix/vibe-voice-registration → PR）。
+  - **根因链**（任务卡 PENDING 链路）：`get_transcriber("vibe_voice_asr")` 懒导入 `vibe_voice_asr_transcriber` 失败
+    （环境缺 torch，模块顶层 `import torch` 抛 ModuleNotFoundError）→ `Transcriber.get_class`（transcriber.py）
+    用 `from None` 掩盖根因，抛 `ValueError("未注册的转录器类型: ...")` → `pipeline._on_task_created` 捕获后仅发布
+    TASK_FAILED——生产零订阅（全仓仅 publish 无 subscribe）→ 任务永久 PENDING 且无 error_message。
+  - **P0-1（pipeline.py）**：dispatch 失败分支直接复用任务标记失败逻辑（`update_and_notify`，与
+    `deps._fail_task_with_model_error` 同一模式），将任务标记为 FAILED 并写入 error_message（"任务派发失败: ..."）；
+    TASK_FAILED 事件照常发布供其他订阅者观测。任何 dispatch 失败不再静默卡 PENDING。
+  - **P0-2（transcriber.py get_class）**：懒导入失败改为 `raise ValueError(...) from exc` 保留 ImportError 为
+    `__cause__`；logger.error 记录真实导入细节；docstring 注明"未注册"可能因依赖缺失；错误消息附加模块导入失败提示。
+  - **测试（TDD 红→绿）**：新增 `tests/test_pipeline_dispatch_failure.py`（dispatch 失败 → FAILED + error_message
+    含"未注册"；成功路径不误标）；`test_transcriber_registry.py` 新增 `__cause__` 为 ModuleNotFoundError 断言。
+    全量 301 passed（基线 298 + 3 新增），5 个既有失败为环境缺 torch 的 `TestVibeVoiceAsrClassmethods` 直连导入
+    （基线已有，与本次改动无关）。
+  - **验证**：ruff check/format 通过；basedpyright 改动文件 0 新增错误（3 个既有 error 未动）。
 - 2026-08-18: **bugfix: B 站分P探针网络类失败降级为单P提交，不再误报 422**（fix/bilibili-dns-422 → PR #12）。
   - **根因**：`POST /tasks/` 分P探针（tasks.py）在瞬时 DNS/网络故障（如 `Temporary failure in name resolution`）时抛异常，
     被无差别转 422 业务错误（"无法确认 B 站分P信息"），状态码与文案均误导；前端 video-info 失败→静默降级提交→后端探针同样失败→422 放大问题。
