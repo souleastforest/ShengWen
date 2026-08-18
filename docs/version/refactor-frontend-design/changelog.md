@@ -5,6 +5,17 @@
 
 ## Change Log
 
+- 2026-08-18: **bugfix: B 站分P探针网络类失败降级为单P提交，不再误报 422**（fix/bilibili-dns-422 → PR #12）。
+  - **根因**：`POST /tasks/` 分P探针（tasks.py）在瞬时 DNS/网络故障（如 `Temporary failure in name resolution`）时抛异常，
+    被无差别转 422 业务错误（"无法确认 B 站分P信息"），状态码与文案均误导；前端 video-info 失败→静默降级提交→后端探针同样失败→422 放大问题。
+  - **P0（tasks.py）**：探针异常按网络类/确定性分类——网络类（httpx.TransportError 类型判定为主 + 消息关键词兜底）
+    降级为整视频单P语义继续创建任务（不 422，DNS 恢复后由下载器重试），warning 日志带 video_url；确定性错误（无效 BV/视频不存在/业务性拒绝）与多P检测保持 422。
+  - **防御（bilibili.py /bilibili/video-info）**：同样分类，网络类失败返回 200 `is_multi_part=false`（title 为空），确定性错误保持 500。
+  - **顺带修复**：`logger.warning(f"...{e}")` 的 f-string 模板在异常消息含 `{}`（如 ResponseCodeException 的 raw dict）时
+    会触发 loguru `message.format` IndexError、吞掉 422 改抛 500——触达行改用 loguru `{}` 占位符模板。
+  - **测试**：新增 8 用例（TDD 先红后绿：ConnectError/关键词网络类降级 201、确定性 422、多P 422、video-info 网络类 200/确定性 500/多P 200 回归）；
+    顺带修复 `test_create_task_publishes_task_created` 环境相关 flake（假 BV 直连真实 api.bilibili.com，结果随网络状态漂移→探针打桩）。
+  - **验证**：pytest 289 通过（5 torch 相关用例因环境缺 torch 为既有失败，与本次无关）；ruff/basedpyright 改动文件零新增问题。
 - 2026-08-16: **P7 composable 域拆分完成**（refactor/p7-implement → PR #11，行为保持 Q6，逐逻辑块等价搬移）。
   - **useTaskViewModel（实测 1523 行）按域拆分**：`features/task/state.ts`（853 行：列表/选择/详情/分P/重试/删除/重转录/重总结/重下载/改主题/per-task 内容缓存/懒加载/墓碑/轮询兜底）+ `features/upload/state.ts`（470 行：三通道提交/进度/取消/上传配置/本地路径批量/B站多P/URL 提取/env 判定 + `DEFAULT_MAX_UPLOAD_BYTES`）+ `features/settings/state.ts`（342 行：LLM/转录/总结三表单保存测试/vibevoice 扫描启停/校验/Cookie）+ `shared/ws.ts`（231 行：连接/指数退避 3s→30s 封顶/onerror 5s 兜底槽位互斥/心跳 ping-pong/畸形帧防护/事件总线）。
   - **App.vue 只做装配**：三域 state + ws 订阅接线 + 生命周期宿主（D4：onMounted 并发 7 fetch + ws.connect + startPolling；onBeforeUnmount ws.dispose + task.dispose）；模板消费面零改动。
