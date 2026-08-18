@@ -153,11 +153,21 @@ async def create_task(task_in: TaskCreate, request: Request):
                 str(task_in.video_url)
             )
         except Exception as e:
-            logger.warning(f"获取 B 站分P信息失败: {e}")
-            raise HTTPException(
-                status_code=422,
-                detail="无法确认 B 站分P信息，请先在分P选择器中选择要处理的内容。",
-            ) from e
+            if deps._is_bilibili_probe_network_error(e):
+                # 网络类失败（DNS/连接/超时等瞬时故障）：探针本就不确定分P数，
+                # 降级为整视频单P语义继续创建任务，DNS 恢复后由下载器重试。
+                logger.warning(
+                    "获取 B 站分P信息失败（已降级为整视频）: {} (url={})",
+                    e,
+                    task_in.video_url,
+                )
+                parts_info = []
+            else:
+                logger.warning("获取 B 站分P信息失败: {}", e)
+                raise HTTPException(
+                    status_code=422,
+                    detail="无法确认 B 站分P信息，请先在分P选择器中选择要处理的内容。",
+                ) from e
         if len(parts_info) > 1:
             raise HTTPException(
                 status_code=422,

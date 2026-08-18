@@ -4,8 +4,10 @@ import asyncio
 import glob
 import ipaddress
 import os
+import socket
 from urllib.parse import unquote, urlparse
 
+import httpx
 from fastapi import HTTPException, Request
 from loguru import logger
 
@@ -77,6 +79,41 @@ def _is_bilibili_video_url(video_url: str) -> bool:
     except Exception:
         return False
     return "bilibili.com" in netloc or "b23.tv" in netloc
+
+
+# 网络类失败的消息关键词兜底（非 httpx 客户端或包装后的异常）。
+_NETWORK_FAILURE_MESSAGE_KEYWORDS = (
+    "temporary failure in name resolution",
+    "cannot connect to host",
+    "name or service not known",
+    "network is unreachable",
+    "no route to host",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "timed out",
+    "name resolution",
+    "getaddrinfo",
+)
+
+
+def _is_bilibili_probe_network_error(exc: Exception) -> bool:
+    """判断 B 站分P探针异常是否为网络类失败（DNS/连接/超时等瞬时故障）。
+
+    类型判定为主：bilibili-api 的 HTTPXClient 不捕获 httpx 传输层异常，
+    DNS 解析失败/连接失败/超时均以 httpx.TransportError 子类（ConnectError、
+    ConnectTimeout 等）原样上抛；消息关键词兜底处理非 httpx 类型。
+    注意：bilibili_api.NetworkException（非 200 HTTP 响应，如 412 风控/
+    404）不属于网络类失败——连接已建立、属业务性响应，保持确定性处理。
+    """
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(
+        exc, (socket.gaierror, socket.timeout, TimeoutError, ConnectionError)
+    ):
+        return True
+    msg = str(exc).lower()
+    return any(keyword in msg for keyword in _NETWORK_FAILURE_MESSAGE_KEYWORDS)
 
 
 def _sanitize_cookie_value(value: str | None) -> str:

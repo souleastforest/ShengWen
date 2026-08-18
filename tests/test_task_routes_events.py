@@ -3,6 +3,7 @@
 TDD RED phase — these tests should FAIL until tasks.py create_task route
 publishes TASK_CREATED events instead of calling worker.add_task() directly.
 """
+
 import pytest
 import httpx
 from unittest.mock import AsyncMock
@@ -11,6 +12,7 @@ from fastapi import FastAPI
 
 from src.main.python.sheng_wen.application.events.bus import AsyncioEventBus
 from src.main.python.sheng_wen.application.events.topics import TASK_CREATED
+from src.main.python.sheng_wen.infra.api.routes import tasks as tasks_module
 from src.main.python.sheng_wen.infra.api.routes.tasks import router as tasks_router
 
 
@@ -24,9 +26,19 @@ def app_with_bus():
 
 
 @pytest.mark.asyncio
-async def test_create_task_publishes_task_created(app_with_bus):
-    """POST /tasks/ should publish TASK_CREATED event."""
+async def test_create_task_publishes_task_created(app_with_bus, monkeypatch):
+    """POST /tasks/ should publish TASK_CREATED event.
+
+    探针打桩为单P返回，避免真实请求 api.bilibili.com（此前用假 BV 直连，
+    结果取决于网络状态：可达时 -404 确定性错误 → 422，DNS 故障时又依赖
+    降级行为——环境相关的不稳定测试）。
+    """
     app, bus = app_with_bus
+
+    async def fake_probe(url):
+        return ("测试标题", [{"index": 0, "cid": 1001, "title": "P1", "duration": 60}])
+
+    monkeypatch.setattr(tasks_module, "_get_bilibili_video_title_and_parts", fake_probe)
 
     published = []
 
