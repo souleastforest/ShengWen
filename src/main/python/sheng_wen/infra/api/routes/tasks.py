@@ -166,7 +166,7 @@ async def create_task(task_in: TaskCreate, request: Request):
                 logger.warning("获取 B 站分P信息失败: {}", e)
                 raise HTTPException(
                     status_code=422,
-                    detail="无法确认 B 站分P信息，请先在分P选择器中选择要处理的内容。",
+                    detail="无法确认 B 站分P信息，请检查链接是否正确后重试。",
                 ) from e
         if len(parts_info) > 1:
             raise HTTPException(
