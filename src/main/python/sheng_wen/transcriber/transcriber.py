@@ -7,39 +7,53 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from loguru import logger
+
 # --- 自定义异常 ---
+
 
 class TranscriberError(Exception):
     """转录器模块的通用基础异常。"""
+
     pass
+
 
 class ModelLoadError(TranscriberError):
     """在加载或初始化模型时发生错误的异常。"""
+
     pass
+
 
 class TranscriptionError(TranscriberError):
     """在文件转录过程中发生错误的异常。"""
+
     pass
+
 
 class TranscriptionCancelled(TranscriberError):
     """转录任务被外部取消（例如任务删除）。"""
+
     pass
 
+
 # --- 数据类 ---
+
 
 @dataclass
 class TranscriptionResult:
     """
     一个用于保存转录结果的数据类，包含性能指标。
     """
+
     segments: list[dict[str, Any]]  # 转录出的文本片段列表
-    transcription_time: float       # 转录耗时（秒）
-    real_time_factor: float         # 实时率 (RTF)，即处理时间 / 音频时长
-    total_time: float               # 总耗时（秒），包括转录和其他开销
-    model_load_time: float          # 模型加载耗时（秒）
-    audio_duration: float           # 音频总时长（秒）
-    language: str                   # 检测到的语言代码 (例如, "zh")
-    language_probability: float     # 语言检测的置信度 (0-1)
+    transcription_time: float  # 转录耗时（秒）
+    real_time_factor: float  # 实时率 (RTF)，即处理时间 / 音频时长
+    total_time: float  # 总耗时（秒），包括转录和其他开销
+    model_load_time: float  # 模型加载耗时（秒）
+    audio_duration: float  # 音频总时长（秒）
+    language: str  # 检测到的语言代码 (例如, "zh")
+    language_probability: float  # 语言检测的置信度 (0-1)
+
 
 # --- 注册表 ---
 
@@ -55,12 +69,15 @@ class ModelPathValidationResult:
     resolved_path: str
     missing_files: list[str]
 
+
 # --- 抽象基类 ---
+
 
 class Transcriber(ABC):
     """
     语音转文本转录器的抽象基类。
     """
+
     transcriber_name: str = ""
 
     def __init_subclass__(cls, **kwargs):
@@ -78,13 +95,28 @@ class Transcriber(ABC):
 
     @staticmethod
     def get_class(name: str) -> type[Transcriber]:
-        """获取已注册的转录器类。如果模块未加载，尝试延迟导入。"""
+        """获取已注册的转录器类。如果模块未加载，尝试延迟导入。
+
+        注意："未注册"并不一定是名字拼错——很可能是依赖缺失导致模块
+        导入失败（如 vibe_voice_asr 依赖 torch/vibevoice，环境未安装时
+        顶层 `import torch` 抛 ModuleNotFoundError）。此时抛出的
+        ValueError 通过 `from exc` 保留原始导入异常为 __cause__，
+        便于上层日志/错误排查定位真实原因。
+        """
         if name not in _TRANSCRIBER_REGISTRY:
             module_name = f"src.main.python.sheng_wen.transcriber.{name}_transcriber"
             try:
                 importlib.import_module(module_name)
-            except (ImportError, ModuleNotFoundError):
-                raise ValueError(f"未注册的转录器类型: {name}") from None
+            except (ImportError, ModuleNotFoundError) as exc:
+                logger.error(
+                    "[Transcriber] 懒加载转录器模块失败: module={}, name={}, error={}",
+                    module_name,
+                    name,
+                    exc,
+                )
+                raise ValueError(
+                    f"未注册的转录器类型: {name}（模块 {module_name} 导入失败，可能缺失依赖）"
+                ) from exc
         if name not in _TRANSCRIBER_REGISTRY:
             raise ValueError(f"转录器模块已加载但未注册: {name}")
         return _TRANSCRIBER_REGISTRY[name]
@@ -129,7 +161,9 @@ class Transcriber(ABC):
         """
         pass
 
+
 # --- 工厂函数 ---
+
 
 def get_transcriber(name: str, **kwargs) -> Transcriber:
     """
@@ -143,7 +177,7 @@ def get_transcriber(name: str, **kwargs) -> Transcriber:
 
     返回:
         一个 Transcriber 的实例。
-        
+
     异常:
         ValueError: 如果找不到指定名称的转录器模块。
         ModelLoadError: 如果在初始化模型时发生错误。
@@ -153,5 +187,5 @@ def get_transcriber(name: str, **kwargs) -> Transcriber:
 
         # 在工厂函数中捕获模型加载错误
         return transcriber_class(**kwargs)
-    except TranscriberError: # 重新抛出我们自定义的异常
+    except TranscriberError:  # 重新抛出我们自定义的异常
         raise
