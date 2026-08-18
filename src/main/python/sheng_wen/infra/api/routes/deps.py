@@ -4,8 +4,11 @@ import asyncio
 import glob
 import ipaddress
 import os
+import socket
 from urllib.parse import unquote, urlparse
 
+import aiohttp
+import httpx
 from fastapi import HTTPException, Request
 from loguru import logger
 
@@ -77,6 +80,55 @@ def _is_bilibili_video_url(video_url: str) -> bool:
     except Exception:
         return False
     return "bilibili.com" in netloc or "b23.tv" in netloc
+
+
+# 网络类失败的消息关键词兜底（非标准 HTTP 客户端或包装后的异常）。
+_NETWORK_FAILURE_MESSAGE_KEYWORDS = (
+    "temporary failure in name resolution",
+    "cannot connect to host",
+    "name or service not known",
+    "network is unreachable",
+    "no route to host",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "timed out",
+    "name resolution",
+    "getaddrinfo",
+)
+
+
+def _is_bilibili_probe_network_error(exc: Exception) -> bool:
+    """判断 B 站分P探针异常是否为网络类失败（DNS/连接/超时等瞬时故障）。
+
+    生产主路径为 aiohttp：bilibili_api 按 httpx → aiohttp → curl_cffi 顺序
+    注册客户端，curl_cffi 未安装且 aiohttp 可用时 selected_client="aiohttp"，
+    其 AioHTTPClient 不捕获传输层异常（DNS 失败 = ClientConnectorError、
+    连接中断 = ServerDisconnectedError 等，均 ⊂ aiohttp.ClientConnectionError；
+    响应体读取失败 = ClientPayloadError）——aiohttp 类型判定为主。
+    bilibili_api.NetworkException 是"HTTP 非 200 响应"（连接已建立），仅
+    status >= 500（CDN 5xx，典型瞬时故障）归网络类；412 风控/404 等属
+    业务性响应，保持确定性处理。其余 ApiException 子类（ResponseCodeException
+    等）在关键词兜底前显式排除，防止未来关键词误命中导致确定性错误被降级。
+    httpx.TransportError 与内建 socket/TimeoutError 为未装 aiohttp 时的
+    兜底类型（当前环境不出现）；消息关键词为最后兜底。
+    """
+    from bilibili_api.exceptions import ApiException, NetworkException
+
+    if isinstance(exc, NetworkException):
+        return exc.status >= 500
+    if isinstance(exc, ApiException):
+        return False
+    if isinstance(exc, (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
+        return True
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(
+        exc, (socket.gaierror, socket.timeout, TimeoutError, ConnectionError)
+    ):
+        return True
+    msg = str(exc).lower()
+    return any(keyword in msg for keyword in _NETWORK_FAILURE_MESSAGE_KEYWORDS)
 
 
 def _sanitize_cookie_value(value: str | None) -> str:

@@ -27,6 +27,7 @@ async def get_bilibili_video_info(payload: BilibiliVideoInfoRequest):
     if not deps._is_bilibili_video_url(video_url):
         raise HTTPException(status_code=400, detail="不是有效的 B 站视频链接")
 
+    bvid = ""
     try:
         from bilibili_api import sync, video
 
@@ -91,5 +92,19 @@ async def get_bilibili_video_info(payload: BilibiliVideoInfoRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取 B 站视频信息失败: {e}", exc_info=True)
+        if deps._is_bilibili_probe_network_error(e):
+            # 网络类失败（DNS/连接/超时等瞬时故障）：探针不确定分P信息，
+            # 降级为单P语义返回，前端可继续提交（DNS 恢复后由 tasks
+            # 探针/下载器重试）；title 尽力获取失败则为空。
+            logger.warning(
+                "获取 B 站视频信息网络失败（已降级为单P语义）: {} (url={})",
+                e,
+                video_url,
+            )
+            return BilibiliVideoInfo(
+                is_multi_part=False, title="", bvid=bvid, duration=0, parts=None
+            )
+        # loguru 不支持 exc_info 关键字（会作为 format kwargs 被静默丢弃，
+        # traceback 不记录）——用 opt(exception=e) 显式附加异常。
+        logger.opt(exception=e).error("获取 B 站视频信息失败: {}", e)
         raise HTTPException(status_code=500, detail=f"获取视频信息失败: {str(e)}")

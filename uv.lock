@@ -1958,12 +1958,14 @@ name = "shengwen"
 version = "0.1.1"
 source = { virtual = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "anthropic" },
     { name = "bilibili-api-python" },
     { name = "browser-cookie3" },
     { name = "fastapi" },
     { name = "faster-whisper" },
     { name = "ffmpeg-python" },
+    { name = "httpx" },
     { name = "imageio-ffmpeg" },
     { name = "litellm" },
     { name = "loguru" },
@@ -1991,12 +1993,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.9,<4" },
     { name = "anthropic", specifier = ">=0.39.0" },
     { name = "bilibili-api-python", specifier = "==17.4.1" },
     { name = "browser-cookie3", specifier = "==0.19.1" },
     { name = "fastapi", specifier = "==0.115.6" },
     { name = "faster-whisper", specifier = "==1.2.1" },
     { name = "ffmpeg-python", specifier = "==0.2.0" },
+    { name = "httpx", specifier = ">=0.27,<1" },
     { name = "imageio-ffmpeg", specifier = "==0.5.1" },
     { name = "litellm", specifier = "==1.81.0" },
     { name = "loguru", specifier = ">=0.7.0" },
