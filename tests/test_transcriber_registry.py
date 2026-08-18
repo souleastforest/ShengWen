@@ -47,6 +47,28 @@ class TestRegistry:
         with pytest.raises(ValueError, match="未注册"):
             Transcriber.get_class("nonexistent_transcriber")
 
+    def test_get_class_preserves_import_error_cause(self, monkeypatch):
+        """懒导入失败时 ValueError.__cause__ 必须保留原始 ImportError（根因）。
+
+        生产场景：vibe_voice_asr_transcriber 模块顶层 `import torch`，
+        环境缺 torch 时抛 ModuleNotFoundError——此前被 `from None` 掩盖成
+        "未注册"，dispatch 失败后无法定位真实原因。
+        """
+        import importlib
+
+        def boom(module_name):
+            raise ModuleNotFoundError("No module named 'torch'", name="torch")
+
+        monkeypatch.setattr(importlib, "import_module", boom)
+
+        with pytest.raises(ValueError) as excinfo:
+            Transcriber.get_class("missing_deps_transcriber")
+
+        assert excinfo.value.__cause__ is not None
+        assert isinstance(excinfo.value.__cause__, ModuleNotFoundError)
+        assert excinfo.value.__cause__.name == "torch"
+        assert "未注册" in str(excinfo.value)
+
     def test_base_transcriber_not_registered(self):
         """Transcriber base class (no transcriber_name) should NOT be in registry."""
         assert "" not in _TRANSCRIBER_REGISTRY
