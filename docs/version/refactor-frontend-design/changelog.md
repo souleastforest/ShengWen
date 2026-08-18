@@ -8,14 +8,26 @@
 - 2026-08-18: **bugfix: B 站分P探针网络类失败降级为单P提交，不再误报 422**（fix/bilibili-dns-422 → PR #12）。
   - **根因**：`POST /tasks/` 分P探针（tasks.py）在瞬时 DNS/网络故障（如 `Temporary failure in name resolution`）时抛异常，
     被无差别转 422 业务错误（"无法确认 B 站分P信息"），状态码与文案均误导；前端 video-info 失败→静默降级提交→后端探针同样失败→422 放大问题。
-  - **P0（tasks.py）**：探针异常按网络类/确定性分类——网络类（httpx.TransportError 类型判定为主 + 消息关键词兜底）
+  - **P0（tasks.py）**：探针异常按网络类/确定性分类——网络类（aiohttp 类型判定为主 + httpx/消息关键词兜底，见下）
     降级为整视频单P语义继续创建任务（不 422，DNS 恢复后由下载器重试），warning 日志带 video_url；确定性错误（无效 BV/视频不存在/业务性拒绝）与多P检测保持 422。
   - **防御（bilibili.py /bilibili/video-info）**：同样分类，网络类失败返回 200 `is_multi_part=false`（title 为空），确定性错误保持 500。
-  - **顺带修复**：`logger.warning(f"...{e}")` 的 f-string 模板在异常消息含 `{}`（如 ResponseCodeException 的 raw dict）时
-    会触发 loguru `message.format` IndexError、吞掉 422 改抛 500——触达行改用 loguru `{}` 占位符模板。
-  - **测试**：新增 8 用例（TDD 先红后绿：ConnectError/关键词网络类降级 201、确定性 422、多P 422、video-info 网络类 200/确定性 500/多P 200 回归）；
+  - **对抗评审修订**（P1-1/P1-2/P2-3，2026-08-18 追加 commit）：
+    - **P1-1 分类器真实异常面**：评审实测 bilibili_api 客户端注册顺序为 httpx → aiohttp → curl_cffi，curl_cffi 未装且 aiohttp 可用时
+      `selected_client="aiohttp"`——原实现 `isinstance(exc, httpx.TransportError)` 在生产零命中，事故降级全靠关键词兜底碰巧命中（该路径零测试）。
+      修订：新增 aiohttp 类型判定（`ClientConnectionError` 覆盖 ClientConnectorError/ClientOSError/ServerDisconnectedError，`ClientPayloadError`）；
+      `NetworkException status>=500`（CDN 5xx 典型瞬时故障）归网络类、`<500`（412 风控/404）确定性；关键词兜底前显式排除 `ApiException` 业务异常
+      （含 ResponseCodeException，防未来关键词误命中）；docstring 前提修正。
+    - **P1-2 loguru exc_info 误用**：`logger.error(..., exc_info=True)` 中 exc_info 作为 format kwargs 被**静默丢弃**（traceback 不记录；
+      异常消息含 `{}` 时反而触发 format IndexError）。改 `logger.opt(exception=e)`。此前 changelog 的"f-string + 大括号会崩"机制描述更正
+      （零参数 f-string 不触发 format，旧 tasks.py 该行实际不崩）。
+    - **P2-3 确定性错误文案区分**：确定性错误 → "无法确认 B 站分P信息，请检查链接是否正确后重试。"（原"请先在分P选择器中…"误导，
+      用户无法选择）；多P 文案保留原文案。
+  - **测试**：新增 17 用例（TDD 先红后绿；真实异常面：aiohttp.ClientConnectorError/ServerDisconnectedError 构造断言、NetworkException
+    502 降级 201/200、**412 风控保持 422/500 回归**、ApiException 业务文案含网络关键词不误分类、httpx 用例标注兜底类型）；
     顺带修复 `test_create_task_publishes_task_created` 环境相关 flake（假 BV 直连真实 api.bilibili.com，结果随网络状态漂移→探针打桩）。
-  - **验证**：pytest 289 通过（5 torch 相关用例因环境缺 torch 为既有失败，与本次无关）；ruff/basedpyright 改动文件零新增问题。
+  - **验证**：pytest 289+新用例全绿（5 torch 相关用例因环境缺 torch 为既有失败，与本次无关）；ruff/basedpyright 改动文件零新增问题。
+  - **Backlog（未实施）**：P2-1 多P视频 + DNS 故障降级后分P1 可能静默部分完成（probe_degraded 标记 follow-up）；
+    P2-2 bilibili_api sync 探针阻塞事件循环（30s 卡顿，异步直连/收紧超时 follow-up）。
 - 2026-08-16: **P7 composable 域拆分完成**（refactor/p7-implement → PR #11，行为保持 Q6，逐逻辑块等价搬移）。
   - **useTaskViewModel（实测 1523 行）按域拆分**：`features/task/state.ts`（853 行：列表/选择/详情/分P/重试/删除/重转录/重总结/重下载/改主题/per-task 内容缓存/懒加载/墓碑/轮询兜底）+ `features/upload/state.ts`（470 行：三通道提交/进度/取消/上传配置/本地路径批量/B站多P/URL 提取/env 判定 + `DEFAULT_MAX_UPLOAD_BYTES`）+ `features/settings/state.ts`（342 行：LLM/转录/总结三表单保存测试/vibevoice 扫描启停/校验/Cookie）+ `shared/ws.ts`（231 行：连接/指数退避 3s→30s 封顶/onerror 5s 兜底槽位互斥/心跳 ping-pong/畸形帧防护/事件总线）。
   - **App.vue 只做装配**：三域 state + ws 订阅接线 + 生命周期宿主（D4：onMounted 并发 7 fetch + ws.connect + startPolling；onBeforeUnmount ws.dispose + task.dispose）；模板消费面零改动。
