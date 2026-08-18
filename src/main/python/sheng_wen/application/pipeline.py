@@ -82,6 +82,12 @@ class Pipeline:
             logger.info(f"[Pipeline] Dispatched task {task_id} to {factory_name}")
         except Exception as exc:
             logger.error(f"[Pipeline] Failed to dispatch task {task_id}: {exc}")
+            # 生产事故防御：dispatch 失败必须把任务标记为 FAILED 并写入
+            # error_message，不能只依赖 TASK_FAILED 事件——此前该事件生产零
+            # 订阅，任务永久卡 PENDING 且无任何错误提示。直接调用任务标记
+            # 失败逻辑（与 deps._fail_task_with_model_error 同一模式），
+            # 事件照常发布供其他订阅者观测。
+            await self._fail_task(task_id, str(exc))
             await self._bus.publish(
                 TASK_FAILED,
                 {
@@ -89,6 +95,22 @@ class Pipeline:
                     "error": str(exc),
                 },
             )
+
+    async def _fail_task(self, task_id: str, error_message: str) -> None:
+        """将任务标记为 FAILED 并写入 error_message（惰性导入避免模块级循环依赖）。"""
+        from src.main.python.sheng_wen.db import TaskStatus
+        from src.main.python.sheng_wen.task_updater import update_and_notify
+
+        try:
+            await update_and_notify(
+                task_id,
+                {
+                    "status": TaskStatus.FAILED,
+                    "error_message": f"任务派发失败: {error_message}",
+                },
+            )
+        except Exception as exc:
+            logger.error(f"[Pipeline] 标记任务失败异常 task_id={task_id}: {exc}")
 
     def _resolve_worker(self, payload: dict) -> str:
         """Determine which worker factory to use based on task payload."""
