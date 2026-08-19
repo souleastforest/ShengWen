@@ -56,7 +56,7 @@ const emit = defineEmits<{
             ></div>
 
             <!-- AI 总结选项 -->
-            <div class="relative group/summary">
+            <div class="group/summary">
               <button
                 @click="activeTab = 'summary'"
                 class="relative z-10 px-3 py-1.5 rounded-full text-xs font-medium transition-colors flex items-center gap-1.5 whitespace-nowrap"
@@ -68,7 +68,7 @@ const emit = defineEmits<{
               </button>
 
               <!-- AI 总结下拉菜单 -->
-              <div class="absolute left-0 top-full mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-lg opacity-0 invisible group-hover/summary:opacity-100 group-hover/summary:visible transition-all z-30 overflow-hidden">
+              <div class="absolute left-0 top-full mt-2 md:left-full md:top-0 md:ml-2 w-48 bg-white border border-slate-200 rounded-xl shadow-lg opacity-0 invisible group-hover/summary:opacity-100 group-hover/summary:visible transition-all z-30 overflow-hidden">
                 <!-- 无总结任务（仅转录等）：提供"从原文生成总结"入口，可显式选模式。
                      注意不能用 transcript 作守卫——轻量详情恒剥离该字段（懒加载盲区），
                      后端 re-summarize 自行校验 DB 转录，缺失时返回 400 由错误链兜底 -->
@@ -136,7 +136,7 @@ const emit = defineEmits<{
             </div>
 
             <!-- 原文选项 -->
-            <div class="relative group/transcript">
+            <div class="group/transcript">
               <button
                 @click="activeTab = 'transcript'"
                 class="relative z-10 px-3 py-1.5 rounded-full text-xs font-medium transition-colors flex items-center gap-1.5 whitespace-nowrap"
@@ -148,7 +148,7 @@ const emit = defineEmits<{
               </button>
 
               <!-- 原文下拉菜单 -->
-              <div class="absolute right-0 top-full mt-2 w-44 bg-white border border-slate-200 rounded-xl shadow-lg opacity-0 invisible group-hover/transcript:opacity-100 group-hover/transcript:visible transition-all z-30 overflow-hidden">
+              <div class="absolute right-0 top-full mt-2 md:left-full md:top-0 md:ml-2 w-44 bg-white border border-slate-200 rounded-xl shadow-lg opacity-0 invisible group-hover/transcript:opacity-100 group-hover/transcript:visible transition-all z-30 overflow-hidden">
                 <button
                   @click="emit('reTranscribe')"
                   class="w-full text-left flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors"
