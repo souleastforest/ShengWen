@@ -196,7 +196,9 @@ class LLMWorker(Worker):
 
         if not intermediate_file_path or not output_file:
             await self._mark_failed(
-                task_id, "payload 中缺少 'intermediate_file_path' 或 'output_file'"
+                task_id,
+                "payload 中缺少 'intermediate_file_path' 或 'output_file'",
+                multipart_part=multipart_part,
             )
             return
 
@@ -208,11 +210,15 @@ class LLMWorker(Worker):
                 transcript_text = f.read()
         except FileNotFoundError:
             await self._mark_failed(
-                task_id, f"找不到中间转录文件 {intermediate_file_path}"
+                task_id,
+                f"找不到中间转录文件 {intermediate_file_path}",
+                multipart_part=multipart_part,
             )
             return
         except Exception as e:
-            await self._mark_failed(task_id, f"读取中间文件时出错: {e}")
+            await self._mark_failed(
+                task_id, f"读取中间文件时出错: {e}", multipart_part=multipart_part
+            )
             return
 
         if not transcript_text.strip():
@@ -311,16 +317,24 @@ class LLMWorker(Worker):
                     mode_used = "standard"
                 except Exception as fallback_err:
                     await self._mark_failed(
-                        task_id, f"分块总结失败且回退标准模式失败: {fallback_err}"
+                        task_id,
+                        f"分块总结失败且回退标准模式失败: {fallback_err}",
+                        multipart_part=multipart_part,
                     )
                     return
             else:
-                await self._mark_failed(task_id, f"LLM 处理过程中发生错误: {e}")
+                await self._mark_failed(
+                    task_id,
+                    f"LLM 处理过程中发生错误: {e}",
+                    multipart_part=multipart_part,
+                )
                 return
 
         # 纵深防御：写入前的最终校验，任何模式下都不允许空总结静默 COMPLETED
         if not (final_summary or "").strip():
-            await self._mark_failed(task_id, "总结结果为空，任务标记失败")
+            await self._mark_failed(
+                task_id, "总结结果为空，任务标记失败", multipart_part=multipart_part
+            )
             return
 
         if task_id and self.is_task_cancelled(task_id):
@@ -331,7 +345,9 @@ class LLMWorker(Worker):
             with open(output_file, "w", encoding="utf-8") as f:
                 f.write(final_summary)
         except Exception as e:
-            await self._mark_failed(task_id, f"写入总结结果失败: {e}")
+            await self._mark_failed(
+                task_id, f"写入总结结果失败: {e}", multipart_part=multipart_part
+            )
             return
 
         if multipart_part and task_id:
@@ -797,11 +813,27 @@ class LLMWorker(Worker):
             logger.error(f"[{self.name}] 读取分块提示词失败: {normalized}, error={e}")
             return ""
 
-    async def _mark_failed(self, task_id: str | None, error_message: str) -> None:
+    async def _mark_failed(
+        self,
+        task_id: str | None,
+        error_message: str,
+        multipart_part: dict[str, Any] | None = None,
+    ) -> None:
         logger.error(f"[{self.name}] {error_message}")
         if not task_id:
             return
         if self.is_task_cancelled(task_id):
+            return
+        if multipart_part:
+            # 分P子任务失败只写 task_parts（P1-2）；父任务终态由
+            # _process_bilibili_multipart finalize 汇总收敛（FAILED/PARTIAL）
+            from ..task_parts import update_task_part
+
+            update_task_part(
+                task_id,
+                int(multipart_part["index"]),
+                {"status": "FAILED", "progress": 0, "error_message": error_message},
+            )
             return
         from ..db import TaskStatus
         from ..task_updater import update_and_notify

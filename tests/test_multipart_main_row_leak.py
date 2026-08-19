@@ -597,3 +597,491 @@ async def test_multipart_finalize_clears_stale_main_summary(
         f"finalize 后主行仍残留脏 summary: {task['summary']!r}"
     )
     assert task["status"] == TaskStatus.COMPLETED.value
+
+
+# ---- 评审 P2-1: finalize 显式写 audio_downloaded -----------------------------
+
+
+def _make_completed_parts(task_id: str, indices: list[int]) -> None:
+    init_task_parts(
+        task_id,
+        [
+            {
+                "index": index,
+                "cid": 1001 + index,
+                "title": f"P{index + 1}",
+                "duration": 60,
+            }
+            for index in indices
+        ],
+    )
+    from src.main.python.sheng_wen.task_parts import update_task_part
+
+    for index in indices:
+        update_task_part(
+            task_id,
+            index,
+            {
+                "status": "COMPLETED",
+                "progress": 100,
+                "transcript": f"P{index + 1} 转录",
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_multipart_finalize_sets_audio_downloaded_when_part_media_exists(
+    tmp_path, isolated_task_parts
+):
+    """P2-1 红：任一子P媒体文件在磁盘 → finalize 后主行 audio_downloaded=True
+    （消除前端"未知"徽章窗口，不得依赖存储回收器 backfill 自愈）。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.SUMMARIZING)
+    _make_completed_parts(task_id, [0, 1])
+    (tmp_path / f"{task_id}_p1.mp3").write_bytes(b"fake-audio")
+
+    downloader = VideoDownloaderWorker("test", summary_worker=None)
+    downloader.output_dir = str(tmp_path)
+    downloader.process_task = lambda payload: None  # 分P已就绪，跳过子P处理
+
+    downloader._process_bilibili_multipart(
+        {
+            "task_id": task_id,
+            "bilibili_parts": {"mode": "merge", "indices": [0, 1]},
+            "summary_mode": "none",
+        }
+    )
+
+    task = db.get_task(task_id)
+    assert task["audio_downloaded"] is True, (
+        f"finalize 未显式写 audio_downloaded: {task.get('audio_downloaded')!r}"
+    )
+    assert task["status"] == TaskStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_multipart_finalize_marks_subtitle_only_when_no_part_media(
+    tmp_path, isolated_task_parts
+):
+    """P2-1：无任何子P媒体文件（字幕直取路径）→ audio_downloaded=False +
+    audio_missing_reason=subtitle_only。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.SUMMARIZING)
+    _make_completed_parts(task_id, [0, 1])
+
+    downloader = VideoDownloaderWorker("test", summary_worker=None)
+    downloader.output_dir = str(tmp_path)
+    downloader.process_task = lambda payload: None
+
+    downloader._process_bilibili_multipart(
+        {
+            "task_id": task_id,
+            "bilibili_parts": {"mode": "merge", "indices": [0, 1]},
+            "summary_mode": "none",
+        }
+    )
+
+    task = db.get_task(task_id)
+    assert task["audio_downloaded"] is False
+    assert task["audio_missing_reason"] == "subtitle_only"
+
+
+# ---- 评审 P1-2: 分P子任务失败只写 task_parts，不写主行 FAILED ------------------
+
+
+@pytest.mark.asyncio
+async def test_transcriber_child_missing_audio_fails_only_part_row(
+    tmp_path, isolated_task_parts
+):
+    """P1-2 红：分P子任务音频文件缺失 → 只写 task_parts FAILED，主行不得 FAILED。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.TRANSCRIBING)
+    _init_one_part(task_id)
+    out_file = tmp_path / "p1_summary.md"  # audio_file 故意不存在
+
+    worker = TranscriberWorker("test", object(), None)
+    worker._loop = asyncio.get_running_loop()
+
+    worker.process_task(
+        {
+            "task_id": task_id,
+            "audio_file": str(tmp_path / "missing.mp3"),
+            "output_file": str(out_file),
+            "summary_mode": "none",
+            "multipart_part": {"index": 0, "title": "P1", "duration": 60},
+        }
+    )
+    await worker._await_pending_updates(timeout=3.0)
+
+    parts = get_task_parts(task_id)
+    assert parts[0]["status"] == "FAILED"
+    assert "找不到要转录的音频文件" in parts[0]["error_message"]
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.TRANSCRIBING.value, (
+        f"分P子任务失败仍写主行 FAILED: {task['status']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_transcriber_child_empty_transcript_fails_only_part_row(
+    tmp_path, isolated_task_parts
+):
+    """P1-2 红：分P子任务空转录 → 只写 task_parts FAILED，主行不得 FAILED。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.TRANSCRIBING)
+    _init_one_part(task_id)
+    audio_file = tmp_path / "p1.mp3"
+    audio_file.write_bytes(b"fake-audio")
+    out_file = tmp_path / "p1_summary.md"
+
+    worker = TranscriberWorker("test", object(), None)
+    worker._loop = asyncio.get_running_loop()
+    worker._transcribe_audio_with_chunking = lambda *a, **kw: _result("  ")
+
+    worker.process_task(
+        {
+            "task_id": task_id,
+            "audio_file": str(audio_file),
+            "output_file": str(out_file),
+            "summary_mode": "none",
+            "multipart_part": {"index": 0, "title": "P1", "duration": 60},
+        }
+    )
+    await worker._await_pending_updates(timeout=3.0)
+
+    parts = get_task_parts(task_id)
+    assert parts[0]["status"] == "FAILED"
+    assert "转录结果为空" in parts[0]["error_message"]
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.TRANSCRIBING.value, (
+        f"分P子任务空转录仍写主行 FAILED: {task['status']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_transcriber_child_generic_exception_fails_only_part_row(
+    tmp_path, isolated_task_parts
+):
+    """P1-2 红：分P子任务转录抛异常 → 只写 task_parts FAILED，主行不得 FAILED。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.TRANSCRIBING)
+    _init_one_part(task_id)
+    audio_file = tmp_path / "p1.mp3"
+    audio_file.write_bytes(b"fake-audio")
+    out_file = tmp_path / "p1_summary.md"
+
+    worker = TranscriberWorker("test", object(), None)
+    worker._loop = asyncio.get_running_loop()
+
+    def boom(*a, **kw):
+        raise RuntimeError("模拟转录崩溃")
+
+    worker._transcribe_audio_with_chunking = boom
+
+    worker.process_task(
+        {
+            "task_id": task_id,
+            "audio_file": str(audio_file),
+            "output_file": str(out_file),
+            "summary_mode": "none",
+            "multipart_part": {"index": 0, "title": "P1", "duration": 60},
+        }
+    )
+    await worker._await_pending_updates(timeout=3.0)
+
+    parts = get_task_parts(task_id)
+    assert parts[0]["status"] == "FAILED"
+    assert "模拟转录崩溃" in parts[0]["error_message"]
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.TRANSCRIBING.value
+
+
+@pytest.mark.asyncio
+async def test_llm_child_summary_failure_fails_only_part_row(
+    monkeypatch, tmp_path, isolated_task_parts
+):
+    """P1-2 红：分P子任务 agent+standard 均失败 → _mark_failed 只写 task_parts
+    FAILED，主行不得 FAILED。"""
+    from src.main.python.sheng_wen.config.settings import config
+
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.TRANSCRIBING)
+    _init_one_part(task_id)
+    in_file = tmp_path / "part.txt"
+    out_file = tmp_path / "part_summary.md"
+    in_file.write_text(SIMPLE_TRANSCRIPT, encoding="utf-8")
+
+    retry_max = config.summarization.llm_call_retry_max
+    fake = StreamingFakeLLM([[] for _ in range(retry_max + 1)])  # 分块+回退全空
+    worker = LLMWorker("test", fake)
+    worker.system_prompt = "你是总结助手，直接输出总结正文。"
+    worker._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(worker, "is_task_cancelled", lambda _tid: False)
+
+    await worker.process_task(
+        {
+            "task_id": task_id,
+            "intermediate_file_path": str(in_file),
+            "output_file": str(out_file),
+            "summary_mode": "agent",
+            "multipart_part": {"index": 0, "title": "P1", "duration": 60},
+        }
+    )
+    await worker._await_pending_updates(timeout=3.0)
+
+    parts = get_task_parts(task_id)
+    assert parts[0]["status"] == "FAILED"
+    assert "回退标准模式失败" in parts[0]["error_message"]
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.TRANSCRIBING.value, (
+        f"分P子任务总结失败仍写主行 FAILED: {task['status']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_multipart_parent_converges_partial_and_keeps_part_error(
+    tmp_path, isolated_task_parts
+):
+    """P1-2：部分分P失败 → 父任务 PARTIAL（finalize 汇总收敛），
+    且分P具体失败原因不被父任务 generic 文案覆盖。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.SUMMARIZING)
+    init_task_parts(
+        task_id,
+        [
+            {"index": 0, "cid": 1001, "title": "P1", "duration": 60},
+            {"index": 1, "cid": 1002, "title": "P2", "duration": 60},
+        ],
+    )
+    from src.main.python.sheng_wen.task_parts import update_task_part
+
+    update_task_part(
+        task_id,
+        0,
+        {"status": "COMPLETED", "progress": 100, "transcript": "P1 转录"},
+    )
+    update_task_part(
+        task_id,
+        1,
+        {
+            "status": "FAILED",
+            "progress": 0,
+            "error_message": "P2 具体失败原因",
+        },
+    )
+
+    downloader = VideoDownloaderWorker("test", summary_worker=None)
+    downloader.output_dir = str(tmp_path)
+    downloader.process_task = lambda payload: None  # 子P已终态，跳过处理
+
+    downloader._process_bilibili_multipart(
+        {
+            "task_id": task_id,
+            "bilibili_parts": {"mode": "merge", "indices": [0, 1]},
+            "summary_mode": "none",
+        }
+    )
+
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.PARTIAL.value
+    assert "部分分P处理失败" in task["error_message"]
+    parts = get_task_parts(task_id)
+    assert parts[1]["error_message"] == "P2 具体失败原因", (
+        f"分P具体失败原因被覆盖: {parts[1]['error_message']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_multipart_parent_fails_when_all_parts_fail(
+    tmp_path, isolated_task_parts
+):
+    """P1-2：全部分P失败 → 父任务 FAILED（finalize 汇总收敛）。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.SUMMARIZING)
+    init_task_parts(
+        task_id,
+        [
+            {"index": 0, "cid": 1001, "title": "P1", "duration": 60},
+            {"index": 1, "cid": 1002, "title": "P2", "duration": 60},
+        ],
+    )
+    from src.main.python.sheng_wen.task_parts import update_task_part
+
+    for index in (0, 1):
+        update_task_part(
+            task_id,
+            index,
+            {"status": "FAILED", "progress": 0, "error_message": f"P{index + 1} 失败"},
+        )
+
+    downloader = VideoDownloaderWorker("test", summary_worker=None)
+    downloader.output_dir = str(tmp_path)
+    downloader.process_task = lambda payload: None
+
+    downloader._process_bilibili_multipart(
+        {
+            "task_id": task_id,
+            "bilibili_parts": {"mode": "merge", "indices": [0, 1]},
+            "summary_mode": "none",
+        }
+    )
+
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.FAILED.value
+    assert "所有选中的分P均处理失败" in task["error_message"]
+
+
+# ---- 评审 P1-1: b23 短链解析失败 → 分P FAILED 指引（禁止静默回退 p=1）----------
+
+
+@pytest.mark.asyncio
+async def test_b23_shortlink_resolve_failure_fails_child_with_guidance(
+    monkeypatch, tmp_path, isolated_task_parts
+):
+    """P1-1 红：b23.tv 短链解析失败（重定向网络异常/412）→ 分P子任务置 FAILED
+    并带"完整 BV 链接"指引，不得静默回退短链 p=1 继续下载。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id)
+    _init_one_part(task_id)
+    recorder = _new_recorder()
+    monkeypatch.setattr(
+        dl_module, "yt_dlp", SimpleNamespace(YoutubeDL=_make_fake_ytdl(recorder))
+    )
+
+    def resolve_boom(video_url):
+        raise RuntimeError("Temporary failure in name resolution")
+
+    monkeypatch.setattr(
+        VideoDownloaderWorker, "_resolve_final_url", classmethod(resolve_boom)
+    )
+
+    downloader = VideoDownloaderWorker("test", summary_worker=None)
+    downloader._loop = asyncio.get_running_loop()
+
+    downloader.process_task(
+        {
+            "task_id": task_id,
+            "video_url": SHORT_LINK,
+            "quality": "best",
+            "summary_mode": "none",
+            "multipart_part": {"index": 0, "title": "P1", "duration": 60},
+            "bilibili_batch_child": True,
+            "bilibili_parts": {"mode": "merge", "indices": [0]},
+        }
+    )
+    await downloader._await_pending_updates(timeout=3.0)
+
+    parts = get_task_parts(task_id)
+    assert parts[0]["status"] == "FAILED", (
+        f"短链解析失败未置分P FAILED: {parts[0]['status']!r}"
+    )
+    assert "完整 BV" in parts[0]["error_message"], parts[0]["error_message"]
+    # 不得触发实际下载（禁止静默回退短链 p=1）
+    assert recorder["download_calls"] == []
+    # 主行保持原状（父任务由 finalize 收敛）
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.PENDING.value
+
+
+# ---- 评审 P2-3 ①: multipart_overview 聚合必须仍写主行 --------------------------
+
+
+@pytest.mark.asyncio
+async def test_multipart_overview_aggregation_still_writes_main_row(
+    monkeypatch, tmp_path, isolated_task_parts
+):
+    """P2-3 ① 回归（最关键）：multipart_overview 聚合路径无 multipart_part——
+    流式回调与最终 summary 必须仍写主行（守卫误伤则 merge 主行永远无总结）。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.SUMMARIZING)
+    init_task_parts(
+        task_id,
+        [
+            {"index": 0, "cid": 1001, "title": "P1", "duration": 60},
+            {"index": 1, "cid": 1002, "title": "P2", "duration": 60},
+        ],
+    )
+    from src.main.python.sheng_wen.task_parts import update_task_part
+
+    for index in (0, 1):
+        update_task_part(
+            task_id,
+            index,
+            {
+                "status": "COMPLETED",
+                "progress": 100,
+                "transcript": f"P{index + 1} 转录",
+                "summary": f"P{index + 1} 总结",
+            },
+        )
+    in_file = tmp_path / "overview.txt"
+    out_file = tmp_path / "overview_summary.md"
+    in_file.write_text(SIMPLE_TRANSCRIPT, encoding="utf-8")
+
+    fake = StreamingFakeLLM([["总体概览正文"]])
+    worker = LLMWorker("test", fake)
+    worker._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(worker, "is_task_cancelled", lambda _tid: False)
+
+    await worker.process_task(
+        {
+            "task_id": task_id,
+            "intermediate_file_path": str(in_file),
+            "output_file": str(out_file),
+            "summary_mode": "agent",
+            "multipart_overview": True,
+        }
+    )
+    await worker._await_pending_updates(timeout=3.0)
+
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.COMPLETED.value
+    assert "总体概览" in (task["summary"] or ""), (
+        f"overview 聚合未写主行 summary: {task['summary']!r}"
+    )
+    assert "P1 总结" in (task["summary"] or "")
+
+
+# ---- 评审 P2-3 ④: 子P agent→standard 回退路径 multipart_part 透传不丢 ----------
+
+
+@pytest.mark.asyncio
+async def test_llm_child_agent_fallback_to_standard_keeps_part_context(
+    monkeypatch, tmp_path, isolated_task_parts
+):
+    """P2-3 ④ 回归：分P子任务 agent 分块全失败 → 回退 standard 时 multipart_part
+    透传不丢——最终总结写 task_parts，主行不被污染。"""
+    from src.main.python.sheng_wen.config.settings import config
+
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.SUMMARIZING)
+    _init_one_part(task_id)
+    in_file = tmp_path / "part.txt"
+    out_file = tmp_path / "part_summary.md"
+    in_file.write_text(SIMPLE_TRANSCRIPT, encoding="utf-8")
+
+    retry_max = config.summarization.llm_call_retry_max
+    fake = StreamingFakeLLM([[] for _ in range(retry_max)] + [["标准回退总结正文"]])
+    worker = LLMWorker("test", fake)
+    worker.system_prompt = "你是总结助手，直接输出总结正文。"
+    worker._loop = asyncio.get_running_loop()
+    monkeypatch.setattr(worker, "is_task_cancelled", lambda _tid: False)
+
+    await worker.process_task(
+        {
+            "task_id": task_id,
+            "intermediate_file_path": str(in_file),
+            "output_file": str(out_file),
+            "summary_mode": "agent",
+            "multipart_part": {"index": 0, "title": "P1", "duration": 60},
+        }
+    )
+    await worker._await_pending_updates(timeout=3.0)
+
+    parts = get_task_parts(task_id)
+    assert parts[0]["status"] == "COMPLETED"
+    assert parts[0]["summary"] == "标准回退总结正文"
+    task = db.get_task(task_id)
+    assert task["summary"] is None, (
+        f"回退路径 multipart_part 丢失，主行被写: {task['summary']!r}"
+    )

@@ -375,12 +375,14 @@ class TestWorkerEmptyResult:
         failed_parts = [p for p in part_calls if p[2].get("status") == "FAILED"]
         assert failed_parts, "multipart 分片空转录必须标记 FAILED"
         assert failed_parts[0][1] == 2
+        # P1-2（fix: multipart-main-summary-leak 评审修订）：分P子任务失败只写
+        # task_parts，不写主行 FAILED——父任务终态由 merge finalize 汇总收敛
         failed_tasks = [
             u
             for tid, u in task_calls
             if tid == "task-multipart" and u.get("status") == "FAILED"
         ]
-        assert failed_tasks
+        assert not failed_tasks, "分P子任务空转录不得写主行 FAILED"
 
 
 # ---------------------------------------------------------------- 附带：topic 空守卫

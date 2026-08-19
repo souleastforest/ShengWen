@@ -27,7 +27,25 @@
     将主行置 TRANSCRIBING、短链未规范化 `['https://b23.tv/CD6M1qC']`、finalize 残留脏 summary）→ 绿 11；
     test_summary_mode_none.py 一处断言同步更新（分P子任务不得写主行终态，主行终态由父任务 merge finalize 统一
     收敛）；全量 `uv run pytest tests/ -q` 371 passed；ruff check/format 通过；basedpyright 无新增错误。
-  - **流程档位**：T2（实施代理 + TDD，前后端并行；前端主内容区设计维持不变）。
+  - **评审修订**（PR #20 对抗评审 P1-1/P1-2/P2-1/P2-2/P2-3，追加提交）：
+    - **P1-1**：b23 短链解析失败不再静默回退短链 p=1——`_normalize_bilibili_part_url` 对 b23.tv 解析失败抛
+      RuntimeError（含 warning 日志），调用点将该分P置 FAILED（错误信息含"解析 b23.tv 短链失败…请使用完整 BV
+      链接重新提交"指引）并终止该子P；非 b23 任务与完整 BV 链接路径不受影响。
+    - **P1-2**：分P子任务失败路径（transcriber 音频提取失败/音频缺失/空转录防御/通用异常、llm_worker `_mark_failed`
+      及全部调用点）不再写主行 FAILED，只写 task_parts（分P具体失败原因保留）；父任务终态由
+      `_process_bilibili_multipart` finalize 按 get_task_parts 汇总收敛（全失败→FAILED、部分→PARTIAL）；
+      消除最后一个子P异步 FAILED 落在 finalize 之后的竞态。
+    - **P2-1**：finalize 显式写 `audio_downloaded`（任一子P媒体文件在磁盘→True，否则 False +
+      audio_missing_reason=subtitle_only），消除前端音频状态"未知"徽章窗口（不再依赖存储回收器 backfill 自愈）。
+    - **P2-2**（预期行为）：修复后 merge 运行期主行 status 冻结在 DOWNLOADING（不再被子P轮番改写为
+      DOWNLOADING/TRANSCRIBING/SUMMARIZING），progress 按分P加权上涨——属设计内行为，前端保持"正在处理中"展示，
+      全部完成后才聚合总览。
+    - **P2-3**：新增回归测试 8 用例（overview 聚合必须仍写主行、子P失败只写 task_parts 且父任务收敛、
+      短链解析失败→分P FAILED 指引、agent→standard 回退 multipart_part 透传不丢、finalize audio_downloaded
+      判定），红 8（错误信息与评审一致：`audio_downloaded None`、`分P具体失败原因被覆盖: '该分P处理失败'`、
+      `下载回退短链 ['https://b23.tv/CD6M1qC']`、主行 FAILED 泄漏等）→ 绿 22；全量 `uv run pytest tests/ -q`
+      通过；ruff check/format、basedpyright 无新增错误。
+  - **流程档位**：T2（实施代理 + TDD + 对抗评审修订，前后端并行；前端主内容区设计维持不变）。
 - 2026-08-19: **fix(frontend): 浮动工具栏遮挡"分P处理进度"标题——几何避让（方案 A）**（fix/floating-toolbar-overlap → PR #18）。
   - **根因**：P7 将 TaskPartsPanel 作为 main 顶部第一个 in-flow 块引入时未给浮动工具栏预留空间——FloatingToolbar
     （FloatingToolbar.vue:34，`absolute top-4 left-4 z-20`）白色不透明胶囊（y16-56）恒定覆盖面板标题（y12-50），

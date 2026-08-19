@@ -521,8 +521,21 @@ class TranscriberWorker(Worker):
         if video_file:
             try:
                 if not self._extract_audio(video_file, audio_file, task_id=task_id):
-                    # 如果提取失败，则终止该任务
-                    if task_id:
+                    # 如果提取失败，则终止该任务。分P子任务只写 task_parts
+                    # （P1-2），父任务终态由 finalize 汇总收敛。
+                    if multipart_part:
+                        from ..task_parts import update_task_part
+
+                        update_task_part(
+                            str(task_id),
+                            int(multipart_part["index"]),
+                            {
+                                "status": "FAILED",
+                                "progress": 0,
+                                "error_message": "音频提取失败",
+                            },
+                        )
+                    elif task_id:
                         from ..db import TaskStatus
                         from ..task_updater import update_and_notify
 
@@ -544,7 +557,16 @@ class TranscriberWorker(Worker):
         if not os.path.exists(audio_file):
             error_msg = f"找不到要转录的音频文件: {audio_file}"
             logger.error(f"[{self.name}] 错误: {error_msg}")
-            if task_id:
+            # 分P子任务只写 task_parts（P1-2），父任务终态由 finalize 汇总收敛
+            if multipart_part:
+                from ..task_parts import update_task_part
+
+                update_task_part(
+                    str(task_id),
+                    int(multipart_part["index"]),
+                    {"status": "FAILED", "progress": 0, "error_message": error_msg},
+                )
+            elif task_id:
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
 
@@ -699,7 +721,8 @@ class TranscriberWorker(Worker):
                             "error_message": empty_error,
                         },
                     )
-                if task_id:
+                # 分P子任务失败只写 task_parts（P1-2），父任务终态由 finalize 汇总收敛
+                if task_id and not multipart_part:
                     from ..db import TaskStatus
                     from ..task_updater import update_and_notify
 
@@ -813,7 +836,17 @@ class TranscriberWorker(Worker):
             logger.info(f"[{self.name}] 任务已取消，停止后续转录流程: {task_id}")
         except Exception as e:
             logger.error(f"[{self.name}] 转录过程中发生错误: {e}", exc_info=True)
-            if task_id:
+            error_message = _build_actionable_transcription_error(str(e))
+            # 分P子任务失败只写 task_parts（P1-2），父任务终态由 finalize 汇总收敛
+            if multipart_part:
+                from ..task_parts import update_task_part
+
+                update_task_part(
+                    str(task_id),
+                    int(multipart_part["index"]),
+                    {"status": "FAILED", "progress": 0, "error_message": error_message},
+                )
+            elif task_id:
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
 
@@ -822,9 +855,7 @@ class TranscriberWorker(Worker):
                         task_id,
                         {
                             "status": TaskStatus.FAILED,
-                            "error_message": _build_actionable_transcription_error(
-                                str(e)
-                            ),
+                            "error_message": error_message,
                         },
                     )
                 )
