@@ -557,7 +557,7 @@ class TranscriberWorker(Worker):
             return
 
         try:
-            if task_id:
+            if task_id and not multipart_part:
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
 
@@ -650,10 +650,13 @@ class TranscriberWorker(Worker):
                     # ASR 分片计数与 progress 合并进同一次 update_and_notify，
                     # 避免重复广播。
                     updates: Dict[str, Any] = {"progress": task_progress}
-                    if asr_chunk_total is not None:
-                        updates["asr_chunk_total"] = asr_chunk_total
-                    if asr_chunk_done is not None:
-                        updates["asr_chunk_done"] = asr_chunk_done
+                    if not multipart_part:
+                        # ASR 分片计数只描述单P转录过程；multipart 子任务
+                        # 不上报主行（避免子P分片进度污染主行字段）
+                        if asr_chunk_total is not None:
+                            updates["asr_chunk_total"] = asr_chunk_total
+                        if asr_chunk_done is not None:
+                            updates["asr_chunk_done"] = asr_chunk_done
                     self._submit_coro(update_and_notify(task_id, updates))
 
                     # 每 10% 打点一次，便于快速判断是后端卡住还是前端未刷新。
@@ -742,7 +745,7 @@ class TranscriberWorker(Worker):
                     },
                 )
 
-            if task_id:
+            if task_id and not multipart_part:
                 from ..db import TaskStatus
 
                 # 保存转录文本到数据库供前端查看

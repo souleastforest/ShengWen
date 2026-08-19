@@ -98,6 +98,27 @@ class VideoDownloaderWorker(Worker):
 
         raise ValueError("无法从链接中提取 BV 号")
 
+    @classmethod
+    def _normalize_bilibili_part_url(cls, video_url: str, part_index: int) -> str:
+        """多P子任务下载 URL 规范化（b23.tv 短链 p=1 缺陷修复）。
+
+        背景（2026-08-19 缺陷）：b23.tv 分享短链重定向自带 &p=1，yt-dlp
+        只解析出单条 → 每个分P子任务（video_url=同一短链）下载的都是第一个
+        分P（实测 P0/P1 转录字节数一致）。分P子任务下载前统一将 URL 重写为
+        「完整 BV + ?p=N」（N=index+1）：短链先解析拿完整 BV；完整链接直接
+        提取 BV 并覆盖/追加 p 参数（自带 p=1 的完整链接同样受影响）。
+
+        非 B 站 URL / BV 提取失败 → 原样返回（不改变原有行为）。
+        """
+        url = str(video_url or "")
+        if not url or not cls._is_bilibili_url(url):
+            return url
+        try:
+            bvid = cls._extract_bvid_from_url(url)
+        except ValueError:
+            return url
+        return f"https://www.bilibili.com/video/{bvid}?p={int(part_index) + 1}"
+
     @staticmethod
     def _normalize_subtitle_url(url: str) -> str:
         if not url:
@@ -1002,6 +1023,9 @@ class VideoDownloaderWorker(Worker):
                 "error_message": f"部分分P处理失败：{failed_labels}"
                 if failed
                 else None,
+                # 显式清空主行 summary：分P流式泄漏（已修复）遗留的中途脏快照
+                # 不得在合并后继续展示（纯防御，正常流程下该字段应为 None）
+                "summary": None,
                 # ASR 分片字段仅在转录阶段非空：多P长音频分片曾写父任务，
                 # 合并转总结/终态时清空（与 transcriber 的 SUMMARIZING 更新对称）
                 "asr_chunk_total": None,
@@ -1091,6 +1115,12 @@ class VideoDownloaderWorker(Worker):
                 int(payload["multipart_part"]["index"]),
                 {"status": "DOWNLOADING", "progress": 0, "error_message": None},
             )
+            # b23.tv 短链 p=1 缺陷修复：分P子任务必须下载对应分P而非第一个。
+            # 规范化结果仅用于本次下载（yt-dlp / 预检测），不改写 payload——
+            # 字幕直取分支按分P索引自行处理（bilibili-api），不受影响。
+            video_url = self._normalize_bilibili_part_url(
+                video_url, int(payload["multipart_part"]["index"])
+            )
 
         if not video_url:
             error_msg = "任务负载中缺少 'video_url'"
@@ -1136,7 +1166,11 @@ class VideoDownloaderWorker(Worker):
 
         logger.info(f"[{self.name}] 开始下载视频: {video_url} (质量: {quality})")
 
-        if task_id:
+        if (
+            task_id
+            and not payload.get("multipart_part")
+            and not payload.get("bilibili_batch_child")
+        ):
             from ..db import TaskStatus
             from ..task_updater import update_and_notify
 
@@ -1315,6 +1349,11 @@ class VideoDownloaderWorker(Worker):
                     f"status: DOWNLOADING→TRANSCRIBING, video={video_path}"
                 )
 
+            if (
+                task_id
+                and not payload.get("multipart_part")
+                and not payload.get("bilibili_batch_child")
+            ):
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
 

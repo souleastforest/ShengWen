@@ -5,6 +5,29 @@
 
 ## Change Log
 
+- 2026-08-19: **fix(backend): 多P merge 分P子任务流式总结泄漏主任务行 + b23.tv 短链 p=1 分P选择**（fix/multipart-main-summary-leak → PR）。
+  - **根因**（侦查 CONFIRMED）：多P merge 运行中，分P子任务的流式总结泄漏写入主任务行——① transcriber_worker
+    每个分P转录完成 `if task_id:` 无条件写主行 status=SUMMARIZING/transcript=该子P转录/清空 asr_chunk（:745，
+    无 multipart_part 门槛）；② llm_worker 三个流式回调（update_chunk_progress :636 / flush_chunk_stream :673 /
+    flush_partial_summary :529）仅以"主行 status==SUMMARIZING"为唯一守卫写主行 summary/progress/summary_chunk_*
+    （无 multipart_part 判断）→ 主行 summary 停留在"上一分P的流式中间快照"；③ 下载器每子P下载开始/结束轮番写
+    主行 DOWNLOADING/TRANSCRIBING（:1143/:1321）；④ b23.tv 短链重定向自带 &p=1 → 每个分P子任务（video_url=
+    同一短链）下载的都是第一个分P（实测 P0/P1 转录字节数一致）。
+  - **修复**：① transcriber_worker:745/:564 主行写入加 `not multipart_part` 门槛（子P转录完成只走 task_parts，
+    next_payload 派发不受影响）；:648-657 子P ASR 分片计数不上报主行（加权 progress 写主行保留）；② llm_worker
+    multipart_part 透传三个流式回调并前置 `if multipart_part: return`（分P流式中间快照不写主行；分P最终总结仍由
+    :337-345 multipart_part 分支写入 task_parts；单P任务行为不变，agent 模式非 multipart 写主行路径不受影响）；
+    ③ 下载器子P（multipart_part/bilibili_batch_child）下载开始/结束跳过主行 status 写入；④ finalize 合并转录写
+    主行时显式 `summary: None`（防御中途脏数据残留）；⑤ b23 p=1：新增 `_normalize_bilibili_part_url`（复用
+    `_extract_bvid_from_url` 短链解析），分P子任务下载前将 URL 重写为「完整 BV + ?p=N」（覆盖 b23 短链 / 自带
+    p=1 完整链接 / 无 p 参数三种输入；非 B 站 URL 原样返回），覆盖 merge 批量子任务与 re-download 分P回放两条路径；
+    字幕直取分支按分P索引自行处理（bilibili-api），不受影响。
+  - **测试**（TDD 先红后绿）：新增 tests/test_multipart_main_row_leak.py（11 用例）——红 9（红时错误信息与线上
+    一致：agent/standard 流式泄漏 `summary='分块总结正文'`、分P转录完成将主行置 COMPLETED/SUMMARIZING、子P下载
+    将主行置 TRANSCRIBING、短链未规范化 `['https://b23.tv/CD6M1qC']`、finalize 残留脏 summary）→ 绿 11；
+    test_summary_mode_none.py 一处断言同步更新（分P子任务不得写主行终态，主行终态由父任务 merge finalize 统一
+    收敛）；全量 `uv run pytest tests/ -q` 371 passed；ruff check/format 通过；basedpyright 无新增错误。
+  - **流程档位**：T2（实施代理 + TDD，前后端并行；前端主内容区设计维持不变）。
 - 2026-08-19: **fix(frontend): 浮动工具栏遮挡"分P处理进度"标题——几何避让（方案 A）**（fix/floating-toolbar-overlap → PR #18）。
   - **根因**：P7 将 TaskPartsPanel 作为 main 顶部第一个 in-flow 块引入时未给浮动工具栏预留空间——FloatingToolbar
     （FloatingToolbar.vue:34，`absolute top-4 left-4 z-20`）白色不透明胶囊（y16-56）恒定覆盖面板标题（y12-50），
