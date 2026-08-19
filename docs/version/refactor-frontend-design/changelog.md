@@ -5,6 +5,10 @@
 
 ## Change Log
 
+- 2026-08-19: **fix: e2e 复核发现的三个回归**（PR #21/#22）。
+  - **后端（#21）**：主行泄漏修复（#20）后 multipart 子任务不再写主行 status，但入口无兜底——主行停留在创建时的 PENDING，前端误显示"等待中"数小时。修复：_process_bilibili_multipart 入口统一置主行 DOWNLOADING（同步 db.update_task——异步投递可能落在 finalize 终态之后把任务卡死 DOWNLOADING）。
+  - **前端（#22）**：宽屏章节导航面板默认展开（320×541）覆盖内容区顶部——P7 引入分P面板后，分P面板前几行右侧被白色面板遮挡不可点击。修复：宽屏默认收起（与窄屏一致），点击"章节"展开，跳转功能不变。
+  - **验证**：TDD 红绿（后端 test_multipart_entry_sets_main_row_downloading 断言 DOWNLOADING 先于 finalize 终态；前端 3 用例）；全量 pytest 383 / vitest 421 / vue-tsc 0；21001 重启后 playwright 复验：章节面板 hidden + P1 行命中 + 真实点击展开 + markdown 渲染。
 - 2026-08-19: **fix(backend): 多P merge 分P子任务流式总结泄漏主任务行 + b23.tv 短链 p=1 分P选择**（fix/multipart-main-summary-leak → PR）。
   - **根因**（侦查 CONFIRMED）：多P merge 运行中，分P子任务的流式总结泄漏写入主任务行——① transcriber_worker
     每个分P转录完成 `if task_id:` 无条件写主行 status=SUMMARIZING/transcript=该子P转录/清空 asr_chunk（:745，
