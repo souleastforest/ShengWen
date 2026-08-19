@@ -475,6 +475,31 @@ const handleFetchVibeVoiceServiceStatus = async () => {
   }
 }
 
+// B站分P探针失败/降级提示文案（P0-3）：不再静默提交盲建单P任务
+const BILIBILI_PROBE_FAILED_MESSAGE =
+  '无法确认视频分P信息（网络异常），可重试或将 b23.tv 短链接替换为完整链接'
+
+// 降级响应识别（P0-5）：status 字段优先（'degraded'）；旧后端无 status 时
+// 按启发式特征 is_multi_part=false && title==='' && duration===0 && parts===null
+const isDegradedVideoInfo = (info: BilibiliVideoInfo): boolean => {
+  if (info.status === 'degraded') return true
+  if (info.status === 'ok') return false
+  return (
+    info.is_multi_part === false &&
+    info.title === '' &&
+    info.duration === 0 &&
+    !info.parts
+  )
+}
+
+// 探针失败/降级 → 提示 + "仍按单P提交"二次确认（不静默提交）
+const confirmProbeFailureSubmit = async () => {
+  toastError(BILIBILI_PROBE_FAILED_MESSAGE)
+  if (window.confirm('无法确认视频分P信息（网络异常）。仍要按单P视频提交吗？')) {
+    await submitTask()
+  }
+}
+
 // B站分P处理
 const handleSubmit = async () => {
   // localhost 场景优先使用本地路径直读（避免文件上传复制）
@@ -538,20 +563,25 @@ const handleSubmit = async () => {
     isCheckingBilibiliVideoInfo.value = true
     pendingBilibiliUrl.value = url
     try {
-      const info = await checkBilibiliVideoInfo(url)
-      if (info && info.is_multi_part) {
+      const result = await checkBilibiliVideoInfo(url)
+      if (!result.ok) {
+        // 探针失败（HTTP 层异常）：不静默提交——toast 提示 + 二次确认
+        await confirmProbeFailureSubmit()
+        return
+      }
+      const info = result.info
+      if (info.is_multi_part) {
         // 是多P视频，显示选择器
         bilibiliVideoInfo.value = info
         isBilibiliPartsSelectorOpen.value = true
         isSubmitting.value = false
+      } else if (isDegradedVideoInfo(info)) {
+        // 降级响应（status='degraded' 或启发式特征）：同失败路径，不静默提交
+        await confirmProbeFailureSubmit()
       } else {
         // 单P视频，直接提交
         await submitTask()
       }
-    } catch (err) {
-      // 检查失败，直接提交（后端会处理）
-      console.error('Failed to check Bilibili video info:', err)
-      await submitTask()
     } finally {
       isCheckingBilibiliVideoInfo.value = false
     }

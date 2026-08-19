@@ -80,6 +80,7 @@ async def get_bilibili_video_info(payload: BilibiliVideoInfoRequest):
                 bvid=bvid,
                 duration=duration,
                 parts=parts,
+                status="ok",
             )
 
         return BilibiliVideoInfo(
@@ -88,6 +89,7 @@ async def get_bilibili_video_info(payload: BilibiliVideoInfoRequest):
             bvid=bvid,
             duration=duration,
             parts=None,
+            status="ok",
         )
     except HTTPException:
         raise
@@ -102,7 +104,12 @@ async def get_bilibili_video_info(payload: BilibiliVideoInfoRequest):
                 video_url,
             )
             return BilibiliVideoInfo(
-                is_multi_part=False, title="", bvid=bvid, duration=0, parts=None
+                is_multi_part=False,
+                title="",
+                bvid=bvid,
+                duration=0,
+                parts=None,
+                status="degraded",
             )
         # loguru 不支持 exc_info 关键字（会作为 format kwargs 被静默丢弃，
         # traceback 不记录）——用 opt(exception=e) 显式附加异常。

@@ -284,6 +284,9 @@ export interface BilibiliVideoInfo {
   bvid: string;
   duration: number;
   parts?: BilibiliVideoPartInfo[];
+  // 探针状态：'ok' 正常 / 'degraded' 网络故障降级为单P语义（前端不得静默提交）；
+  // 缺省为旧后端（无 status 字段），按响应特征启发式识别
+  status?: 'ok' | 'degraded';
 }
 
 export interface BilibiliPartsConfig {
