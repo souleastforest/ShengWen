@@ -71,6 +71,8 @@ async def test_video_info_aiohttp_connector_error_returns_single_part_200(
     assert data["bvid"] == "BV1xx411c7mD"
     assert data["duration"] == 0
     assert data["parts"] is None
+    # ⑥ 三态字段：降级响应显式 status="degraded"，前端据此不静默提交
+    assert data["status"] == "degraded"
 
 
 @pytest.mark.asyncio
@@ -220,3 +222,32 @@ async def test_video_info_multi_part_normal_200(app_with_router, monkeypatch):
     assert data["title"] == "测试标题"
     assert len(data["parts"]) == 2
     assert data["parts"][0]["index"] == 0
+    # ⑥ 正常路径 status="ok"
+    assert data["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_video_info_single_part_ok_status(app_with_router, monkeypatch):
+    """⑥ 单P正常响应 → status="ok"（与降级响应区分）。"""
+    app = app_with_router
+
+    async def fake_get_info(self):
+        return {
+            "title": "单P标题",
+            "duration": 60,
+            "pages": [
+                {"page": 1, "cid": 1001, "part": "P1", "duration": 60},
+            ],
+        }
+
+    monkeypatch.setattr(video.Video, "get_info", fake_get_info)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/bilibili/video-info", json={"url": BILIBILI_URL})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["is_multi_part"] is False
+    assert data["title"] == "单P标题"
+    assert data["status"] == "ok"

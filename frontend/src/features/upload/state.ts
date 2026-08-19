@@ -70,6 +70,15 @@ const isBilibiliUrl = (url: string): boolean => {
 /** 单文件上传大小上限回退值（后端 GET /upload/config 下发前的初始值/不可达时的兜底，默认 2GB） */
 export const DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 
+/**
+ * B 站分P探针结果（P0-3）：结构化区分"失败"与"单P"，调用方不得再以
+ * null 吞掉探针异常后静默提交（2026-08-19 缺陷：DNS 故障 + 前端吞错 →
+ * 盲建单P任务，多P视频静默只处理第一P）。
+ */
+export type BilibiliVideoInfoCheckResult =
+  | { ok: true; info: BilibiliVideoInfo }
+  | { ok: false; error: unknown }
+
 export interface UploadState {
   videoUrl: Ref<string>
   selectedFile: Ref<File | null>
@@ -90,7 +99,7 @@ export interface UploadState {
   fetchUploadConfig(): Promise<void>
   submitLocalPathTasks(paths: string[], mode: 'merge' | 'separate'): Promise<void>
   submitTaskWithParts(videoUrl: string, partsConfig: BilibiliPartsConfig, abortSignal?: AbortSignal): Promise<void>
-  checkBilibiliVideoInfo(url: string): Promise<BilibiliVideoInfo | null>
+  checkBilibiliVideoInfo(url: string): Promise<BilibiliVideoInfoCheckResult>
   checkLocalPath(filePath: string): Promise<LocalPathCheckResult | null>
   scanLocalFolder(folderPath: string): Promise<LocalFolderScanResult | null>
   isBilibiliUrl(url: string): boolean
@@ -311,13 +320,14 @@ export function useUploadState(_options?: { api?: UploadApiAdapter }): UploadSta
     uploadProgress.value = 0
   }
 
-  const checkBilibiliVideoInfo = async (url: string): Promise<BilibiliVideoInfo | null> => {
+  const checkBilibiliVideoInfo = async (url: string): Promise<BilibiliVideoInfoCheckResult> => {
     try {
       const response = await apiClient.post('/bilibili/video-info', { url })
-      return response.data as BilibiliVideoInfo
+      return { ok: true, info: response.data as BilibiliVideoInfo }
     } catch (err) {
       console.error('Failed to check Bilibili video info:', err)
-      return null
+      // 结构化失败结果：调用方可区分"探针失败"与"确认单P"，不得静默提交
+      return { ok: false, error: err }
     }
   }
 

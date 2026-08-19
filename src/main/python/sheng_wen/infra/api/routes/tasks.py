@@ -90,8 +90,12 @@ async def _get_bilibili_video_title_and_parts(video_url: str) -> tuple[str, list
             request = UrlRequest(video_url, headers={"User-Agent": "Mozilla/5.0"})
             with urlopen(request, timeout=15) as response:
                 candidate = response.geturl()
-        except Exception:
-            pass
+        except Exception as e:
+            # 附带项 7：短链解析失败 → 分P信息缺失，任务将按单P语义处理，
+            # 由下载器多P预检测兜底（DNS 恢复后拒绝多P并给指引）。
+            logger.warning(
+                "b23.tv 短链解析失败，分P信息缺失: {} (url={})", e, video_url
+            )
 
     match = re.search(r"/video/(BV[0-9A-Za-z]+)", candidate)
     if not match:
@@ -99,6 +103,7 @@ async def _get_bilibili_video_title_and_parts(video_url: str) -> tuple[str, list
         if fallback:
             bvid = fallback.group(1)
         else:
+            logger.warning("无法从链接中提取 BV 号，分P信息未知: {}", video_url)
             return ("未知标题", [])
     else:
         bvid = match.group(1)
@@ -120,6 +125,22 @@ async def _get_bilibili_video_title_and_parts(video_url: str) -> tuple[str, list
                 }
             )
     return (title, parts)
+
+
+async def _is_bilibili_multipart_url(video_url: str) -> bool:
+    """确认 B 站 URL 是否为多分P视频（探针）。
+
+    用途（P1-C）：无 task_parts 记录的 B 站任务（separate 拆分子任务，
+    bilibili_parts 未持久化到任务行）执行 re-transcribe/re-download 前识别
+    多分P URL 并显式拒绝，避免静默退化为单P或整P下载后失败。
+    探针自身异常（网络/确定性错误）→ 按非多P放行，由下载器多P预检测兜底。
+    """
+    try:
+        _, parts_info = await _get_bilibili_video_title_and_parts(video_url)
+    except Exception as e:
+        logger.warning("确认 B 站分P信息失败，按非多P放行: {} (url={})", e, video_url)
+        return False
+    return len(parts_info) > 1
 
 
 def _with_part_stats(task_data: dict):
@@ -145,6 +166,7 @@ async def create_task(task_in: TaskCreate, request: Request):
             )
             return _with_part_stats(existing_task)
 
+    probe_degraded = False
     if not task_in.bilibili_parts and deps._is_bilibili_video_url(
         str(task_in.video_url)
     ):
@@ -155,12 +177,15 @@ async def create_task(task_in: TaskCreate, request: Request):
         except Exception as e:
             if deps._is_bilibili_probe_network_error(e):
                 # 网络类失败（DNS/连接/超时等瞬时故障）：探针本就不确定分P数，
-                # 降级为整视频单P语义继续创建任务，DNS 恢复后由下载器重试。
+                # 降级为整视频单P语义继续创建任务，DNS 恢复后由下载器重试；
+                # parts_probe_failed 标记留给可观测性/下游防御（下载器多P预检测
+                # 仍会按实际分P数拒绝多P）。
                 logger.warning(
                     "获取 B 站分P信息失败（已降级为整视频）: {} (url={})",
                     e,
                     task_in.video_url,
                 )
+                probe_degraded = True
                 parts_info = []
             else:
                 logger.warning("获取 B 站分P信息失败: {}", e)
@@ -294,6 +319,10 @@ async def create_task(task_in: TaskCreate, request: Request):
     task_cookie = deps._sanitize_cookie_value(task_in.bilibili_sessdata)
     if task_cookie:
         task_payload["bilibili_sessdata"] = task_cookie
+
+    if probe_degraded:
+        # 附带项 7：探针网络降级标记（观测性；下载器预检测为真正防御层）
+        task_payload["parts_probe_failed"] = True
 
     if task_in.bilibili_parts:
         task_payload["bilibili_parts"] = {
@@ -608,6 +637,22 @@ async def re_transcribe_task(
             detail="找不到可用的本地媒体文件，且原任务不是可重下载的在线 URL。",
         )
 
+    # P1-C：separate 拆分子任务（无 task_parts 行、bilibili_parts 未持久化）
+    # 的多分P URL 单独重转录会退化为单P或整P下载后失败——在 API 层显式拒绝
+    # 并给可行动指引（严格版"创建时持久化 bilibili_parts 到任务行"需 DB
+    # schema 变更，进 backlog）。单P URL 不受影响。
+    replay_parts = get_task_parts(task_id)
+    if not replay_parts and deps._is_bilibili_video_url(video_url):
+        if await _is_bilibili_multipart_url(video_url):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "该任务是多分P视频的拆分子任务，未保存分P处理信息，无法单独"
+                    "重新转录。请对父任务执行重新转录，或删除该任务后使用完整 BV"
+                    "链接重新提交并在分P选择器中选择拆分或合并。"
+                ),
+            )
+
     reset_data = {
         "progress": 0.0,
         "transcript": "",
@@ -647,15 +692,28 @@ async def re_transcribe_task(
     worker_factory = deps.get_worker_factory(request, "get_downloader_worker")
     downloader_w = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
     await update_and_notify(task_id, {"status": TaskStatus.DOWNLOADING})
-    await downloader_w.add_task(
-        {
-            "task_id": task_id,
-            "video_url": video_url,
-            "quality": "audio_only",
-            "summary_mode": resolved_summary_mode,
-            "generate_topic": resolved_generate_topic,
+
+    # 分P回放（附带项 6）：多P任务（task_parts 非空）重转录时恢复原
+    # bilibili_parts + multipart_batch 派发，完整重跑分P流水线；分P先重置为
+    # PENDING（否则 _process_bilibili_multipart 会跳过 COMPLETED 分P，
+    # 重转录将退化为空跑）。无 parts 记录保持原单P payload（回归不误伤）。
+    retranscribe_payload = {
+        "task_id": task_id,
+        "video_url": video_url,
+        "quality": "audio_only",
+        "summary_mode": resolved_summary_mode,
+        "generate_topic": resolved_generate_topic,
+    }
+    if replay_parts:
+        reset_failed_parts(
+            task_id, [int(part.get("part_index", 0)) for part in replay_parts]
+        )
+        retranscribe_payload["bilibili_parts"] = {
+            "mode": "merge",
+            "indices": [int(part.get("part_index", 0)) for part in replay_parts],
         }
-    )
+        retranscribe_payload["multipart_batch"] = True
+    await downloader_w.add_task(retranscribe_payload)
     return db.get_task(task_id)
 
 
@@ -685,6 +743,20 @@ async def re_download_task(task_id: str, request: Request):
             status_code=409, detail="本地已有可用的媒体文件，请使用重新转录。"
         )
 
+    # P1-C：同 re-transcribe——separate 拆分子任务（无 task_parts 行）的
+    # 多分P URL 单独重下载会退化为单P或整P下载后失败，在 API 层显式拒绝。
+    replay_parts = get_task_parts(task_id)
+    if not replay_parts and deps._is_bilibili_video_url(video_url):
+        if await _is_bilibili_multipart_url(video_url):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "该任务是多分P视频的拆分子任务，未保存分P处理信息，无法单独"
+                    "重新下载。请对父任务执行重新下载，或删除该任务后使用完整 BV"
+                    "链接重新提交并在分P选择器中选择拆分或合并。"
+                ),
+            )
+
     prev_status = str(task.get("status") or TaskStatus.PENDING.value)
     from src.main.python.sheng_wen.task_updater import update_and_notify
 
@@ -700,6 +772,37 @@ async def re_download_task(task_id: str, request: Request):
 
     worker_factory = deps.get_worker_factory(request, "get_downloader_worker")
     downloader_w = await deps._resolve_worker_or_raise(worker_factory, task_id=task_id)
+
+    # 分P回放（附带项 6）：多P任务（task_parts 非空）重下载按分P逐个派发
+    # （multipart_part + bilibili_parts 单分P + re_download_only），不退化
+    # 只下载第一P；下载完成后 worker 将分P恢复原状态。
+    # 注意：不派发 multipart_batch——父任务 _process_bilibili_multipart 会等待
+    # 分P COMPLETED 后重跑合并/总结流水线，而 re-download 只恢复音频不重转录，
+    # 父任务将被误判"所有选中的分P均处理失败"。
+    if replay_parts:
+        for part in replay_parts:
+            part_index = int(part.get("part_index", 0))
+            await downloader_w.add_task(
+                {
+                    "task_id": task_id,
+                    "video_url": video_url,
+                    "quality": "audio_only",
+                    "summary_mode": task.get("summary_mode") or "auto",
+                    "re_download_only": True,
+                    "restore_status": prev_status,
+                    "multipart_part": {
+                        "index": part_index,
+                        "title": part.get("title") or f"P{part_index + 1}",
+                        "duration": part.get("duration") or 0,
+                        "restore_status": str(
+                            part.get("status") or "COMPLETED"
+                        ).upper(),
+                    },
+                    "bilibili_parts": {"mode": "merge", "indices": [part_index]},
+                }
+            )
+        return db.get_task(task_id)
+
     await downloader_w.add_task(
         {
             "task_id": task_id,

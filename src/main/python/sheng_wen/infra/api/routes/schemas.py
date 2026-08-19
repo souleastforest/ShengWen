@@ -223,6 +223,13 @@ class BilibiliVideoInfo(BaseModel):
     parts: Optional[list[BilibiliVideoPartInfo]] = Field(
         default=None, description="分P列表（仅多P视频）"
     )
+    status: Optional[str] = Field(
+        default=None,
+        description=(
+            "探针状态: ok（正常）/ degraded（网络故障降级为单P语义，"
+            "前端不得静默提交）；缺省为旧版本"
+        ),
+    )
 
 
 class BilibiliPartsConfig(BaseModel):

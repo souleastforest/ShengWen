@@ -19,6 +19,16 @@ from .bilibili_author_resolver import (
 )
 from .bilibili_headers import build_bilibili_http_headers, sanitize_cookie_value
 
+# 分P状态白名单（与 task_parts.PART_STATUSES 对齐；re-download 分P回放恢复用）
+PART_STATUSES_ALLOWED = {
+    "PENDING",
+    "DOWNLOADING",
+    "TRANSCRIBING",
+    "SUMMARIZING",
+    "COMPLETED",
+    "FAILED",
+}
+
 
 class VideoDownloaderWorker(Worker):
     """
@@ -510,6 +520,11 @@ class VideoDownloaderWorker(Worker):
             f" (cookie_source={cookie_source}, has_cookie={bool(sessdata)})"
         )
 
+        # P0-2：无分P配置时直取前预检测多P——多P视频不得静默取第一个分P字幕
+        # （2026-08-19 缺陷第二通道：直取路径硬编码 part_index=0）。
+        # 检测到多P时抛 RuntimeError，由 process_task 统一置 FAILED 并给指引。
+        self._precheck_bilibili_multipart(video_url, payload)
+
         try:
             subtitle_result = self._try_extract_bilibili_subtitle(video_url, sessdata)
             if not subtitle_result:
@@ -743,6 +758,79 @@ class VideoDownloaderWorker(Worker):
         except Exception as e:
             logger.error(f"[{self.name}] 处理多P视频合并失败: {e}", exc_info=True)
             return False
+
+    def _precheck_bilibili_multipart(
+        self, video_url: str, payload: Dict[str, Any]
+    ) -> None:
+        """下载/字幕直取前对 B 站 URL 做多P预检测（yt-dlp dry-run，不下载）。
+
+        背景（2026-08-19 缺陷，三代理侦查已闭环）：b23.tv 分享短链自带 p=1
+        → yt-dlp 判为单视频只下第一P → 下载器 video_paths==1 校验通过 →
+        静默 COMPLETED 只总结第一讲。本检测在任务无 bilibili_parts 配置时
+        dry-run 确认分P数：多于 1 个分P直接拒绝并给指引，不静默处理第一个分P。
+
+        注意：预检测仅拦截"yt-dlp 解析为完整播放列表"的情形（entries>1）；
+        URL 自带 p=N（含 b23.tv 短链 p=1）时 yt-dlp 只解析出单条，本检测
+        天然放行——该场景由创建探针 422（tasks.py 多P检测）+ 前端确认弹窗
+        兜底，属设计决策（P1-A 修订）。
+
+        跳过条件：非 B 站 URL / 已带 bilibili_parts（用户已在分P选择器中选择）
+        / 多P子任务（multipart_part、bilibili_batch_child）/ re_download_only
+        维护流程（仅恢复音频，不改写任务语义）。
+
+        dry-run 自身网络异常（DNS/连接/超时）→ logger.warning 放行，由下载后
+        video_paths != 1 校验（process_task）兜底。
+
+        Raises:
+            RuntimeError: 检测到多个分P且任务未指定分P处理方式（文案含指引）。
+        """
+        if not video_url or not self._is_bilibili_url(str(video_url)):
+            return
+        if payload.get("bilibili_parts"):
+            return
+        if payload.get("multipart_part") or payload.get("bilibili_batch_child"):
+            return
+        if payload.get("re_download_only"):
+            return
+
+        ydl_opts: Dict[str, Any] = {
+            "skip_download": True,
+            "quiet": True,
+        }
+        quality = str(payload.get("quality") or "best")
+        if quality != "audio_only":
+            ydl_opts["merge_output_format"] = "mp4"
+        ffmpeg_location = FFmpegHelper.get_yt_dlp_ffmpeg_location()
+        if ffmpeg_location:
+            ydl_opts["ffmpeg_location"] = ffmpeg_location
+        sessdata, cookie_source = self._resolve_bilibili_sessdata(payload)
+        if sessdata:
+            logger.info(
+                f"[{self.name}] B 站多P预检测使用 Cookie (source={cookie_source})"
+            )
+        ydl_opts["http_headers"] = build_bilibili_http_headers(sessdata)
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(str(video_url), download=False)
+        except Exception as e:
+            logger.warning(
+                f"[{self.name}] B 站多P预检测失败（网络异常？），放行由下载后"
+                f"校验兜底: {e}"
+            )
+            return
+
+        entries = info_dict.get("entries") if isinstance(info_dict, dict) else None
+        if isinstance(entries, list) and len(entries) > 1:
+            # 注：不在此处提示 b23.tv 短链 p=N——本分支仅当 entries>1（解析为
+            # 完整播放列表）时可达，而 p=N 链接只会解析出单条、永远不会走到这里
+            # （P1-A 修订）；p=N 提示已前置到前端探针失败/降级弹窗。
+            raise RuntimeError(
+                f"检测到 {len(entries)} 个分P，但任务未指定分P处理方式。"
+                "请删除该任务后，使用完整 BV 链接（如 "
+                "https://www.bilibili.com/video/BVxxxxxxxxxxx）重新提交，并在分P"
+                "选择器中选择拆分或合并。"
+            )
 
     async def _resolve_and_save_bilibili_author(
         self, task_id: str, video_url: str, payload: Dict[str, Any] | None = None
@@ -1030,6 +1118,21 @@ class VideoDownloaderWorker(Worker):
         except TaskCancelledError as e:
             logger.info(f"[{self.name}] {e}")
             return
+        except RuntimeError as e:
+            # P0-2：多P预检测拒绝（字幕直取前检出）——置 FAILED 并给指引，
+            # 不得回退到静默取第一个分P（2026-08-19 缺陷第二通道）。
+            logger.error(f"[{self.name}] 多P预检测拒绝任务: {e}")
+            if task_id:
+                from ..db import TaskStatus
+                from ..task_updater import update_and_notify
+
+                self._submit_coro(
+                    update_and_notify(
+                        task_id,
+                        {"status": TaskStatus.FAILED, "error_message": str(e)},
+                    )
+                )
+            return
 
         logger.info(f"[{self.name}] 开始下载视频: {video_url} (质量: {quality})")
 
@@ -1068,6 +1171,13 @@ class VideoDownloaderWorker(Worker):
                     )
 
         try:
+            # P0-1：下载前多P预检测——无分P配置的 B 站 URL 先 dry-run 确认分P数。
+            # 仅拦截"yt-dlp 解析为完整播放列表"的情形（entries>1）；URL 自带
+            # p=N（含 b23.tv 短链 p=1）时 yt-dlp 只解析出单条、本预检测放行——
+            # 该场景由创建探针 422（tasks.py 多P检测）+ 前端确认弹窗兜底。
+            # 检测到多P抛 RuntimeError → 下方 except 置 FAILED 并给指引。
+            self._precheck_bilibili_multipart(str(video_url), payload)
+
             # 配置 ffmpeg 路径（使用 FFmpegHelper）
             ffmpeg_location = FFmpegHelper.get_yt_dlp_ffmpeg_location()
 
@@ -1134,6 +1244,9 @@ class VideoDownloaderWorker(Worker):
                 raise RuntimeError(
                     f"下载结果包含 {len(video_paths)} 个分P，无法作为单一转录任务处理。"
                     "请在分P选择器中选择拆分为多个任务，或仅选择一个分P。"
+                    "注意：b23.tv 分享短链可能自带 p=N 参数、只指向单个分P，"
+                    "请使用完整 BV 链接（如 https://www.bilibili.com/video/BV..."
+                    "）重新提交。"
                 )
             video_path = video_paths[0]
 
@@ -1163,6 +1276,26 @@ class VideoDownloaderWorker(Worker):
                                 f"保持当前状态"
                             )
                     self._submit_coro(update_and_notify(task_id, updates))
+                # 分P回放（附带项 6）：re-download 按分P逐个派发（multipart_part），
+                # 每个分P下载完成后恢复其原状态，避免分P面板停留在 DOWNLOADING。
+                if payload.get("multipart_part"):
+                    from ..task_parts import update_task_part
+
+                    part_index = int(payload["multipart_part"]["index"])
+                    restore_part_status = str(
+                        payload["multipart_part"].get("restore_status") or "COMPLETED"
+                    ).upper()
+                    if restore_part_status not in PART_STATUSES_ALLOWED:
+                        restore_part_status = "COMPLETED"
+                    update_task_part(
+                        str(task_id),
+                        part_index,
+                        {
+                            "status": restore_part_status,
+                            "progress": 100.0,
+                            "error_message": None,
+                        },
+                    )
                 logger.info(
                     f"[{self.name}] re-download 完成: task_id={task_id}, "
                     f"恢复状态: {payload.get('restore_status')}, video={video_path}"
@@ -1243,6 +1376,35 @@ class VideoDownloaderWorker(Worker):
                     int(payload["multipart_part"]["index"]),
                     {"status": "FAILED", "error_message": str(e)},
                 )
+                # P1-B：re-download 分P回放（按分P逐个派发、无父合并收敛）中
+                # 分P下载失败时，父任务不得永久卡 DOWNLOADING（路由派发前已置
+                # DOWNLOADING，且无状态看门狗）——一并恢复原状态并带错误信息。
+                if payload.get("re_download_only") and task_id:
+                    from ..db import TaskStatus
+                    from ..task_updater import update_and_notify
+
+                    clean_error = re.sub(
+                        r"\x1B(?:[@-Z\-_]|\[[0-?]*[ -/]*[@-~])", "", str(e)
+                    )
+                    updates = {
+                        "audio_downloaded": False,
+                        "audio_missing_reason": None,
+                        "error_message": clean_error,
+                    }
+                    restore_status = payload.get("restore_status")
+                    try:
+                        updates["status"] = (
+                            TaskStatus(str(restore_status).upper())
+                            if restore_status
+                            else TaskStatus.FAILED
+                        )
+                    except ValueError:
+                        logger.warning(
+                            f"[{self.name}] 无效的恢复状态 '{restore_status}'，"
+                            f"置 FAILED 避免卡 DOWNLOADING"
+                        )
+                        updates["status"] = TaskStatus.FAILED
+                    self._submit_coro(update_and_notify(task_id, updates))
                 return
             if task_id:
                 from ..db import TaskStatus
