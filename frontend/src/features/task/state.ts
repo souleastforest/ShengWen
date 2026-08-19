@@ -312,7 +312,17 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
 
   const fetchTaskPart = async (taskId: string, partIndex: number) => {
     const cached = taskPartDetails.value[partIndex]
-    if (cached?.task_id === taskId && (cached.transcript !== undefined || cached.summary !== undefined)) {
+    // 缓存命中条件（P0 修复）：null 与 ''（如 re-transcribe 重置）同样视为
+    // "无内容"（hasContent），与 undefined 语义一致——处理中分P的详情（后端
+    // 返回 task_parts 全行，transcript/summary 为 null）不得命中缓存，否则
+    // 该分P完成后同任务内再次展开会永久返回 stale null（"暂无可展示内容"）。
+    // 同型"缓存不失效"防御：分P列表状态已变化（如 SUMMARIZING → COMPLETED，
+    // 详情可能已有新总结）时同样失效缓存，重新请求。
+    const freshPart = taskParts.value.find((p) => p.part_index === partIndex)
+    const cachedContentUsable = cached?.task_id === taskId
+      && (hasContent(cached.summary) || hasContent(cached.transcript))
+    const statusChanged = cached != null && freshPart != null && cached.status !== freshPart.status
+    if (cachedContentUsable && !statusChanged) {
       return cached
     }
 
