@@ -5,6 +5,23 @@
 
 ## Change Log
 
+- 2026-08-19: **fix(frontend): 分P详情缓存永不失效 + 展开区 markdown 渲染（处理中展开过的分P完成后永久"暂无可展示内容"）**（fix/part-detail-cache-markdown → PR）。
+  - **根因**：`fetchTaskPart` 缓存命中条件 `cached.transcript !== undefined || cached.summary !== undefined`
+    （features/task/state.ts:315）——处理中分P的详情响应（后端返回 task_parts 全行，transcript/summary 为
+    null）满足 `null !== undefined` → 命中缓存 → 该分P完成后同任务内再次展开永久返回 stale null →
+    TaskPartsPanel 展开区永久"暂无可展示内容"。taskPartDetails 仅在 selectTask 切新任务与 retryFailedParts
+    时清空；分P列表刷新（scheduleTaskPartsRefresh）只替换 taskParts 不失效详情缓存。同型残留：
+    处理中（SUMMARIZING）展开的分P若缓存已有 transcript（总结未生成），完成后同样命中缓存拿不到新总结。
+  - **修复**：① state.ts fetchTaskPart 缓存命中改为内容非空语义（复用 hasContent，null/'' 均视为无内容）
+    并保留 task_id 检查；② 同型"缓存不失效"防御：缓存详情 status 与分P列表当前 status 不一致
+    （如 SUMMARIZING → COMPLETED）时失效缓存重新请求；③ TaskPartsPanel 展开区 summary/transcript 由
+    whitespace-pre-wrap 纯文本改为 compileMarkdownText 净化管线编译 + v-html 渲染（XSS 防线：只消费管线
+    产物，禁止绕过出口；样式层级/空态不变，prose-sm 紧凑排版）。
+  - **验证**：TDD 先红后绿——新增 state.partDetail.test.ts（P0 null/'' 缓存不命中、缓存命中不重发、跨任务
+    失效、retryFailedParts 清空、状态变化失效，6 用例）与 TaskPartsPanel.markdown.test.ts（markdown 渲染、
+    partDetails 覆盖、XSS 净化、空态，5 用例）；红 7（P0×2 + 防御×1 + 渲染×4）→ 绿 11；全量 vitest 415
+    passed（原 404 + 新 11）/ vue-tsc -b 0 错误。
+  - **流程档位**：T2（实施代理 + TDD，前后端并行）。
 - 2026-08-19: **fix(frontend): 浮动工具栏遮挡"分P处理进度"标题——几何避让（方案 A）**（fix/floating-toolbar-overlap → PR #18）。
   - **根因**：P7 将 TaskPartsPanel 作为 main 顶部第一个 in-flow 块引入时未给浮动工具栏预留空间——FloatingToolbar
     （FloatingToolbar.vue:34，`absolute top-4 left-4 z-20`）白色不透明胶囊（y16-56）恒定覆盖面板标题（y12-50），
