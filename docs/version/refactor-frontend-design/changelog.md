@@ -5,6 +5,19 @@
 
 ## Change Log
 
+- 2026-08-19: **fix(frontend): 浮动工具栏遮挡"分P处理进度"标题——几何避让（方案 A）**（fix/floating-toolbar-overlap → PR #18）。
+  - **根因**：P7 将 TaskPartsPanel 作为 main 顶部第一个 in-flow 块引入时未给浮动工具栏预留空间——FloatingToolbar
+    （FloatingToolbar.vue:34，`absolute top-4 left-4 z-20`）白色不透明胶囊（y16-56）恒定覆盖面板标题（y12-50），
+    hover 弹层（z-30，y64-284）再覆盖分P列表；z-index 反制无效（弹层嵌于外层 z-20 上下文内降不下去），唯一方向为几何避让。
+  - **修复**（playwright 实测遮挡 CONFIRMED → 修复后复验通过）：① TaskPartsPanel.vue:128 section 加 `mt-28`（112px
+    避让主胶囊 + 章节胶囊两条静态覆盖带）；② FloatingToolbar.vue:59/:139 移除 `relative`（弹层锚点上提开关容器），
+    :71/:151 弹层加 `md:left-full md:top-0 md:ml-2`（桌面横向展开，移动端保持向下）；③ FloatingToolbarChapterNav.vue:134
+    章节弹层同改横向展开（修复向左越出 main 被 overflow-hidden 裁剪）。
+  - **验证**：vitest 404 / vue-tsc -b / build 全过；21001 playwright 复验：胶囊∩标题/描述 NONE、hit-test 命中 H2 自身、
+    hover 弹层横向展开且不覆盖任何内容。
+  - **遗留**：桌面 AI 总结弹层 hover 需横穿胶囊约 150px（过渡窗口内可达，慢移可能中途消失，待人工确认或后续加 hover 桥接）；
+    移动端弹层保持向下展开（次要场景）。
+  - **流程档位**：T1（双代理 workflow 侦查含 playwright 取证 + 实施代理，用户确认方案 A）。
 - 2026-08-19: **bugfix: 多P视频未识别、静默只取第一个分P（b23.tv 短链 p=1 根因链）**（fix/multipart-probe-downgrade → PR #17）。
   - **根因链**：b23.tv 分享链接自带 `p=1`（安卓端在 P1 观看时分享）→ yt-dlp 判单视频只下第一P → 下载后校验
     `video_paths==1`（video_downloader_worker.py:1236）通过 → 静默 COMPLETED 只总结第一讲。叠加 08-19 05:10-05:32
