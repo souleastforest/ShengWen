@@ -1,9 +1,11 @@
 /**
- * P0 修复 B：分P展开区 Markdown 渲染（TaskPartsPanel）
+ * P0 修复 B（含 P1-1 评审修订）：分P展开区渲染（TaskPartsPanel）
  *
- * 展开区的 summary/transcript 经 compileMarkdownText 净化管线编译后
- * v-html 渲染（XSS 净化必须走该出口，禁止直接 v-html 插入未净化内容），
- * 不再以 whitespace-pre-wrap 纯文本展示。
+ * - summary 经 compileMarkdownText 净化管线编译后 v-html 渲染
+ *   （XSS 净化必须走该出口，禁止直接 v-html 插入未净化内容）；
+ * - transcript 保持 whitespace-pre-wrap 纯文本（P1-1：marked 无 breaks
+ *   配置会折叠单换行，且行首 #/-/** 会被误解释为 markdown——与主内容区
+ *   TaskContentArea 对 transcript 的纯文本处理保持一致）。
  *
  * 每个用例失败 = 实现缺陷。
  */
@@ -55,14 +57,30 @@ describe('P0 修复 B：分P展开区 Markdown 渲染', () => {
     wrapper.unmount()
   })
 
-  it('transcript 同样经编译管线渲染 markdown', async () => {
+  it('transcript 保持纯文本（P1-1）：不做 markdown 解释（** 不渲染为 <strong>）', async () => {
     const wrapper = mount(TaskPartsPanel, {
       props: { parts: [makePart({ transcript: '**加粗转录**' })], taskId: 'task-a' },
     })
     await expandPart(wrapper)
 
-    expect(wrapper.html()).toContain('<strong>加粗转录</strong>')
-    expect(wrapper.text()).not.toContain('**加粗转录**')
+    // 原始标记原样透出，不得被编译为 <strong>
+    expect(wrapper.text()).toContain('**加粗转录**')
+    expect(wrapper.html()).not.toContain('<strong>加粗转录</strong>')
+
+    wrapper.unmount()
+  })
+
+  it('多行转录保持逐行展示，行首 # 不误解释为标题（P1-1）', async () => {
+    const transcript = '00:00:00[音乐] 开场\n# 这不是标题\n普通行内容'
+    const wrapper = mount(TaskPartsPanel, {
+      props: { parts: [makePart({ transcript })], taskId: 'task-a' },
+    })
+    await expandPart(wrapper)
+
+    expect(wrapper.text()).toContain('00:00:00[音乐] 开场')
+    expect(wrapper.text()).toContain('# 这不是标题')
+    expect(wrapper.text()).toContain('普通行内容')
+    expect(wrapper.html()).not.toContain('<h1')
 
     wrapper.unmount()
   })

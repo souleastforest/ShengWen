@@ -47,10 +47,12 @@ const failedParts = computed(() => props.parts.filter((part) => part.status === 
 
 const getPartDetail = (part: TaskPart) => props.partDetails?.[part.part_index] || part
 
-// 展开区 markdown 编译（P0 修复 B）：summary/transcript 经 compileMarkdownText
+// 展开区 summary markdown 编译（P0 修复 B）：summary 经 compileMarkdownText
 // 净化管线编译后 v-html 渲染（XSS 防线：v-html 只允许消费该管线产物，禁止
 // 绕过出口直接赋值，契约见 useMarkdownCompile.ts）。只编译当前展开分P的内容，
-// 随 parts/partDetails 变化自动重算。
+// 随 parts/partDetails 变化自动重算。transcript 保持 whitespace-pre-wrap 纯文本
+// （P1-1：marked 无 breaks 配置会折叠单换行，行首 #/-/** 会被误解释，与主内容区
+// 对 transcript 的纯文本处理保持一致）。
 const expandedDetail = computed(() => {
   const part = props.parts.find((p) => p.part_index === expandedPart.value)
   if (!part) return null
@@ -59,10 +61,6 @@ const expandedDetail = computed(() => {
 const expandedSummaryHtml = computed(() => {
   const summary = expandedDetail.value?.summary
   return summary ? compileMarkdownText(summary) : ''
-})
-const expandedTranscriptHtml = computed(() => {
-  const transcript = expandedDetail.value?.transcript
-  return transcript ? compileMarkdownText(transcript) : ''
 })
 
 const togglePart = (partIndex: number) => {
@@ -191,10 +189,7 @@ onBeforeUnmount(stopPanelResize)
             </div>
             <div v-if="getPartDetail(part).transcript">
               <div class="mb-1 text-xs font-semibold text-slate-500">转录文本</div>
-              <div
-                class="prose prose-sm prose-slate max-w-none max-h-48 overflow-auto text-xs leading-5 text-slate-600 [&_p]:my-0.5 [&_ul]:my-0.5 [&_ol]:my-0.5"
-                v-html="expandedTranscriptHtml"
-              ></div>
+              <div class="max-h-48 overflow-auto whitespace-pre-wrap text-xs leading-5 text-slate-600">{{ getPartDetail(part).transcript }}</div>
             </div>
             <div v-if="!getPartDetail(part).summary && !getPartDetail(part).transcript" class="text-xs text-slate-400">暂无可展示内容</div>
           </template>
