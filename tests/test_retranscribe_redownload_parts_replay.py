@@ -111,6 +111,19 @@ def fake_parts():
     ]
 
 
+def fake_parts_info(count: int = 1) -> list[dict]:
+    """探针 parts_info 桩：count=1 单P；count>1 多分P。"""
+    return [
+        {
+            "index": i,
+            "cid": 1001 + i,
+            "title": f"P{i + 1}",
+            "duration": 60,
+        }
+        for i in range(count)
+    ]
+
+
 @pytest.fixture
 def env(monkeypatch):
     """构造独立 app + 假 db/worker/updater + task_parts 打桩。"""
@@ -179,9 +192,15 @@ async def test_retranscribe_multipart_replays_parts(env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retranscribe_without_parts_keeps_single_payload(env, monkeypatch):
-    """⑤ 回归：无 task_parts 记录 → 保持原单P payload，不带 bilibili_parts。"""
+    """⑤ 回归：无 task_parts 记录 + 单P URL → 保持原单P payload，不带 bilibili_parts。"""
     env["db"].tasks["t1"] = base_task("t1", video_url=BILIBILI_URL)
     monkeypatch.setattr(deps, "_resolve_local_media_file", lambda tid, task: None)
+
+    # P1-C 探针桩：URL 确认为单P（不得误拒正常单P任务）
+    async def fake_probe(url):
+        return ("单P标题", fake_parts_info(1))
+
+    monkeypatch.setattr(tasks_module, "_get_bilibili_video_title_and_parts", fake_probe)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=env["app"]), base_url="http://test"
@@ -196,6 +215,34 @@ async def test_retranscribe_without_parts_keeps_single_payload(env, monkeypatch)
     payload = env["worker"].added[0]
     assert "bilibili_parts" not in payload
     assert "multipart_batch" not in payload
+
+
+@pytest.mark.asyncio
+async def test_retranscribe_separate_child_multipart_url_rejected(env, monkeypatch):
+    """P1-C：separate 拆分子任务（B 站 URL + 无 task_parts + 多分P）→ 409 拒绝，
+    文案可行动，不派发任务、不改动任务状态。"""
+    env["db"].tasks["t1"] = base_task("t1", video_url=BILIBILI_URL)
+    monkeypatch.setattr(deps, "_resolve_local_media_file", lambda tid, task: None)
+
+    async def fake_probe(url):
+        return ("多P标题", fake_parts_info(2))
+
+    monkeypatch.setattr(tasks_module, "_get_bilibili_video_title_and_parts", fake_probe)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env["app"]), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/tasks/t1/re-transcribe", json={"summary_mode": "none"}
+        )
+
+    assert resp.status_code == 409
+    assert "拆分子任务" in resp.json()["detail"]
+    assert "父任务" in resp.json()["detail"]
+    assert env["worker"].added == []
+    assert env["reset_calls"] == []
+    # 未改动任务状态（拒绝发生在重置之前）
+    assert env["db"].get_task("t1")["status"] == "COMPLETED"
 
 
 @pytest.mark.asyncio
@@ -226,9 +273,15 @@ async def test_redownload_multipart_replays_per_part(env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_redownload_without_parts_keeps_single_payload(env, monkeypatch):
-    """附带：回归——无 task_parts 记录 → 保持原单P re_download payload。"""
+    """附带：回归——无 task_parts 记录 + 单P URL → 保持原单P re_download payload。"""
     env["db"].tasks["t1"] = base_task("t1", video_url=BILIBILI_URL)
     monkeypatch.setattr(deps, "_resolve_local_media_file", lambda tid, task: None)
+
+    # P1-C 探针桩：URL 确认为单P（不得误拒正常单P任务）
+    async def fake_probe(url):
+        return ("单P标题", fake_parts_info(1))
+
+    monkeypatch.setattr(tasks_module, "_get_bilibili_video_title_and_parts", fake_probe)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=env["app"]), base_url="http://test"
@@ -241,3 +294,27 @@ async def test_redownload_without_parts_keeps_single_payload(env, monkeypatch):
     assert "bilibili_parts" not in payload
     assert "multipart_part" not in payload
     assert payload["re_download_only"] is True
+
+
+@pytest.mark.asyncio
+async def test_redownload_separate_child_multipart_url_rejected(env, monkeypatch):
+    """P1-C：separate 拆分子任务（B 站 URL + 无 task_parts + 多分P）→ 409 拒绝，
+    文案可行动，不派发任务、不改动任务状态。"""
+    env["db"].tasks["t1"] = base_task("t1", video_url=BILIBILI_URL)
+    monkeypatch.setattr(deps, "_resolve_local_media_file", lambda tid, task: None)
+
+    async def fake_probe(url):
+        return ("多P标题", fake_parts_info(2))
+
+    monkeypatch.setattr(tasks_module, "_get_bilibili_video_title_and_parts", fake_probe)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env["app"]), base_url="http://test"
+    ) as client:
+        resp = await client.post("/tasks/t1/re-download")
+
+    assert resp.status_code == 409
+    assert "拆分子任务" in resp.json()["detail"]
+    assert "父任务" in resp.json()["detail"]
+    assert env["worker"].added == []
+    assert env["db"].get_task("t1")["status"] == "COMPLETED"

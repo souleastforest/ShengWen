@@ -475,9 +475,11 @@ const handleFetchVibeVoiceServiceStatus = async () => {
   }
 }
 
-// B站分P探针失败/降级提示文案（P0-3）：不再静默提交盲建单P任务
+// B站分P探针失败/降级提示文案（P0-3）：不再静默提交盲建单P任务。
+// p=N 提示前置到这里（P1-A）：预检测只拦截"解析为完整播放列表"的情形，
+// 而 b23.tv 短链 p=1 只会让 yt-dlp 解析出单条——该场景由本弹窗兜底告知。
 const BILIBILI_PROBE_FAILED_MESSAGE =
-  '无法确认视频分P信息（网络异常），可重试或将 b23.tv 短链接替换为完整链接'
+  '无法确认视频分P信息（网络异常），可重试或将 b23.tv 短链接替换为完整链接（短链可能自带 p=N 参数、只指向单个分P）'
 
 // 降级响应识别（P0-5）：status 字段优先（'degraded'）；旧后端无 status 时
 // 按启发式特征 is_multi_part=false && title==='' && duration===0 && parts===null

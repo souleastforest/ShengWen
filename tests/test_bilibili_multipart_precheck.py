@@ -65,6 +65,7 @@ def _make_fake_ytdl(recorder: dict):
     - dry_info: dry-run（download=False）返回的 info_dict
     - dry_raise: dry-run 时抛出的异常（模拟网络故障）
     - download_info: 真实下载（download=True）返回的 info_dict
+    - download_raise: 真实下载时抛出的异常（模拟下载失败）
     - path: prepare_filename 返回的已存在文件路径（下载成功判定）
     """
 
@@ -81,6 +82,8 @@ def _make_fake_ytdl(recorder: dict):
         def extract_info(self, url, download=True):
             if download:
                 recorder["download_calls"].append(url)
+                if recorder.get("download_raise"):
+                    raise recorder["download_raise"]
                 return recorder.get("download_info") or {"id": "p1"}
             recorder["dry_calls"].append(url)
             if recorder.get("dry_raise"):
@@ -138,7 +141,9 @@ async def test_multipart_without_parts_rejected_before_download(monkeypatch, tmp
     task = db.get_task(task_id)
     assert task["status"] == TaskStatus.FAILED
     assert "检测到 11 个分P" in task["error_message"]
-    assert "b23.tv" in task["error_message"]
+    # P1-A ②：预检测拒绝文案不携带 b23.tv p=N 提示（该分支仅 entries>1 可达，
+    # p=N 链接只会解析出单条、永远不会走到这里；提示已前置到前端弹窗）
+    assert "b23.tv" not in task["error_message"]
     # 仅一次 dry-run，未触发实际下载（不浪费全量下载 ~800MB）
     assert recorder["dry_calls"] == [BILIBILI_URL]
     assert recorder["download_calls"] == []
@@ -213,6 +218,93 @@ async def test_single_part_proceeds_to_download(monkeypatch, tmp_path):
     assert task["status"] == TaskStatus.TRANSCRIBING
     assert recorder["dry_calls"] == [BILIBILI_URL]
     assert recorder["download_calls"] == [BILIBILI_URL]
+
+
+@pytest.mark.asyncio
+async def test_p_url_with_single_entry_passes_precheck(monkeypatch, tmp_path):
+    """P1-A ③：URL 自带 ?p=N 时 yt-dlp 只解析出单条（entries==1）→ 预检测放行，
+    单P正常流程（钉住设计决策：p=N 场景由创建探针 422 + 前端确认弹窗兜底）。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, url=BILIBILI_URL + "?p=1")
+    video_file = tmp_path / "video.mp4"
+    video_file.write_bytes(b"fake-video")
+    recorder = _new_recorder(
+        dry_info={"entries": [{"id": "p1"}]},
+        download_info={"id": "p1"},
+        path=str(video_file),
+    )
+    monkeypatch.setattr(
+        dl_module, "yt_dlp", SimpleNamespace(YoutubeDL=_make_fake_ytdl(recorder))
+    )
+
+    downloader = _make_downloader(tmp_path, summary_worker=None)
+    downloader.process_task(
+        {
+            "task_id": task_id,
+            "video_url": BILIBILI_URL + "?p=1",
+            "quality": "best",
+            "summary_mode": "none",
+        }
+    )
+    await downloader._await_pending_updates(timeout=3.0)
+
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.TRANSCRIBING
+    assert recorder["dry_calls"] == [BILIBILI_URL + "?p=1"]
+    assert recorder["download_calls"] == [BILIBILI_URL + "?p=1"]
+
+
+@pytest.mark.asyncio
+async def test_redownload_child_failure_restores_parent_not_stuck(
+    monkeypatch, tmp_path
+):
+    """P1-B：re-download 分P子任务下载失败 → 分P FAILED 且父任务恢复原状态，
+    不得永久卡 DOWNLOADING（re-download 按分P逐个派发、无父合并收敛看门狗）。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id)
+    db.update_task(task_id, {"status": TaskStatus.DOWNLOADING})  # 路由派发前已置
+    # 分P回放的前提：任务已有 task_parts 记录（与路由 get_task_parts 非空一致）
+    from src.main.python.sheng_wen.task_parts import get_task_parts, init_task_parts
+
+    init_task_parts(
+        task_id,
+        [{"index": 0, "cid": 1001, "title": "P1", "duration": 60}],
+    )
+    recorder = _new_recorder(
+        download_raise=RuntimeError("下载失败（模拟网络中断）"),
+    )
+    monkeypatch.setattr(
+        dl_module, "yt_dlp", SimpleNamespace(YoutubeDL=_make_fake_ytdl(recorder))
+    )
+
+    downloader = _make_downloader(tmp_path, summary_worker=None)
+    downloader.process_task(
+        {
+            "task_id": task_id,
+            "video_url": BILIBILI_URL,
+            "quality": "audio_only",
+            "summary_mode": "none",
+            "re_download_only": True,
+            "restore_status": "COMPLETED",
+            "multipart_part": {
+                "index": 0,
+                "title": "P1",
+                "restore_status": "COMPLETED",
+            },
+            "bilibili_parts": {"mode": "merge", "indices": [0]},
+        }
+    )
+    await downloader._await_pending_updates(timeout=3.0)
+
+    # 父任务恢复原状态并带错误信息，不卡 DOWNLOADING
+    task = db.get_task(task_id)
+    assert task["status"] == TaskStatus.COMPLETED
+    assert "下载失败" in task["error_message"]
+    # 分P置 FAILED
+    parts = get_task_parts(task_id)
+    assert len(parts) == 1
+    assert parts[0]["status"] == "FAILED"
+    assert "下载失败" in parts[0]["error_message"]
 
 
 @pytest.mark.asyncio

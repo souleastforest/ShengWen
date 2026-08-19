@@ -769,6 +769,11 @@ class VideoDownloaderWorker(Worker):
         静默 COMPLETED 只总结第一讲。本检测在任务无 bilibili_parts 配置时
         dry-run 确认分P数：多于 1 个分P直接拒绝并给指引，不静默处理第一个分P。
 
+        注意：预检测仅拦截"yt-dlp 解析为完整播放列表"的情形（entries>1）；
+        URL 自带 p=N（含 b23.tv 短链 p=1）时 yt-dlp 只解析出单条，本检测
+        天然放行——该场景由创建探针 422（tasks.py 多P检测）+ 前端确认弹窗
+        兜底，属设计决策（P1-A 修订）。
+
         跳过条件：非 B 站 URL / 已带 bilibili_parts（用户已在分P选择器中选择）
         / 多P子任务（multipart_part、bilibili_batch_child）/ re_download_only
         维护流程（仅恢复音频，不改写任务语义）。
@@ -817,12 +822,14 @@ class VideoDownloaderWorker(Worker):
 
         entries = info_dict.get("entries") if isinstance(info_dict, dict) else None
         if isinstance(entries, list) and len(entries) > 1:
+            # 注：不在此处提示 b23.tv 短链 p=N——本分支仅当 entries>1（解析为
+            # 完整播放列表）时可达，而 p=N 链接只会解析出单条、永远不会走到这里
+            # （P1-A 修订）；p=N 提示已前置到前端探针失败/降级弹窗。
             raise RuntimeError(
                 f"检测到 {len(entries)} 个分P，但任务未指定分P处理方式。"
                 "请删除该任务后，使用完整 BV 链接（如 "
                 "https://www.bilibili.com/video/BVxxxxxxxxxxx）重新提交，并在分P"
-                "选择器中选择拆分或合并。注意：b23.tv 分享短链可能自带 p=N 参数、"
-                "只指向单个分P，请勿直接使用短链提交。"
+                "选择器中选择拆分或合并。"
             )
 
     async def _resolve_and_save_bilibili_author(
@@ -1164,8 +1171,10 @@ class VideoDownloaderWorker(Worker):
                     )
 
         try:
-            # P0-1：下载前多P预检测——无分P配置的 B 站 URL 先 dry-run 确认分P数，
-            # 防止 b23.tv 短链 p=1 静默只下第一P（2026-08-19 缺陷根因）。
+            # P0-1：下载前多P预检测——无分P配置的 B 站 URL 先 dry-run 确认分P数。
+            # 仅拦截"yt-dlp 解析为完整播放列表"的情形（entries>1）；URL 自带
+            # p=N（含 b23.tv 短链 p=1）时 yt-dlp 只解析出单条、本预检测放行——
+            # 该场景由创建探针 422（tasks.py 多P检测）+ 前端确认弹窗兜底。
             # 检测到多P抛 RuntimeError → 下方 except 置 FAILED 并给指引。
             self._precheck_bilibili_multipart(str(video_url), payload)
 
@@ -1367,6 +1376,35 @@ class VideoDownloaderWorker(Worker):
                     int(payload["multipart_part"]["index"]),
                     {"status": "FAILED", "error_message": str(e)},
                 )
+                # P1-B：re-download 分P回放（按分P逐个派发、无父合并收敛）中
+                # 分P下载失败时，父任务不得永久卡 DOWNLOADING（路由派发前已置
+                # DOWNLOADING，且无状态看门狗）——一并恢复原状态并带错误信息。
+                if payload.get("re_download_only") and task_id:
+                    from ..db import TaskStatus
+                    from ..task_updater import update_and_notify
+
+                    clean_error = re.sub(
+                        r"\x1B(?:[@-Z\-_]|\[[0-?]*[ -/]*[@-~])", "", str(e)
+                    )
+                    updates = {
+                        "audio_downloaded": False,
+                        "audio_missing_reason": None,
+                        "error_message": clean_error,
+                    }
+                    restore_status = payload.get("restore_status")
+                    try:
+                        updates["status"] = (
+                            TaskStatus(str(restore_status).upper())
+                            if restore_status
+                            else TaskStatus.FAILED
+                        )
+                    except ValueError:
+                        logger.warning(
+                            f"[{self.name}] 无效的恢复状态 '{restore_status}'，"
+                            f"置 FAILED 避免卡 DOWNLOADING"
+                        )
+                        updates["status"] = TaskStatus.FAILED
+                    self._submit_coro(update_and_notify(task_id, updates))
                 return
             if task_id:
                 from ..db import TaskStatus
