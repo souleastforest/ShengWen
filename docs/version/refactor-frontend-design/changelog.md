@@ -5,6 +5,25 @@
 
 ## Change Log
 
+- 2026-08-19: **bugfix: 多P视频未识别、静默只取第一个分P（b23.tv 短链 p=1 根因链）**（fix/multipart-probe-downgrade → PR #17）。
+  - **根因链**：b23.tv 分享链接自带 `p=1`（安卓端在 P1 观看时分享）→ yt-dlp 判单视频只下第一P → 下载后校验
+    `video_paths==1`（video_downloader_worker.py:1236）通过 → 静默 COMPLETED 只总结第一讲。叠加 08-19 05:10-05:32
+    api.bilibili.com DNS 持续故障（只回 IPv6）：前端 video-info 降级 ×2 后 `App.vue:551-554` **静默 submitTask()**；
+    后端探针降级 ×2 盲建单P任务（降级注释声称"DNS 恢复后由下载器重试"但下载器不重试探针）。另：字幕直取路径
+    硬编码 `part_index=0` 是第二个静默通道；无 parts 的完整 BV 链接任务 yt-dlp 2026.7.4 会下载全部 11 分P
+    （~800MB）后才 FAILED。
+  - **修复**：① 下载器下载前 dry-run 多P预检测 `_precheck_bilibili_multipart`（worker:762，调用 :526/:1170）——
+    无 parts 的 B 站任务 entries>1 → 提前 FAILED 带指引文案（零下载浪费）；dry-run 网络异常 warning 放行由后置校验
+    兜底；② 字幕直取路径同预检测，多P 直接拒绝；③ 前端探针失败/降级不再静默提交——toast + window.confirm
+    二次确认（App.vue:478-592）；④ 三态字段 `BilibiliVideoInfo.status`（ok/degraded，向后兼容，schemas.py:226）；
+    ⑤ re-transcribe/re-download 分P回放（merge 父任务恢复 bilibili_parts+multipart_batch；separate 子任务无
+    task_parts 记录 → 409 显式拒绝）；⑥ re-download 分P失败父任务收敛（不卡 DOWNLOADING）。
+  - **对抗评审**：零 P0；3 个 P1 修订（re-download 父任务状态收敛 / 预检测作用域文案准确化+p=1 放行测试 /
+    separate 子任务保守版 409 拒绝）；P2×6 进 backlog。
+  - **验证**：TDD 红→绿（后端 14 红→28 绿 + 修订 4 用例；前端 4 红→7 绿）；全量 pytest 360 / vitest 404；
+    vue-tsc -b 0；dist 重建。e2e（21001）：多P 完整链接 → 预检测下载前拦截 FAILED 指引文案 ✅；带 ?p=1 →
+    放行单P 正常下载转录 ✅。测试任务已清理。
+  - **流程档位**：T2（workflow 3 侦查代理 + 实施代理 + 对抗评审 + 主流程 e2e）。
 - 2026-08-19: **bugfix: B站下载 412（yt-dlp 版本滞后 + 裸调）修复合入 refactor，测试环境验证生效**（fix/ytdlp-412-merge → PR #16）。
   - **根因**：测试环境 21001 钉死 `yt-dlp==2025.12.8`（pyproject.toml），被 B 站 `x/player/wbi/playurl` 412 风控拦截；
     且 author_resolver / info_worker 两处 yt-dlp 调用点**裸调**（无浏览器级 headers），对 `BV1eh411h7xH` 裸调逐字复现
