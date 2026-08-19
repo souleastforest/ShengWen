@@ -4,6 +4,10 @@ from typing import Any, Dict
 
 import yt_dlp
 
+from src.main.python.sheng_wen.downloader.bilibili_headers import (
+    build_bilibili_http_headers,
+)
+
 
 class BilibiliAuthorResolveError(RuntimeError):
     """Bilibili 作者信息解析失败。"""
@@ -34,12 +38,15 @@ def _normalize_author_url(raw_author_url: str, author_id: str) -> str:
     return ""
 
 
-def _extract_bilibili_author(video_url: str) -> BilibiliAuthorInfo:
+def _extract_bilibili_author(
+    video_url: str, sessdata: str | None = None
+) -> BilibiliAuthorInfo:
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "extract_flat": False,
+        "http_headers": build_bilibili_http_headers(sessdata),
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -64,11 +71,15 @@ def _extract_bilibili_author(video_url: str) -> BilibiliAuthorInfo:
     )
 
 
-async def resolve_bilibili_author(video_url: str, timeout_sec: float = 20.0) -> Dict[str, str]:
+async def resolve_bilibili_author(
+    video_url: str,
+    timeout_sec: float = 20.0,
+    sessdata: str | None = None,
+) -> Dict[str, str]:
     """异步解析 B 站视频作者信息。"""
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(_extract_bilibili_author, video_url),
+            asyncio.to_thread(_extract_bilibili_author, video_url, sessdata),
             timeout=timeout_sec,
         )
     except asyncio.TimeoutError as exc:

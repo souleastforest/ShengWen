@@ -17,6 +17,7 @@ from .bilibili_author_resolver import (
     resolve_bilibili_author,
     BilibiliAuthorResolveError,
 )
+from .bilibili_headers import build_bilibili_http_headers, sanitize_cookie_value
 
 
 class VideoDownloaderWorker(Worker):
@@ -60,7 +61,7 @@ class VideoDownloaderWorker(Worker):
 
     @staticmethod
     def _sanitize_cookie_value(value: str | None) -> str:
-        return (value or "").strip().replace("\r", "").replace("\n", "")
+        return sanitize_cookie_value(value)
 
     @staticmethod
     def _resolve_final_url(video_url: str) -> str:
@@ -743,12 +744,17 @@ class VideoDownloaderWorker(Worker):
             logger.error(f"[{self.name}] 处理多P视频合并失败: {e}", exc_info=True)
             return False
 
-    async def _resolve_and_save_bilibili_author(self, task_id: str, video_url: str):
+    async def _resolve_and_save_bilibili_author(
+        self, task_id: str, video_url: str, payload: Dict[str, Any] | None = None
+    ):
         if not task_id or not self._is_bilibili_url(video_url):
             return
 
         try:
-            author_info = await resolve_bilibili_author(video_url)
+            sessdata = ""
+            if payload:
+                sessdata, _ = self._resolve_bilibili_sessdata(payload)
+            author_info = await resolve_bilibili_author(video_url, sessdata=sessdata)
             from ..task_updater import update_and_notify
 
             await update_and_notify(
@@ -1109,18 +1115,8 @@ class VideoDownloaderWorker(Worker):
 
             # B 站需要浏览器级别的请求头，否则触发 412 反爬
             if self._is_bilibili_url(str(video_url)):
-                bilibili_headers = {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    "Referer": "https://www.bilibili.com/",
-                    "Origin": "https://www.bilibili.com",
-                }
                 sessdata, cookie_source = self._resolve_bilibili_sessdata(payload)
                 if sessdata:
-                    bilibili_headers["Cookie"] = f"SESSDATA={sessdata}"
                     logger.info(
                         f"[{self.name}] B 站下载使用 Cookie (source={cookie_source})"
                     )
@@ -1128,7 +1124,7 @@ class VideoDownloaderWorker(Worker):
                     logger.warning(
                         f"[{self.name}] B 站下载无可用 Cookie，仅使用浏览器请求头"
                     )
-                ydl_opts["http_headers"] = bilibili_headers
+                ydl_opts["http_headers"] = build_bilibili_http_headers(sessdata)
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info_dict = ydl.extract_info(video_url, download=True)
@@ -1175,7 +1171,9 @@ class VideoDownloaderWorker(Worker):
 
             if task_id and self._is_bilibili_url(str(video_url)):
                 self._submit_coro(
-                    self._resolve_and_save_bilibili_author(task_id, str(video_url))
+                    self._resolve_and_save_bilibili_author(
+                        task_id, str(video_url), payload
+                    )
                 )
 
             if task_id:
