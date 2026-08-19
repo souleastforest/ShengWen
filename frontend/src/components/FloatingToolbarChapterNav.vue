@@ -15,7 +15,10 @@ const emit = defineEmits<{
 const hasHeadings = computed(() => props.headings.length > 0)
 const isWideScreen = ref(false)
 const isNarrowPanelOpen = ref(false)
-const isWidePanelCollapsed = ref(false)
+// 宽屏默认收起（遮挡修复，2026-08-19）：章节面板默认展开会以 320×541 覆盖
+// 内容区顶部——P7 引入分P面板后，分P面板前几行的右侧被白色面板遮挡不可点击。
+// 与窄屏一致：默认收起，点击"章节"按钮展开。
+const isWidePanelCollapsed = ref(true)
 const WIDE_SCREEN_QUERY = '(min-width: 1024px)'
 
 let mediaQueryList: MediaQueryList | null = null
@@ -27,7 +30,7 @@ const updateScreenMode = () => {
   if (nextWide !== isWideScreen.value) {
     isWideScreen.value = nextWide
     if (nextWide) {
-      isWidePanelCollapsed.value = false
+      // 切到宽屏：保持收起（默认收起，见上方遮挡修复说明）
       isNarrowPanelOpen.value = false
     } else {
       isNarrowPanelOpen.value = false
@@ -62,9 +65,7 @@ onMounted(() => {
   if (typeof window === 'undefined') return
   mediaQueryList = window.matchMedia(WIDE_SCREEN_QUERY)
   isWideScreen.value = mediaQueryList.matches
-  if (isWideScreen.value) {
-    isWidePanelCollapsed.value = false
-  }
+  // 宽屏不展开（初始值已为收起，遮挡修复见 isWidePanelCollapsed 定义处）
 
   const onChange = () => updateScreenMode()
   if (typeof mediaQueryList.addEventListener === 'function') {
