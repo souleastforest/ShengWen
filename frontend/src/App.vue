@@ -913,7 +913,7 @@ const {
           :loading-part-index="loadingPartIndex"
           :task-id="selectedTask.id"
           :refresh-key="taskPartsRefreshKey"
-          @expand="(partIndex) => selectedTask && fetchTaskPart(selectedTask.id, partIndex)"
+          @expand="(partIndex) => selectedTask && fetchTaskPart(selectedTask.id, partIndex).catch((err) => console.error('Failed to fetch task part:', err))"
           @retry="handleRetryFailedParts"
         />
         <TaskContentArea
