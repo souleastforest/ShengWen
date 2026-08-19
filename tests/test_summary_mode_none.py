@@ -226,7 +226,9 @@ async def test_transcriber_none_mode_multipart_part_marked_completed(
     assert part["progress"] == 100
     assert "hello" in part["transcript"]
     next_worker.add_task.assert_not_called()
-    assert db.get_task(task_id)["status"] == TaskStatus.COMPLETED
+    # 主行终态由父任务 merge finalize 统一收敛（fix: multipart-main-summary-leak）；
+    # 分P子任务不得写主行 status/transcript，逐P阶段主行保持原状
+    assert db.get_task(task_id)["status"] == TaskStatus.TRANSCRIBING
 
 
 @pytest.mark.asyncio

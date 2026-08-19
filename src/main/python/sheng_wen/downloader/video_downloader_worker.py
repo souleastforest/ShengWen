@@ -98,6 +98,58 @@ class VideoDownloaderWorker(Worker):
 
         raise ValueError("无法从链接中提取 BV 号")
 
+    @classmethod
+    def _normalize_bilibili_part_url(cls, video_url: str, part_index: int) -> str:
+        """多P子任务下载 URL 规范化（b23.tv 短链 p=1 缺陷修复）。
+
+        背景（2026-08-19 缺陷）：b23.tv 分享短链重定向自带 &p=1，yt-dlp
+        只解析出单条 → 每个分P子任务（video_url=同一短链）下载的都是第一个
+        分P（实测 P0/P1 转录字节数一致）。分P子任务下载前统一将 URL 重写为
+        「完整 BV + ?p=N」（N=index+1）：短链先解析拿完整 BV；完整链接直接
+        提取 BV 并覆盖/追加 p 参数（自带 p=1 的完整链接同样受影响）。
+
+        非 B 站 URL / BV 提取失败 → 原样返回（不改变原有行为）。
+        """
+        url = str(video_url or "")
+        if not url or not cls._is_bilibili_url(url):
+            return url
+        try:
+            bvid = cls._extract_bvid_from_url(url)
+        except ValueError:
+            # b23.tv 短链解析失败（重定向网络异常 / b23 412 反爬）时，子P下载
+            # 会回退到短链自带 p=1 → 所有分P下载第一个分P（原缺陷静默复发）。
+            # 禁止静默失败：抛错由调用方将该分P置 FAILED 并给指引。
+            if "b23.tv" in url:
+                raise RuntimeError(
+                    "解析 b23.tv 短链失败，无法确定目标分P。请使用完整 BV 链接"
+                    "（https://www.bilibili.com/video/BVxxxxxxxxxxx）重新提交。"
+                ) from None
+            logger.warning(
+                f"[VideoDownloader] 无法从链接中提取 BV 号，保持原 URL: {url}"
+            )
+            return url
+        return f"https://www.bilibili.com/video/{bvid}?p={int(part_index) + 1}"
+
+    def _any_part_media_on_disk(self, task_id: str, part_indexes: list[int]) -> bool:
+        """多P任务任一子P媒体文件是否在磁盘（{task_id}_p{N}.{媒体扩展名}）。
+
+        用于 finalize 显式写 audio_downloaded（P2-1）：分P子任务不再写主行
+        audio 字段，合并终态必须显式收敛，否则前端徽章停留"未知"（此前依赖
+        存储回收器 backfill 自愈）。与 storage 回收器的 multipart 媒体判定
+        （resolve_task_media_files）语义一致。
+        """
+        from ..utils.media import SUPPORTED_MEDIA_EXTENSIONS
+
+        prefixes = tuple(f"{task_id}_p{index + 1}." for index in part_indexes)
+        try:
+            for name in os.listdir(self.output_dir):
+                if name.startswith(prefixes):
+                    if os.path.splitext(name)[1].lower() in SUPPORTED_MEDIA_EXTENSIONS:
+                        return True
+        except OSError:
+            logger.warning(f"[{self.name}] 扫描分P媒体文件失败: {self.output_dir}")
+        return False
+
     @staticmethod
     def _normalize_subtitle_url(url: str) -> str:
         if not url:
@@ -954,7 +1006,11 @@ class VideoDownloaderWorker(Worker):
                     index,
                     {
                         "status": "FAILED",
-                        "error_message": parent.get("error_message") or "该分P处理失败",
+                        # 优先保留分P自身的失败原因（P1-2：子P失败只写 task_parts，
+                        # 父任务 error_message 不再携带子P信息，不得用 generic 文案覆盖）
+                        "error_message": updated.get("error_message")
+                        or parent.get("error_message")
+                        or "该分P处理失败",
                     },
                 )
 
@@ -992,6 +1048,11 @@ class VideoDownloaderWorker(Worker):
         transcript_path = os.path.join(self.output_dir, f"{task_id}_multipart.txt")
         with open(transcript_path, "w", encoding="utf-8") as file:
             file.write("\n\n".join(transcript_blocks))
+        # P2-1：显式收敛 audio 状态——任一子P媒体文件在磁盘即视为已下载，
+        # 否则按字幕直取语义标记（消除前端"未知"徽章窗口）。
+        any_media_downloaded = self._any_part_media_on_disk(task_id, indices)
+        from ..domain.storage.type import AudioMissingReason
+
         db.update_task(
             task_id,
             {
@@ -1002,6 +1063,13 @@ class VideoDownloaderWorker(Worker):
                 "error_message": f"部分分P处理失败：{failed_labels}"
                 if failed
                 else None,
+                # 显式清空主行 summary：分P流式泄漏（已修复）遗留的中途脏快照
+                # 不得在合并后继续展示（纯防御，正常流程下该字段应为 None）
+                "summary": None,
+                "audio_downloaded": any_media_downloaded,
+                "audio_missing_reason": None
+                if any_media_downloaded
+                else AudioMissingReason.SUBTITLE_ONLY.value,
                 # ASR 分片字段仅在转录阶段非空：多P长音频分片曾写父任务，
                 # 合并转总结/终态时清空（与 transcriber 的 SUMMARIZING 更新对称）
                 "asr_chunk_total": None,
@@ -1091,6 +1159,26 @@ class VideoDownloaderWorker(Worker):
                 int(payload["multipart_part"]["index"]),
                 {"status": "DOWNLOADING", "progress": 0, "error_message": None},
             )
+            # b23.tv 短链 p=1 缺陷修复：分P子任务必须下载对应分P而非第一个。
+            # 规范化结果仅用于本次下载（yt-dlp / 预检测），不改写 payload——
+            # 字幕直取分支按分P索引自行处理（bilibili-api），不受影响。
+            try:
+                video_url = self._normalize_bilibili_part_url(
+                    video_url, int(payload["multipart_part"]["index"])
+                )
+            except RuntimeError as e:
+                # 短链解析失败（P1-1）：禁止静默回退短链 p=1 下载第一个分P，
+                # 将该分P置 FAILED 并给指引；父任务终态由 finalize 汇总收敛。
+                logger.error(
+                    f"[{self.name}] 分P子任务 URL 规范化失败: task_id={task_id}, "
+                    f"part={int(payload['multipart_part']['index']) + 1}, error={e}"
+                )
+                update_task_part(
+                    str(task_id),
+                    int(payload["multipart_part"]["index"]),
+                    {"status": "FAILED", "progress": 0, "error_message": str(e)},
+                )
+                return
 
         if not video_url:
             error_msg = "任务负载中缺少 'video_url'"
@@ -1136,7 +1224,11 @@ class VideoDownloaderWorker(Worker):
 
         logger.info(f"[{self.name}] 开始下载视频: {video_url} (质量: {quality})")
 
-        if task_id:
+        if (
+            task_id
+            and not payload.get("multipart_part")
+            and not payload.get("bilibili_batch_child")
+        ):
             from ..db import TaskStatus
             from ..task_updater import update_and_notify
 
@@ -1315,6 +1407,11 @@ class VideoDownloaderWorker(Worker):
                     f"status: DOWNLOADING→TRANSCRIBING, video={video_path}"
                 )
 
+            if (
+                task_id
+                and not payload.get("multipart_part")
+                and not payload.get("bilibili_batch_child")
+            ):
                 from ..db import TaskStatus
                 from ..task_updater import update_and_notify
 

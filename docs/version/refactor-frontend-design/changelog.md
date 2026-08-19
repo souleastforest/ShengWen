@@ -5,6 +5,47 @@
 
 ## Change Log
 
+- 2026-08-19: **fix(backend): 多P merge 分P子任务流式总结泄漏主任务行 + b23.tv 短链 p=1 分P选择**（fix/multipart-main-summary-leak → PR）。
+  - **根因**（侦查 CONFIRMED）：多P merge 运行中，分P子任务的流式总结泄漏写入主任务行——① transcriber_worker
+    每个分P转录完成 `if task_id:` 无条件写主行 status=SUMMARIZING/transcript=该子P转录/清空 asr_chunk（:745，
+    无 multipart_part 门槛）；② llm_worker 三个流式回调（update_chunk_progress :636 / flush_chunk_stream :673 /
+    flush_partial_summary :529）仅以"主行 status==SUMMARIZING"为唯一守卫写主行 summary/progress/summary_chunk_*
+    （无 multipart_part 判断）→ 主行 summary 停留在"上一分P的流式中间快照"；③ 下载器每子P下载开始/结束轮番写
+    主行 DOWNLOADING/TRANSCRIBING（:1143/:1321）；④ b23.tv 短链重定向自带 &p=1 → 每个分P子任务（video_url=
+    同一短链）下载的都是第一个分P（实测 P0/P1 转录字节数一致）。
+  - **修复**：① transcriber_worker:745/:564 主行写入加 `not multipart_part` 门槛（子P转录完成只走 task_parts，
+    next_payload 派发不受影响）；:648-657 子P ASR 分片计数不上报主行（加权 progress 写主行保留）；② llm_worker
+    multipart_part 透传三个流式回调并前置 `if multipart_part: return`（分P流式中间快照不写主行；分P最终总结仍由
+    :337-345 multipart_part 分支写入 task_parts；单P任务行为不变，agent 模式非 multipart 写主行路径不受影响）；
+    ③ 下载器子P（multipart_part/bilibili_batch_child）下载开始/结束跳过主行 status 写入；④ finalize 合并转录写
+    主行时显式 `summary: None`（防御中途脏数据残留）；⑤ b23 p=1：新增 `_normalize_bilibili_part_url`（复用
+    `_extract_bvid_from_url` 短链解析），分P子任务下载前将 URL 重写为「完整 BV + ?p=N」（覆盖 b23 短链 / 自带
+    p=1 完整链接 / 无 p 参数三种输入；非 B 站 URL 原样返回），覆盖 merge 批量子任务与 re-download 分P回放两条路径；
+    字幕直取分支按分P索引自行处理（bilibili-api），不受影响。
+  - **测试**（TDD 先红后绿）：新增 tests/test_multipart_main_row_leak.py（11 用例）——红 9（红时错误信息与线上
+    一致：agent/standard 流式泄漏 `summary='分块总结正文'`、分P转录完成将主行置 COMPLETED/SUMMARIZING、子P下载
+    将主行置 TRANSCRIBING、短链未规范化 `['https://b23.tv/CD6M1qC']`、finalize 残留脏 summary）→ 绿 11；
+    test_summary_mode_none.py 一处断言同步更新（分P子任务不得写主行终态，主行终态由父任务 merge finalize 统一
+    收敛）；全量 `uv run pytest tests/ -q` 371 passed；ruff check/format 通过；basedpyright 无新增错误。
+  - **评审修订**（PR #20 对抗评审 P1-1/P1-2/P2-1/P2-2/P2-3，追加提交）：
+    - **P1-1**：b23 短链解析失败不再静默回退短链 p=1——`_normalize_bilibili_part_url` 对 b23.tv 解析失败抛
+      RuntimeError（含 warning 日志），调用点将该分P置 FAILED（错误信息含"解析 b23.tv 短链失败…请使用完整 BV
+      链接重新提交"指引）并终止该子P；非 b23 任务与完整 BV 链接路径不受影响。
+    - **P1-2**：分P子任务失败路径（transcriber 音频提取失败/音频缺失/空转录防御/通用异常、llm_worker `_mark_failed`
+      及全部调用点）不再写主行 FAILED，只写 task_parts（分P具体失败原因保留）；父任务终态由
+      `_process_bilibili_multipart` finalize 按 get_task_parts 汇总收敛（全失败→FAILED、部分→PARTIAL）；
+      消除最后一个子P异步 FAILED 落在 finalize 之后的竞态。
+    - **P2-1**：finalize 显式写 `audio_downloaded`（任一子P媒体文件在磁盘→True，否则 False +
+      audio_missing_reason=subtitle_only），消除前端音频状态"未知"徽章窗口（不再依赖存储回收器 backfill 自愈）。
+    - **P2-2**（预期行为）：修复后 merge 运行期主行 status 冻结在 DOWNLOADING（不再被子P轮番改写为
+      DOWNLOADING/TRANSCRIBING/SUMMARIZING），progress 按分P加权上涨——属设计内行为，前端保持"正在处理中"展示，
+      全部完成后才聚合总览。
+    - **P2-3**：新增回归测试 8 用例（overview 聚合必须仍写主行、子P失败只写 task_parts 且父任务收敛、
+      短链解析失败→分P FAILED 指引、agent→standard 回退 multipart_part 透传不丢、finalize audio_downloaded
+      判定），红 8（错误信息与评审一致：`audio_downloaded None`、`分P具体失败原因被覆盖: '该分P处理失败'`、
+      `下载回退短链 ['https://b23.tv/CD6M1qC']`、主行 FAILED 泄漏等）→ 绿 22；全量 `uv run pytest tests/ -q`
+      通过；ruff check/format、basedpyright 无新增错误。
+  - **流程档位**：T2（实施代理 + TDD + 对抗评审修订，前后端并行；前端主内容区设计维持不变）。
 - 2026-08-19: **fix(frontend): 分P详情缓存永不失效 + 展开区 markdown 渲染（处理中展开过的分P完成后永久"暂无可展示内容"）**（fix/part-detail-cache-markdown → PR）。
   - **根因**：`fetchTaskPart` 缓存命中条件 `cached.transcript !== undefined || cached.summary !== undefined`
     （features/task/state.ts:315）——处理中分P的详情响应（后端返回 task_parts 全行，transcript/summary 为
