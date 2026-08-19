@@ -125,7 +125,7 @@ onBeforeUnmount(stopPanelResize)
   <section
     v-if="parts.length"
     ref="panelRef"
-    class="mx-4 mb-4 flex shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+    class="mt-28 mx-4 mb-4 flex shrink-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
     :class="{ 'select-none': isResizing }"
     :style="panelHeight ? { height: panelHeight + 'px' } : undefined"
   >

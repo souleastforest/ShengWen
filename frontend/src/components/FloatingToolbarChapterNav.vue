@@ -131,7 +131,7 @@ const getHeadingStyle = (level: number) => {
     <!-- 下拉面板 -->
     <div
       v-if="hasHeadings"
-      class="absolute right-0 top-full mt-3.5 w-80 max-w-[calc(100vw-2rem)] overflow-y-auto bg-white border border-slate-200/60 rounded-2xl transition-all duration-200 z-10 py-3"
+      class="absolute right-0 top-full mt-3.5 md:left-full md:top-0 md:ml-2 w-80 max-w-[calc(100vw-2rem)] overflow-y-auto bg-white border border-slate-200/60 rounded-2xl transition-all duration-200 z-10 py-3"
       :class="isPanelVisible ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible -translate-y-1 pointer-events-none'"
       :style="{ maxHeight: 'calc(100vh - 120px)', boxShadow: isPanelVisible ? '0 4px 12px rgba(0, 0, 0, 0.08)' : 'none' }"
     >
