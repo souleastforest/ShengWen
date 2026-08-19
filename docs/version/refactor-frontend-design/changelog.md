@@ -5,6 +5,18 @@
 
 ## Change Log
 
+- 2026-08-19: **bugfix: B站下载 412（yt-dlp 版本滞后 + 裸调）修复合入 refactor，测试环境验证生效**（fix/ytdlp-412-merge → PR #16）。
+  - **根因**：测试环境 21001 钉死 `yt-dlp==2025.12.8`（pyproject.toml），被 B 站 `x/player/wbi/playurl` 412 风控拦截；
+    且 author_resolver / info_worker 两处 yt-dlp 调用点**裸调**（无浏览器级 headers），对 `BV1eh411h7xH` 裸调逐字复现
+    `HTTP Error 412: Precondition Failed`（加 headers 后解析成功）。
+  - **修复（合并自已实测的 fix/ytdlp-bump-2026-7-4-bilibili-412，0a94f9a，merge 零冲突）**：
+    yt-dlp → `==2026.7.4`；新增 `downloader/bilibili_headers.py` 共享模块（UA/Referer/Origin + sanitize）；
+    author_resolver / info_worker / video_downloader_worker 三调用点统一接入；deps.py 复用共享 sanitize +
+    sessdata 注入；新增 tests/test_bilibili_author_resolver.py（13 用例）。
+  - **验证**：全量 pytest 341 passed；venv 实测 yt-dlp 2026.07.04（torch/bitsandbytes 未降级）；重启 21001 后
+    BV1eh411h7xH 作者解析成功（`yunvoo`，9.9s，不再 412）；API 建任务下载器正常解析 11 分P 结构（多分P 保护
+    确定性失败路径符合预期，非网络类）。测试任务已清理。
+  - **流程档位**：T2（workflow 双侦查代理 + 实施代理 + 主流程验证）。生产 21010 同步待用户决策。
 - 2026-08-18: **bugfix: dispatch 失败任务不再静默卡 PENDING，转录器懒导入根因保留**（fix/vibe-voice-registration → PR）。
   - **根因链**（任务卡 PENDING 链路）：`get_transcriber("vibe_voice_asr")` 懒导入 `vibe_voice_asr_transcriber` 失败
     （环境缺 torch，模块顶层 `import torch` 抛 ModuleNotFoundError）→ `Transcriber.get_class`（transcriber.py）
