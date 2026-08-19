@@ -12,8 +12,10 @@
  * 3. [回归] 有内容的详情正常命中缓存：不重复请求（返回同一缓存对象）；
  * 4. [回归] 跨任务缓存失效：task_id 不匹配（含 selectTask 清空 + 防御路径）重新请求；
  * 5. [回归] retryFailedParts 清空 taskPartDetails 后重新请求；
- * 6. [防御] 分P列表状态变化（SUMMARIZING → COMPLETED）时缓存失效：
- *    处理中展开仅有转录的分P，完成后再次展开重新请求拿到新总结。
+ * 6. [P2-1] 处理中状态缓存的详情（即使有内容）不命中：列表未刷新窗口内
+ *    再次展开重新请求拿到新内容；列表刷新为 COMPLETED 后缓存命中；
+ * 7. [防御] 非处理中状态变化（COMPLETED → FAILED）时缓存失效重新请求；
+ * 8. [P2-5] 网络失败后下次展开重新请求无死锁（loadingPartIndex 复位）。
  *
  * 每个用例失败 = 实现缺陷。
  */
@@ -300,7 +302,7 @@ describe('分P详情缓存（fetchTaskPart）：P0 修复 + 回归 + 防御', ()
     wrapper.unmount()
   })
 
-  it('[防御] 分P列表状态变化时缓存失效：处理中仅有转录的分P完成后重新请求拿到新总结', async () => {
+  it('[P2-1] 处理中状态缓存的详情（即使有内容）不命中：列表未刷新窗口内重新请求；COMPLETED 后缓存命中', async () => {
     const { task, wrapper } = mountTaskState()
     const task1 = { ...makeTask('task-1'), has_parts: true }
 
@@ -334,18 +336,107 @@ describe('分P详情缓存（fetchTaskPart）：P0 修复 + 回归 + 防御', ()
     expect(first?.summary).toBeNull()
     expect(detailCalls).toBe(1)
 
-    // 列表状态未变：缓存命中（有转录内容），不重复请求
+    // 分P刚完成、前端 parts 列表尚未刷新（仍 SUMMARIZING）的窗口内再次展开：
+    // 处理中状态缓存视为必然过期 → 不命中，重新请求拿到新总结
     const second = await task.fetchTaskPart('task-1', 0)
-    expect(second?.summary).toBeNull()
-    expect(detailCalls).toBe(1)
+    expect(second?.summary).toBe('P2 总结')
+    expect(detailCalls).toBe(2)
 
-    // 分P完成：列表刷新（对应 WS 广播后的 scheduleTaskPartsRefresh 路径）
+    // 列表刷新到 COMPLETED（对应 WS 广播后的 scheduleTaskPartsRefresh 路径）：
+    // 内容完整 + 状态一致 → 缓存命中，不重复请求
     listStatus = 'COMPLETED'
     await task.fetchTaskParts('task-1')
-
-    // 再展开：状态已变化 → 缓存失效 → 重新请求并返回新总结
     const third = await task.fetchTaskPart('task-1', 0)
     expect(third?.summary).toBe('P2 总结')
+    expect(detailCalls).toBe(2)
+
+    wrapper.unmount()
+  })
+
+  it('[防御] 非处理中状态变化（COMPLETED → FAILED）时缓存失效重新请求', async () => {
+    const { task, wrapper } = mountTaskState()
+    const task1 = { ...makeTask('task-1'), has_parts: true }
+
+    let listStatus = 'COMPLETED'
+    let detailCalls = 0
+    mockedAxios.get.mockImplementation((url: string) => {
+      const u = String(url)
+      if (u.includes('/tasks/task-1/parts/0')) {
+        detailCalls += 1
+        return Promise.resolve({
+          data: detailCalls === 1
+            ? makePart({ status: 'COMPLETED', transcript: 'P2 转录', summary: 'P2 总结' })
+            : makePart({ status: 'FAILED', transcript: 'P2 转录', summary: 'P2 总结', error_message: '后处理校验失败' }),
+        })
+      }
+      if (u.includes('/tasks/task-1?include_content=false')) {
+        return Promise.resolve({ data: task1 })
+      }
+      if (u.includes('/tasks/task-1/parts')) {
+        return Promise.resolve({ data: [makePart({ status: listStatus })] })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(task1)
+    await flushPromises()
+
+    // COMPLETED 展开：完整内容入缓存
+    const first = await task.fetchTaskPart('task-1', 0)
+    expect(first?.summary).toBe('P2 总结')
+    expect(detailCalls).toBe(1)
+
+    // 列表状态未变：缓存命中，不重复请求
+    const second = await task.fetchTaskPart('task-1', 0)
+    expect(second?.summary).toBe('P2 总结')
+    expect(detailCalls).toBe(1)
+
+    // 列表显示状态变化（COMPLETED → FAILED，非处理中）：缓存失效重新请求
+    listStatus = 'FAILED'
+    await task.fetchTaskParts('task-1')
+    const third = await task.fetchTaskPart('task-1', 0)
+    expect(third?.status).toBe('FAILED')
+    expect(third?.error_message).toBe('后处理校验失败')
+    expect(detailCalls).toBe(2)
+
+    wrapper.unmount()
+  })
+
+  it('[P2-5] 网络失败后下次展开重新请求无死锁（loadingPartIndex 复位）', async () => {
+    const { task, wrapper } = mountTaskState()
+    const task1 = { ...makeTask('task-1'), has_parts: true }
+
+    let detailCalls = 0
+    mockedAxios.get.mockImplementation((url: string) => {
+      const u = String(url)
+      if (u.includes('/tasks/task-1/parts/0')) {
+        detailCalls += 1
+        if (detailCalls === 1) {
+          return Promise.reject(new Error('network error'))
+        }
+        return Promise.resolve({
+          data: makePart({ status: 'COMPLETED', transcript: 'P2 转录', summary: 'P2 总结' }),
+        })
+      }
+      if (u.includes('/tasks/task-1?include_content=false')) {
+        return Promise.resolve({ data: task1 })
+      }
+      if (u.includes('/tasks/task-1/parts')) {
+        return Promise.resolve({ data: [makePart({ status: 'COMPLETED' })] })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(task1)
+    await flushPromises()
+
+    // 首次展开网络失败：拒绝上抛、缓存不写入、loadingPartIndex 复位（finally）
+    await expect(task.fetchTaskPart('task-1', 0)).rejects.toThrow('network error')
+    expect(task.loadingPartIndex.value).toBeNull()
+
+    // 下次展开：重新请求成功（无死锁）
+    const result = await task.fetchTaskPart('task-1', 0)
+    expect(result?.summary).toBe('P2 总结')
     expect(detailCalls).toBe(2)
 
     wrapper.unmount()
