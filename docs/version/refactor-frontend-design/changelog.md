@@ -13,15 +13,21 @@
     时清空；分P列表刷新（scheduleTaskPartsRefresh）只替换 taskParts 不失效详情缓存。同型残留：
     处理中（SUMMARIZING）展开的分P若缓存已有 transcript（总结未生成），完成后同样命中缓存拿不到新总结。
   - **修复**：① state.ts fetchTaskPart 缓存命中改为内容非空语义（复用 hasContent，null/'' 均视为无内容）
-    并保留 task_id 检查；② 同型"缓存不失效"防御：缓存详情 status 与分P列表当前 status 不一致
-    （如 SUMMARIZING → COMPLETED）时失效缓存重新请求；③ TaskPartsPanel 展开区 summary/transcript 由
-    whitespace-pre-wrap 纯文本改为 compileMarkdownText 净化管线编译 + v-html 渲染（XSS 防线：只消费管线
-    产物，禁止绕过出口；样式层级/空态不变，prose-sm 紧凑排版）。
+    并保留 task_id 检查；② [P2-1] 处理中状态（PENDING/DOWNLOADING/UPLOADING/TRANSCRIBING/SUMMARIZING）
+    的缓存详情视为必然过期（即使有内容也不命中），覆盖"分P完成瞬间到前端 parts 列表刷新之间"
+    （WS 断流时最长 60s）的未刷新窗口；③ 同型"缓存不失效"防御：缓存详情 status 与分P列表当前 status
+    不一致（非处理中转换，如 COMPLETED → FAILED）时失效缓存重新请求；④ TaskPartsPanel 展开区 summary
+    由 whitespace-pre-wrap 纯文本改为 compileMarkdownText 净化管线编译 + v-html 渲染（XSS 防线：只消费
+    管线产物，禁止绕过出口；prose-sm 紧凑排版）；⑤ [P1-1 评审修订] transcript 恢复 whitespace-pre-wrap
+    纯文本（marked 无 breaks 配置折叠单换行、行首 #/-/** 误解释，与主内容区 TaskContentArea 一致）；
+    ⑥ [P2-4] App.vue @expand 处理器补 .catch（消除 unhandled rejection）。
   - **验证**：TDD 先红后绿——新增 state.partDetail.test.ts（P0 null/'' 缓存不命中、缓存命中不重发、跨任务
-    失效、retryFailedParts 清空、状态变化失效，6 用例）与 TaskPartsPanel.markdown.test.ts（markdown 渲染、
-    partDetails 覆盖、XSS 净化、空态，5 用例）；红 7（P0×2 + 防御×1 + 渲染×4）→ 绿 11；全量 vitest 415
-    passed（原 404 + 新 11）/ vue-tsc -b 0 错误。
-  - **流程档位**：T2（实施代理 + TDD，前后端并行）。
+    失效、retryFailedParts 清空、[P2-1] 处理中状态缓存不命中 + COMPLETED 命中、[防御] 非处理中状态变化
+    失效、[P2-5] 网络失败后重取无死锁，8 用例）与 TaskPartsPanel.markdown.test.ts（summary markdown 渲染、
+    [P1-1] transcript 纯文本（** 不解释）+ 多行转录行首 # 不误解释、partDetails 覆盖、XSS 净化、空态，
+    6 用例）；首轮红 7 → 绿 11，评审修订轮红 3（P2-1 + transcript 纯文本×2）→ 绿 14；全量 vitest 418
+    passed（原 404 + 新 14）/ vue-tsc -b 0 错误。
+  - **流程档位**：T2（实施代理 + TDD + 对抗评审修订，前后端并行）。
 - 2026-08-19: **fix(frontend): 浮动工具栏遮挡"分P处理进度"标题——几何避让（方案 A）**（fix/floating-toolbar-overlap → PR #18）。
   - **根因**：P7 将 TaskPartsPanel 作为 main 顶部第一个 in-flow 块引入时未给浮动工具栏预留空间——FloatingToolbar
     （FloatingToolbar.vue:34，`absolute top-4 left-4 z-20`）白色不透明胶囊（y16-56）恒定覆盖面板标题（y12-50），
