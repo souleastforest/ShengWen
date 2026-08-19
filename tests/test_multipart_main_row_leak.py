@@ -1085,3 +1085,64 @@ async def test_llm_child_agent_fallback_to_standard_keeps_part_context(
     assert task["summary"] is None, (
         f"回退路径 multipart_part 丢失，主行被写: {task['summary']!r}"
     )
+
+
+# ---- ⑦ multipart 入口主行置 DOWNLOADING（修复后主行不再被子P轮番改写） --------
+
+
+@pytest.mark.asyncio
+async def test_multipart_entry_sets_main_row_downloading(
+    monkeypatch, tmp_path, isolated_task_parts
+):
+    """⑦ 红：merge 入口应将主行从 PENDING 置 DOWNLOADING 且先于 finalize 终态
+    （同步写——异步投递会落在 finalize 之后把任务卡死在 DOWNLOADING）。"""
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.PENDING)
+    init_task_parts(
+        task_id,
+        [
+            {"index": 0, "cid": 1001, "title": "P1", "duration": 60},
+            {"index": 1, "cid": 1002, "title": "P2", "duration": 60},
+        ],
+    )
+
+    downloader = VideoDownloaderWorker("test", summary_worker=None)
+    downloader.output_dir = str(tmp_path)
+    # 子P不真正下载：拦截 process_task（分P保持 PENDING，finalize 将收敛 FAILED）
+    downloader.process_task = lambda payload: None  # type: ignore[method-assign]
+
+    writes: list[tuple[str, str]] = []
+    original_update = db.update_task
+    monkeypatch.setattr(
+        db,
+        "update_task",
+        lambda tid, data: (
+            writes.append(
+                (
+                    str(tid),
+                    (data.get("status") or "").value
+                    if hasattr(data.get("status"), "value")
+                    else data.get("status") or "",
+                )
+            )
+            or original_update(tid, data)
+        ),
+    )
+
+    downloader._process_bilibili_multipart(
+        {
+            "task_id": task_id,
+            "bilibili_parts": {"mode": "merge", "indices": [0, 1]},
+            "summary_mode": "none",
+        }
+    )
+
+    statuses = [status for tid, status in writes if tid == task_id]
+    assert statuses, "主行应有写入记录"
+    assert statuses[0] == TaskStatus.DOWNLOADING.value, (
+        f"入口首次写入应为 DOWNLOADING，实际: {statuses}"
+    )
+    # 终态（全失败 FAILED）必须在 DOWNLOADING 之后写入，不得被 DOWNLOADING 覆盖
+    assert statuses.index(TaskStatus.DOWNLOADING.value) < len(statuses) - 1, (
+        f"DOWNLOADING 不得是最后一次写入（否则卡死），实际序列: {statuses}"
+    )

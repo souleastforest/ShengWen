@@ -963,6 +963,14 @@ class VideoDownloaderWorker(Worker):
         from ..db import TaskStatus, db
         from ..task_parts import get_task_parts
 
+        # 修复后主行状态不再被子P轮番改写（multipart 子任务只写 task_parts）——
+        # 入口统一置 DOWNLOADING，merge 运行期主行冻结在 DOWNLOADING（progress 加权
+        # 上涨），避免主行停留在创建时的 PENDING 被前端误显示为"等待中"。
+        # 同步写（db.update_task 而非 _submit_coro）：finalize 在循环后同步执行，
+        # 异步投递的 DOWNLOADING 可能落在 finalize 终态之后，把任务卡死在
+        # DOWNLOADING（比 PENDING 更糟）。状态广播由前端轮询兜底。
+        db.update_task(task_id, {"status": TaskStatus.DOWNLOADING, "progress": 0})
+
         parts = {part["part_index"]: part for part in get_task_parts(task_id)}
         for index in indices:
             part = parts.get(index)
