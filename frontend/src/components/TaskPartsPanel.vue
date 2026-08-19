@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { TaskPart } from '../types'
 import { formatDuration } from '../utils/formatters'
 import { getPartStatusLabel, getPartStatusClass } from '../shared/utils/taskStatus'
+import { compileMarkdownText } from '../features/transcription/useMarkdownCompile'
 
 const props = defineProps<{
   parts: TaskPart[]
@@ -45,6 +46,22 @@ const isResizing = ref(false)
 const failedParts = computed(() => props.parts.filter((part) => part.status === 'FAILED'))
 
 const getPartDetail = (part: TaskPart) => props.partDetails?.[part.part_index] || part
+
+// 展开区 summary markdown 编译（P0 修复 B）：summary 经 compileMarkdownText
+// 净化管线编译后 v-html 渲染（XSS 防线：v-html 只允许消费该管线产物，禁止
+// 绕过出口直接赋值，契约见 useMarkdownCompile.ts）。只编译当前展开分P的内容，
+// 随 parts/partDetails 变化自动重算。transcript 保持 whitespace-pre-wrap 纯文本
+// （P1-1：marked 无 breaks 配置会折叠单换行，行首 #/-/** 会被误解释，与主内容区
+// 对 transcript 的纯文本处理保持一致）。
+const expandedDetail = computed(() => {
+  const part = props.parts.find((p) => p.part_index === expandedPart.value)
+  if (!part) return null
+  return getPartDetail(part)
+})
+const expandedSummaryHtml = computed(() => {
+  const summary = expandedDetail.value?.summary
+  return summary ? compileMarkdownText(summary) : ''
+})
 
 const togglePart = (partIndex: number) => {
   const expanding = expandedPart.value !== partIndex
@@ -165,7 +182,10 @@ onBeforeUnmount(stopPanelResize)
           <template v-else>
             <div v-if="getPartDetail(part).summary">
               <div class="mb-1 text-xs font-semibold text-slate-500">单P总结</div>
-              <div class="whitespace-pre-wrap text-slate-700">{{ getPartDetail(part).summary }}</div>
+              <div
+                class="prose prose-sm prose-slate prose-headings:font-bold prose-a:text-blue-600 hover:prose-a:underline max-w-none text-slate-700 [&_p]:my-0.5 [&_ul]:my-0.5 [&_ol]:my-0.5"
+                v-html="expandedSummaryHtml"
+              ></div>
             </div>
             <div v-if="getPartDetail(part).transcript">
               <div class="mb-1 text-xs font-semibold text-slate-500">转录文本</div>
