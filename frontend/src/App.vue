@@ -11,6 +11,11 @@ import { useToast } from './composables/useToast'
 import { useMarkdownCompile } from './features/transcription/useMarkdownCompile'
 import { useSummaryImageWorkbench } from './features/transcription/composables/useSummaryImageWorkbench'
 import type { Task, MarkdownHeadingItem, BilibiliVideoInfo, BilibiliPartsConfig, LocalFolderScanResult } from './types'
+import {
+  buildPartChapterItem,
+  isPartHeadingId,
+  PART_HEADING_ID_PREFIX,
+} from './utils/partChapters'
 import Sidebar from './components/Sidebar.vue'
 import FloatingToolbar from './components/FloatingToolbar.vue'
 import TaskInfoModal from './components/TaskInfoModal.vue'
@@ -671,6 +676,15 @@ const handleFocusSearchMatch = (payload: {
 }
 
 const handleJumpHeading = (headingId: string) => {
+  // 分P章节项 → 切页 + 滚动内容区（与分P面板 handlePartJump 同一条路径）；
+  // 普通标题 → 原 headingJumpRequest scrollTo 流（行为不变）
+  if (isPartHeadingId(headingId)) {
+    const partIndex = Number(headingId.slice(PART_HEADING_ID_PREFIX.length))
+    if (Number.isInteger(partIndex) && partIndex >= 0) {
+      handlePartJump(partIndex)
+    }
+    return
+  }
   headingJumpSeq.value += 1
   headingJumpRequest.value = {
     id: headingId,
@@ -774,6 +788,25 @@ const handlePartJump = (partIndex: number) => {
   changeMultipartPage(partIndex)
   taskContentAreaRef.value?.scrollContentIntoView()
 }
+
+// 章节胶囊 headings = 总览收集标题（update-markdown-headings 流，语义不变）
+// + 分P章节项（每 parts 一项，追加在总览标题之后）。taskParts 非多P任务恒为
+// 空数组（state.ts 任务切换重置）→ 无 parts 时完全回归。
+const chapterNavHeadings = computed<MarkdownHeadingItem[]>(() => {
+  if (!selectedTask.value?.has_parts || taskParts.value.length === 0) {
+    return markdownHeadings.value
+  }
+  return [...markdownHeadings.value, ...taskParts.value.map(buildPartChapterItem)]
+})
+
+// 章节胶囊高亮：多P任务 = 当前分P页 'part-' + multipartPage（分P项醒目）；
+// 其余沿用 update-active-heading-id 流（总览标题高亮逻辑保持）
+const chapterNavActiveHeadingId = computed(() => {
+  if (selectedTask.value?.has_parts && taskParts.value.length > 0) {
+    return `${PART_HEADING_ID_PREFIX}${multipartPage.value}`
+  }
+  return activeHeadingId.value
+})
 
 // 总结一键成图工作台编排（features/transcription/composables/useSummaryImageWorkbench）
 const {
@@ -913,8 +946,8 @@ const {
           v-model:activeTab="activeTab"
           :selectedTask="selectedTask"
           :isSidebarOpen="isSidebarOpen"
-          :headings="markdownHeadings"
-          :active-heading-id="activeHeadingId"
+          :headings="chapterNavHeadings"
+          :active-heading-id="chapterNavActiveHeadingId"
           @reSummarize="handleReSummarize(selectedTask.id, $event)"
           @reTranscribe="handleReTranscribe(selectedTask.id)"
           @reDownload="handleReDownload(selectedTask.id)"

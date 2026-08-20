@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { PhListBullets, PhCaretDown } from '@phosphor-icons/vue'
 import type { MarkdownHeadingItem } from '../types'
+import { isPartHeadingId } from '../utils/partChapters'
 
 const props = defineProps<{
   headings: MarkdownHeadingItem[]
@@ -88,6 +89,10 @@ onBeforeUnmount(() => {
   }
 })
 
+// 首个分P章节项索引（App.vue 合并进 headings，id 以 'part-' 开头）；
+// 无分P项 = -1。用于总览区/分P区之间渲染"分P"分区标签。
+const firstPartIndex = computed(() => props.headings.findIndex((h) => isPartHeadingId(h.id)))
+
 // 层级缩进：更明显的视觉层次
 const resolveIndent = (level: number) => {
   const clampedLevel = Math.min(Math.max(level, 1), 6)
@@ -136,24 +141,34 @@ const getHeadingStyle = (level: number) => {
       :class="isPanelVisible ? 'opacity-100 visible translate-y-0' : 'opacity-0 invisible -translate-y-1 pointer-events-none'"
       :style="{ maxHeight: 'calc(100vh - 120px)', boxShadow: isPanelVisible ? '0 4px 12px rgba(0, 0, 0, 0.08)' : 'none' }"
     >
-      <!-- 章节列表 -->
-      <button
-        v-for="heading in headings"
-        :key="heading.id"
-        type="button"
-        class="block w-full text-left py-2.5 pr-4 transition-all duration-150 border-l-2 rounded-r-xl"
-        :class="[
-          getHeadingStyle(heading.level),
-          heading.id === activeHeadingId
-            ? 'border-blue-500 bg-blue-50/70 !text-blue-700 !font-semibold'
-            : 'border-transparent hover:bg-slate-50/80 hover:border-slate-300'
-        ]"
-        :style="{ paddingLeft: resolveIndent(heading.level) }"
-        :title="heading.text"
-        @click="handleJump(heading.id)"
-      >
-        <span class="block whitespace-normal break-words leading-relaxed">{{ heading.text }}</span>
-      </button>
+      <!-- 章节列表：总览标题区 + 分P章节区（分区标签分隔） -->
+      <template v-for="(heading, index) in headings" :key="heading.id">
+        <!-- 总览区 / 分P区分隔标签（仅同时存在总览标题与分P项时渲染） -->
+        <div
+          v-if="index === firstPartIndex && firstPartIndex > 0"
+          data-testid="chapter-nav-part-label"
+          class="mx-4 my-1 flex items-center gap-2"
+        >
+          <span class="shrink-0 text-[0.6875rem] font-medium text-slate-400">分P</span>
+          <span class="h-px flex-1 bg-slate-200/70"></span>
+        </div>
+        <button
+          type="button"
+          :data-testid="isPartHeadingId(heading.id) ? 'chapter-nav-part-item' : undefined"
+          class="block w-full text-left py-2.5 pr-4 transition-all duration-150 border-l-2 rounded-r-xl"
+          :class="[
+            getHeadingStyle(heading.level),
+            heading.id === activeHeadingId
+              ? 'border-blue-500 bg-blue-50/70 !text-blue-700 !font-semibold'
+              : 'border-transparent hover:bg-slate-50/80 hover:border-slate-300'
+          ]"
+          :style="{ paddingLeft: resolveIndent(heading.level) }"
+          :title="heading.text"
+          @click="handleJump(heading.id)"
+        >
+          <span class="block whitespace-normal break-words leading-relaxed">{{ heading.text }}</span>
+        </button>
+      </template>
     </div>
   </div>
 </template>
