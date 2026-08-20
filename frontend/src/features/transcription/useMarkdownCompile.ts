@@ -84,20 +84,21 @@ export function useMarkdownCompile(options: {
   let markdownCompileGeneration = 0
 
   /**
-   * 总览段三段式提取（真实数据契约，主行 summary 存在两种分P格式）：
-   * ① 有一级 "# 分P总结" 标记 → 标记前部分；
-   * ② 无一级标记、但分P段落以 "## Pn：" 二级标题直接跟在总览后
-   *    （任务 0f13aa14 实测格式：总览正文后紧跟 "## P1：..." 段落）→
-   *    首个 "## Pn：" 之前；
-   * ③ 都没有 → 整个 summary。
+   * 总览段提取（真实数据契约，主行 summary 存在两种分P格式，且一级标记
+   * 可能位于【所有分P段之后】——任务 0f13aa14 实测：
+   * 总览 → 11 个完整分P段 → "# 分P总结" → 11 个精简分P段）：
+   * ① 一级 "# 分P总结" 标记位置（可能 -1）；
+   * ② 首个 "## Pn：" 二级分P段标题位置（可能 -1）；
+   * ③ cut 点 = 两个位置中 >= 0 的最小值；都无 → summary.length。
+   * 双标记取 min：一级标记在段前（ed4cd000 类）→ 标记前为总览；
+   * 一级标记在段后（0f13aa14 类）→ 首个 "## Pn：" 前为总览。
    * 禁止任何 slice 截断（slice(0, 12000) 是旧缺陷，多P 总览可能整段丢失）。
    */
   const getMultipartOverview = (summary: string) => {
     const marker = summary.search(/^#\s*分P总结.*$/m)
-    if (marker >= 0) return summary.slice(0, marker).trim()
     const partMarker = summary.search(/^##\s+P\d+[:：]/m)
-    if (partMarker >= 0) return summary.slice(0, partMarker).trim()
-    return summary.trim()
+    const cut = Math.min(...[marker, partMarker].filter((i) => i >= 0), summary.length)
+    return summary.slice(0, cut).trim()
   }
 
   const multipartPageCount = computed(() => {

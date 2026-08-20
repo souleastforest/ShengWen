@@ -14,12 +14,14 @@
  * - 旧 getMultipartPages 按每 10 个 P 拼一页 → 页数 ≠ parts 数；
  * - 旧 getMultipartOverview 无 "# 分P总结" 标记时 slice(0, 12000) 截断。
  *
- * 真实 API 契约（对抗评审修正）：
+ * 真实 API 契约（对抗评审修正 + 主流程 e2e 实测修正）：
  * - GET /tasks/{id}/parts 列表行不含 summary/transcript（include_text=False
  *   剥离），分P内容只来自 GET /tasks/{id}/parts/{idx}（partDetails）；
- * - 主行 summary 存在两种分P格式：一级 "# 分P总结" 标记（标记前为总览），
- *   或"## Pn：" 二级段落直接跟在总览后（任务 0f13aa14 实测格式）；
- * - 总览三段式提取：① 一级标记前；② 首个 "## Pn：" 前；③ 都没有 → 整个 summary。
+ * - 主行 summary 存在两种分P格式：一级 "# 分P总结" 标记，且该标记可能位于
+ *   所有完整分P段【之后】（任务 0f13aa14 实测：总览 → 完整分P段 →
+ *   "# 分P总结" → 精简分P段）；
+ * - 总览提取 = 双标记取 min：一级标记位置与首个 "## Pn：" 位置（均可能 -1）
+ *   中 >= 0 的最小值；都无 → 整个 summary。
  */
 import { defineComponent, ref } from 'vue'
 import { mount } from '@vue/test-utils'
@@ -152,7 +154,7 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     selectedTask.value = null
   })
 
-  it('总览三段式 ②：无一级标记、首个 "## Pn：" 段落标记（0f13aa14 实测格式）→ 标记前部分', async () => {
+  it('总览提取：无一级标记、首个 "## Pn：" 段落标记 → 标记前部分', async () => {
     const summary = [
       '# 总体概览',
       '',
@@ -192,6 +194,72 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.overviewCompiledMarkdown.value).toContain('总览正文')
     expect(compile.overviewCompiledMarkdown.value).not.toContain('P1:')
+    selectedTask.value = null
+  })
+
+  it('0f13aa14 真实格式：一级 "# 分P总结" 标记位于【所有分P段之后】，总览 = 首个 "## Pn：" 之前（min 判据）', async () => {
+    // 真实数据契约（主流程 e2e 实测，任务 0f13aa14）：
+    // 总览（总体概览 + mermaid）→ 11 个完整分P段（2000-3000 字符/段）
+    // → 一级 "# 分P总结" 标记在【段后】→ 后半 11 个精简分P段。
+    // 旧三段式先命中一级标记 → slice(0, marker) 把全部完整分P段泄进总览。
+    const summary = [
+      '# 总体概览',
+      '',
+      '正文',
+      '',
+      '```mermaid',
+      'graph TD',
+      '```',
+      '',
+      '## P1：第一段完整内容',
+      '详细内容...',
+      '',
+      '## P2：第二段完整内容',
+      '详细内容...',
+      '',
+      '# 分P总结',
+      '',
+      '## P1：精简版',
+    ].join('\n')
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary }),
+      [makePart(0), makePart(1)],
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    const overview = compile.overviewCompiledMarkdown.value
+    // 总览自身（含 mermaid）完整保留
+    expect(overview).toContain('总体概览')
+    expect(overview).toContain('正文')
+    expect(overview).toContain('graph TD')
+    // 任何分P段内容（完整段或精简段）不得泄漏进总览
+    expect(overview).not.toContain('第一段完整内容')
+    expect(overview).not.toContain('第二段完整内容')
+    expect(overview).not.toContain('精简版')
+    selectedTask.value = null
+  })
+
+  it('ed4cd000 格式：一级 "# 分P总结" 标记位于分P段之前 → 总览不含该标题', async () => {
+    const summary = [
+      '# 总体概览',
+      '',
+      '```mermaid',
+      'graph TD',
+      '```',
+      '',
+      '# 分P总结',
+      '',
+      '## P1: xxx',
+    ].join('\n')
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary }),
+      [makePart(0)],
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    const overview = compile.overviewCompiledMarkdown.value
+    expect(overview).toContain('总体概览')
+    expect(overview).toContain('graph TD')
+    expect(overview).not.toContain('分P总结')
+    expect(overview).not.toContain('P1')
     selectedTask.value = null
   })
 
