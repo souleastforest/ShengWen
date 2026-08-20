@@ -155,8 +155,8 @@ describe('P1 防线加固：App.vue 装配层', () => {
         { FORBID_ATTR: ['style'], USE_PROFILES: { html: true } },
       )
 
-      // 渲染输入（overviewCompiledMarkdown）不得包含事件处理器与 style 属性
-      const compiled = wrapper.findComponent(TaskContentArea).props('overviewCompiledMarkdown') as string
+      // 渲染输入（compiledMarkdown，非多P = 主行 summary 全量）不得包含事件处理器与 style 属性
+      const compiled = wrapper.findComponent(TaskContentArea).props('compiledMarkdown') as string
       expect(compiled).not.toContain('onerror')
       expect(compiled).not.toContain('style=')
       // 正常 markdown 内容保留（链接、标题）

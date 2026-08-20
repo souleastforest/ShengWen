@@ -18,10 +18,8 @@ interface SummaryHighlightRequest {
 interface Props {
   task: Task
   activeTab: 'summary' | 'transcript'
-  /** 总览段编译产物（常驻，章节导航/高亮/mermaid 锚点来源） */
-  overviewCompiledMarkdown: string
-  /** 当前分P页编译产物（随 multipartPage 变化） */
-  pageCompiledMarkdown: string
+  /** 渲染用编译产物：总览段 + 当前分P页 summary 拼接（唯一 MarkdownContent 统一渲染） */
+  compiledMarkdown: string
   multipartPage: number
   /** 一P一页：多P 任务 = parts 数量 */
   multipartPageCount: number
@@ -81,6 +79,10 @@ const handleJumpInput = () => {
   emit('change-multipart-page', clamped - 1)
 }
 
+// 当前分P页是否有内容：summary 来自 partDetails（parts 列表行含 summary 字段但真实
+// 契约下被剥离）；无 summary → compiledMarkdown 只有总览段，显示占位
+const hasMultipartPageContent = computed(() => !!props.multipartPagePart?.summary)
+
 // 当前分P页占位：分P 处理中 → "正在处理中"；已完成/失败但无内容 → "暂无可展示内容"
 const multipartPagePlaceholder = computed(() => {
   const part = props.multipartPagePart
@@ -136,10 +138,12 @@ defineExpose({ scrollContentIntoView })
             />
           </div>
 
-          <!-- 总览区（常驻）：章节导航/高亮/mermaid 锚点来自这里 -->
+          <!-- 内容区：总览段 + 当前分P页 summary 拼接的 compiledMarkdown 由唯一
+               MarkdownContent 统一渲染（时间芯片等样式命中 markdown-theme-container
+               作用域；章节导航/高亮/mermaid 锚点覆盖总览 + 当前页） -->
           <MarkdownContent
             :task="task"
-            :compiled-markdown="overviewCompiledMarkdown"
+            :compiled-markdown="compiledMarkdown"
             :active-tab="activeTab"
             :summary-highlight-request="summaryHighlightRequest ?? null"
             :heading-jump-request="headingJumpRequest ?? null"
@@ -149,7 +153,16 @@ defineExpose({ scrollContentIntoView })
             @update-active-heading-id="(headingId) => emit('update-active-heading-id', headingId)"
           />
 
-          <!-- 分页器（仅多P 任务一P一页：◀ 第 x / N 页 ▶ + 输入框跳转） -->
+          <!-- 当前分P页占位：该P无 summary（处理中/无内容）时在分页器上方显示 -->
+          <p
+            v-if="showMultipartPager && !hasMultipartPageContent"
+            data-testid="multipart-page-placeholder"
+            class="px-8 pt-4 text-sm italic text-slate-400"
+          >
+            {{ multipartPagePlaceholder }}
+          </p>
+
+          <!-- 分页器（仅多P 任务一P一页，位于内容下方：◀ 第 x / N 页 ▶ + 输入框跳转） -->
           <div
             v-if="showMultipartPager"
             data-testid="multipart-pager"
@@ -183,18 +196,6 @@ defineExpose({ scrollContentIntoView })
               class="w-32 rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-600"
               @keydown.enter="handleJumpInput"
             />
-          </div>
-
-          <!-- 当前分P页（总览下方；分P 未完成/无 summary 时显示占位） -->
-          <div v-if="showMultipartPager" class="border-t border-slate-100 px-8 py-6">
-            <div class="mb-2 text-xs font-semibold text-slate-500">P{{ multipartPage + 1 }} 分P总结</div>
-            <div
-              v-if="pageCompiledMarkdown"
-              data-testid="multipart-page-content"
-              class="prose prose-sm prose-slate prose-headings:font-bold prose-a:text-blue-600 hover:prose-a:underline max-w-none text-slate-700 [&_p]:my-0.5 [&_ul]:my-0.5 [&_ol]:my-0.5"
-              v-html="pageCompiledMarkdown"
-            ></div>
-            <p v-else data-testid="multipart-page-placeholder" class="text-sm italic text-slate-400">{{ multipartPagePlaceholder }}</p>
           </div>
         </div>
 

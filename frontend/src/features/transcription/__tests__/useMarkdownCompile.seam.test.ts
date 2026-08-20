@@ -7,7 +7,7 @@
  * 契约面：
  * - configureMarkdownRenderer() / compileMarkdownText(summary, { videoUrl })
  * - useMarkdownCompile({ selectedTask, parts, partDetails }) →
- *   { overviewCompiledMarkdown, pageCompiledMarkdown, multipartPage,
+ *   { overviewCompiledMarkdown, compiledMarkdown, multipartPage,
  *     multipartPageCount, multipartPagePart, changeMultipartPage }
  *
  * 缺陷回归（重构前旧逻辑）：
@@ -135,11 +135,12 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.overviewCompiledMarkdown.value).toContain('普通总结全部内容')
     expect(compile.multipartPageCount.value).toBe(0)
-    expect(compile.pageCompiledMarkdown.value).toBe('')
+    // combined = 主行 summary 全量（非多P 行为不变）
+    expect(compile.compiledMarkdown.value).toContain('普通总结全部内容')
     selectedTask.value = null
   })
 
-  it('多P任务：总览 = "# 分P总结" 标记前部分（常驻编译），当前页 = P1 summary（来自 partDetails）', async () => {
+  it('多P任务：总览 = "# 分P总结" 标记前部分（常驻编译），combined = 总览 + 分隔符 + 当前分P页 summary', async () => {
     const summary = `总览部分内容\n\n# 分P总结\n\n## P1：第一部分\n内容1\n\n## P2：第二部分\n内容2`
     const { compile, selectedTask } = mountCompile(
       makeTask({ has_parts: true, summary }),
@@ -150,7 +151,10 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.overviewCompiledMarkdown.value).toContain('总览部分内容')
     expect(compile.overviewCompiledMarkdown.value).not.toContain('分P总结')
-    expect(compile.pageCompiledMarkdown.value).toContain('P1的总结')
+    // combined：总览段 + '---' 分隔符 + 当前分P页 summary 一次编译（渲染用）
+    expect(compile.compiledMarkdown.value).toContain('总览部分内容')
+    expect(compile.compiledMarkdown.value).toContain('P1的总结')
+    expect(compile.compiledMarkdown.value).toContain('<hr')
     selectedTask.value = null
   })
 
@@ -309,51 +313,56 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     selectedTask.value = null
   })
 
-  it('翻页后当前页内容切换重新编译（仅 pageCompiledMarkdown 变化）', async () => {
+  it('翻页后 combined 切换重新编译（随 multipartPage 变化，总览常驻）', async () => {
     const { compile, selectedTask } = mountCompile(
       makeTask({ has_parts: true, summary: '总览' }),
       [makePart(0), makePart(1)],
       { 0: makePart(0, { summary: 'P1总结' }), 1: makePart(1, { summary: 'P2总结' }) },
     )
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.pageCompiledMarkdown.value).toContain('P1总结')
+    expect(compile.compiledMarkdown.value).toContain('P1总结')
+    expect(compile.compiledMarkdown.value).toContain('总览')
 
     compile.changeMultipartPage(1)
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.pageCompiledMarkdown.value).toContain('P2总结')
-    expect(compile.pageCompiledMarkdown.value).not.toContain('P1总结')
+    expect(compile.compiledMarkdown.value).toContain('P2总结')
+    expect(compile.compiledMarkdown.value).not.toContain('P1总结')
     // 总览常驻：翻页不影响总览段
     expect(compile.overviewCompiledMarkdown.value).toContain('总览')
     selectedTask.value = null
   })
 
-  it('真实契约：parts 列表行无 summary 时不产生页面内容，summary 只来自 partDetails（懒拉驱动）', async () => {
+  it('真实契约：parts 列表行无 summary 时 combined = 总览段，summary 只来自 partDetails（懒拉驱动）', async () => {
     const parts = [makePart(0)] // 列表行无 summary（include_text=False 剥离）
     const { compile, selectedTask, partDetails } = mountCompile(
       makeTask({ has_parts: true, summary: '总览' }),
       parts,
     )
     await vi.advanceTimersByTimeAsync(120)
-    // parts 行无 summary → 页面无内容（App 由 watch 懒拉 fetchTaskPart 填充 partDetails）
-    expect(compile.pageCompiledMarkdown.value).toBe('')
+    // parts 行无 summary → combined = 总览段（无分P内容泄漏，App 由 watch 懒拉 fetchTaskPart 填充 partDetails）
+    expect(compile.compiledMarkdown.value).toContain('总览')
+    expect(compile.compiledMarkdown.value).not.toContain('详情完整版')
+    expect(compile.compiledMarkdown.value).not.toContain('<hr')
     // 占位状态判断仍回退 parts 行（status 可透出）
     expect(compile.multipartPagePart.value).toStrictEqual(parts[0])
 
-    // partDetails 由 fetchTaskPart 填充后：详情产生内容并重新编译
+    // partDetails 由 fetchTaskPart 填充后：详情拼接进 combined 并重新编译
     partDetails.value = { 0: makePart(0, { summary: '详情完整版' }) }
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.pageCompiledMarkdown.value).toContain('详情完整版')
+    expect(compile.compiledMarkdown.value).toContain('详情完整版')
+    expect(compile.compiledMarkdown.value).toContain('<hr')
     selectedTask.value = null
   })
 
-  it('分P summary 缺失（处理中）：pageCompiledMarkdown 为空，multipartPagePart 透出状态供占位判断', async () => {
+  it('分P summary 缺失（处理中）：combined = 总览段，multipartPagePart 透出状态供占位判断', async () => {
     const parts = [makePart(0, { status: 'TRANSCRIBING', summary: undefined })]
     const { compile, selectedTask } = mountCompile(
       makeTask({ has_parts: true, summary: '总览' }),
       parts,
     )
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.pageCompiledMarkdown.value).toBe('')
+    expect(compile.compiledMarkdown.value).toContain('总览')
+    expect(compile.compiledMarkdown.value).not.toContain('<hr')
     expect(compile.multipartPagePart.value?.status).toBe('TRANSCRIBING')
     selectedTask.value = null
   })
@@ -382,7 +391,7 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     await vi.advanceTimersByTimeAsync(120)
     compile.changeMultipartPage(1)
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.pageCompiledMarkdown.value).toContain('A的P2')
+    expect(compile.compiledMarkdown.value).toContain('A的P2')
 
     // 切换任务（App 会清空 parts 与 partDetails）
     parts.value = []
@@ -393,6 +402,8 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     expect(compile.multipartPageCount.value).toBe(0)
     expect(compile.overviewCompiledMarkdown.value).toContain('B全部内容')
     expect(compile.overviewCompiledMarkdown.value).not.toContain('A总览')
+    expect(compile.compiledMarkdown.value).toContain('B全部内容')
+    expect(compile.compiledMarkdown.value).not.toContain('A总览')
     selectedTask.value = null
   })
 
@@ -406,6 +417,8 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.overviewCompiledMarkdown.value).toContain('BBBB')
     expect(compile.overviewCompiledMarkdown.value).not.toContain('AAAA')
+    expect(compile.compiledMarkdown.value).toContain('BBBB')
+    expect(compile.compiledMarkdown.value).not.toContain('AAAA')
     selectedTask.value = null
   })
 })

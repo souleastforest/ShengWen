@@ -9,6 +9,14 @@
  * 3. 多P 总结一P一页分页状态机：总览段（常驻）+ 当前分P页（随 multipartPage
  *    变化）+ 任务切换重置 + generation 守卫（防串台）
  *
+ * 产物语义：
+ * - compiledMarkdown：渲染用 combined = 总览段 + '\n\n---\n\n' + 当前分P页
+ *   summary（有 summary 时）一次编译，由 TaskContentArea 唯一 MarkdownContent
+ *   统一渲染（时间芯片等样式命中 markdown-theme-container 作用域）；
+ *   无分P summary 时 = 总览段（占位由组件经 multipartPagePart 判断）。
+ * - overviewCompiledMarkdown：总览段独立编译产物（App 成图导出等其他用途，
+ *   语义不变：导出 = 总览段）。
+ *
  * 供 App.vue（编排）与 MarkdownContent.vue（渲染容器）共用。
  */
 import { computed, ref, watch, type Ref } from 'vue'
@@ -75,10 +83,10 @@ export function useMarkdownCompile(options: {
   const { selectedTask, parts, partDetails } = options
   configureMarkdownRenderer()
 
-  // 总览段与当前分P页分开编译：翻页只重编当前页，
-  // 总览（章节导航/高亮/mermaid 锚点来源）常驻不受影响。
+  // compiledMarkdown = 总览段 + 当前分P页 summary 拼接（渲染用，一次编译）；
+  // overviewCompiledMarkdown = 总览段独立产物（App 成图导出用，语义不变）。
+  const compiledMarkdown = ref('')
   const overviewCompiledMarkdown = ref('')
-  const pageCompiledMarkdown = ref('')
   const multipartPage = ref(0)
   let markdownCompileTimer: ReturnType<typeof setTimeout> | null = null
   let markdownCompileGeneration = 0
@@ -120,8 +128,8 @@ export function useMarkdownCompile(options: {
       markdownCompileTimer = null
     }
 
+    compiledMarkdown.value = ''
     overviewCompiledMarkdown.value = ''
-    pageCompiledMarkdown.value = ''
     const task = selectedTask.value
     if (!task?.summary) return
 
@@ -132,21 +140,26 @@ export function useMarkdownCompile(options: {
       const summary = task.summary
       if (!summary) return
 
-      overviewCompiledMarkdown.value = compileMarkdownText(
-        task.has_parts ? getMultipartOverview(summary) : summary,
-        { videoUrl: task.video_url || '' },
-      )
+      // 总览段：多P 任务提取（双标记取 min），非多P = 主行 summary 全量
+      const overviewText = task.has_parts ? getMultipartOverview(summary) : summary
+      overviewCompiledMarkdown.value = compileMarkdownText(overviewText, {
+        videoUrl: task.video_url || '',
+      })
 
+      // 渲染用 combined：总览段 + 当前分P页 summary 一次编译（'---' → <hr> 分隔）；
+      // 当前页无 summary（处理中/无内容）→ combined = 总览段（占位由组件判断）
+      let combinedText = overviewText
       if (task.has_parts && parts.value.length > 0) {
         const page = Math.min(multipartPage.value, parts.value.length - 1)
         const part = partDetails.value[page] || parts.value[page]
         const partSummary = part?.summary
         if (partSummary) {
-          pageCompiledMarkdown.value = compileMarkdownText(partSummary, {
-            videoUrl: task.video_url || '',
-          })
+          combinedText = `${overviewText}\n\n---\n\n${partSummary}`
         }
       }
+      compiledMarkdown.value = compileMarkdownText(combinedText, {
+        videoUrl: task.video_url || '',
+      })
     }, 120)
   }
 
@@ -174,8 +187,8 @@ export function useMarkdownCompile(options: {
   }
 
   return {
+    compiledMarkdown,
     overviewCompiledMarkdown,
-    pageCompiledMarkdown,
     multipartPage,
     multipartPageCount,
     multipartPagePart,

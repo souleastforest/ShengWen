@@ -7,7 +7,9 @@
  *   有内容命中不重复请求，处理中/无内容视为过期重新请求）；
  * - multipartPageCount = parts 数传入 TaskContentArea；
  * - 任务切换 multipartPage 重置为 0；
- * - 详情已在 partDetails 缓存（完成且有内容）时翻页/跳转不再发请求。
+ * - 详情已在 partDetails 缓存（完成且有内容）时翻页/跳转不再发请求；
+ * - TaskContentArea 渲染 compiledMarkdown = 总览段 + 当前分P页 summary 拼接
+ *   （独立分P容器 multipart-page-content 不存在，由唯一 MarkdownContent 渲染）。
  *
  * 真实 API 契约（对抗评审修正）：GET /tasks/{id}/parts 列表行不含 summary，
  * 分P内容只来自 GET /tasks/{id}/parts/{idx}（partDetails）。
@@ -158,7 +160,9 @@ describe('App：一P一页分页器接线', () => {
     const contentArea = wrapper.findComponent(TaskContentArea)
     expect(contentArea.props('multipartPageCount')).toBe(2)
     expect(contentArea.props('multipartPage')).toBe(0)
-    expect(contentArea.props('overviewCompiledMarkdown')).toContain('总览')
+    expect(contentArea.props('compiledMarkdown')).toContain('总览')
+    // 独立分P容器已移除：多P 内容由唯一 MarkdownContent 统一渲染
+    expect(wrapper.find('[data-testid="multipart-page-content"]').exists()).toBe(false)
 
     wrapper.unmount()
   })
@@ -187,14 +191,18 @@ describe('App：一P一页分页器接线', () => {
 
     // 打开任务首屏：immediate watch 拉 P0 详情（消除"打开任务首屏空白"）
     expect(partGets('/tasks/task-a/parts/0')).toBe(1)
-    expect(wrapper.findComponent(TaskContentArea).props('pageCompiledMarkdown')).toContain('P1完整总结')
+    // combined：总览段 + 当前分P页 summary 拼接编译（渲染用，独立容器已移除）
+    const contentProps = () => wrapper.findComponent(TaskContentArea).props('compiledMarkdown')
+    expect(contentProps()).toContain('总览')
+    expect(contentProps()).toContain('P1完整总结')
 
     // ▶ → P1
     await wrapper.find('[data-testid="multipart-pager-next"]').trigger('click')
     await waitForMarkdownCompile()
     expect(wrapper.findComponent(TaskContentArea).props('multipartPage')).toBe(1)
     expect(partGets('/tasks/task-a/parts/1')).toBe(1)
-    expect(wrapper.findComponent(TaskContentArea).props('pageCompiledMarkdown')).toContain('P2完整总结')
+    expect(contentProps()).toContain('P2完整总结')
+    expect(contentProps()).not.toContain('P1完整总结')
 
     // ▶ → P2
     await wrapper.find('[data-testid="multipart-pager-next"]').trigger('click')
@@ -208,7 +216,7 @@ describe('App：一P一页分页器接线', () => {
     await waitForMarkdownCompile()
     expect(wrapper.findComponent(TaskContentArea).props('multipartPage')).toBe(3)
     expect(partGets('/tasks/task-a/parts/3')).toBe(1)
-    expect(wrapper.findComponent(TaskContentArea).props('pageCompiledMarkdown')).toContain('P4完整总结')
+    expect(contentProps()).toContain('P4完整总结')
 
     // ◀ 回 P2：已缓存（完成且有内容）→ 不再请求
     await wrapper.find('[data-testid="multipart-pager-prev"]').trigger('click')
@@ -257,8 +265,8 @@ describe('App：一P一页分页器接线', () => {
     const part0Calls = mockedAxios.get.mock.calls.filter(([url]) => String(url).endsWith('/tasks/task-a/parts/0'))
     expect(part0Calls.length).toBeGreaterThanOrEqual(2)
 
-    // 完成内容渲染、占位消失
-    expect(wrapper.findComponent(TaskContentArea).props('pageCompiledMarkdown')).toContain('P1完整总结')
+    // 完成内容拼接进 combined 渲染、占位消失
+    expect(wrapper.findComponent(TaskContentArea).props('compiledMarkdown')).toContain('P1完整总结')
     expect(wrapper.text()).not.toContain('该分P总结正在处理中...')
 
     wrapper.unmount()
@@ -296,9 +304,10 @@ describe('App：一P一页分页器接线', () => {
     // 滚动内容区进入视野
     expect(scrollSpy).toHaveBeenCalled()
 
-    // 详情返回后当前页内容重编译为详情完整版
+    // 详情返回后 combined 重编译为"总览 + 详情完整版"
     await waitForMarkdownCompile()
-    expect(contentArea.props('pageCompiledMarkdown')).toContain('P2详情完整版')
+    expect(contentArea.props('compiledMarkdown')).toContain('总览')
+    expect(contentArea.props('compiledMarkdown')).toContain('P2详情完整版')
 
     wrapper.unmount()
   })
@@ -364,7 +373,7 @@ describe('App：一P一页分页器接线', () => {
     const contentArea = wrapper.findComponent(TaskContentArea)
     expect(contentArea.props('multipartPage')).toBe(0)
     expect(contentArea.props('multipartPageCount')).toBe(0)
-    expect(contentArea.props('overviewCompiledMarkdown')).toContain('B的总结')
+    expect(contentArea.props('compiledMarkdown')).toContain('B的总结')
 
     wrapper.unmount()
   })

@@ -736,8 +736,8 @@ const topic = computed(() => {
 
 // markdown 编译管线 + 多P 总结一P一页分页（features/transcription/useMarkdownCompile）
 const {
+  compiledMarkdown,
   overviewCompiledMarkdown,
-  pageCompiledMarkdown,
   multipartPage,
   multipartPageCount,
   multipartPagePart,
@@ -938,8 +938,7 @@ const {
           ref="taskContentAreaRef"
           :task="selectedTask"
           :active-tab="activeTab"
-          :overview-compiled-markdown="overviewCompiledMarkdown"
-          :page-compiled-markdown="pageCompiledMarkdown"
+          :compiled-markdown="compiledMarkdown"
           :multipart-page="multipartPage"
           :multipart-page-count="multipartPageCount"
           :multipart-page-part="multipartPagePart"
