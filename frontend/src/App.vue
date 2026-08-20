@@ -38,11 +38,9 @@ const {
   selectedTask,
   taskParts,
   taskPartDetails,
-  loadingPartIndex,
   fetchTaskPart,
   retryFailedParts,
   selectTask,
-  fetchTaskFullContent,
   downloadContent,
   copyContent,
   deleteTask,
@@ -108,9 +106,6 @@ const isEditingTopic = ref(false)
 const editingTopicValue = ref('')
 const isTestingLlm = ref(false)
 const isRedownloading = ref(false)
-// 分P内容刷新信号：重试失败分P时递增，TaskPartsPanel 据此收起残留展开
-// （重试后后端置分P content 为 NULL，展开区不得滞留旧值）
-const taskPartsRefreshKey = ref(0)
 const summaryHighlightRequest = ref<{
   taskId: string
   keyword: string
@@ -264,10 +259,9 @@ const handleRetryTask = (task: Task) => {
   handleReTranscribe(task.id)
 }
 
-// 重试失败分P：先发刷新信号收起展开区（后端将清空分P content），再提交重试
+// 重试失败分P：提交重试（state.ts 内会失效分P详情缓存并重新拉取任务/分P）
 const handleRetryFailedParts = async () => {
   if (!selectedTask.value) return
-  taskPartsRefreshKey.value += 1
   await retryFailedParts(selectedTask.value.id)
 }
 
@@ -740,19 +734,46 @@ const topic = computed(() => {
   return ''
 })
 
-// markdown 编译管线 + 多P 总结分页（features/transcription/useMarkdownCompile）
+// markdown 编译管线 + 多P 总结一P一页分页（features/transcription/useMarkdownCompile）
 const {
-  compiledMarkdown,
-  showFullMultipartSummary,
+  overviewCompiledMarkdown,
+  pageCompiledMarkdown,
   multipartPage,
   multipartPageCount,
-  expandMultipartSummary,
-  collapseMultipartSummary,
+  multipartPagePart,
   changeMultipartPage,
 } = useMarkdownCompile({
   selectedTask,
-  fetchTaskFullContent,
+  parts: taskParts,
+  partDetails: taskPartDetails,
 })
+
+// 分页器懒拉分P详情（评审阻塞项 1/2 修复）：multipartPage 变化（◀/▶/输入跳转、
+// 分P列表 jump）或任务切换（multipartPage 重置 0 → 新任务打开即拉 P0 详情，
+// 消除"打开任务首屏空白"）时无条件 fetchTaskPart。state.ts 内部有缓存新鲜度
+// 判定（完成且有内容命中缓存不重复请求；处理中/无内容视为过期重新请求），
+// "无条件调用"安全；同时实现处理中占位自愈（TRANSCRIBING 缓存必然过期 →
+// 重新请求 → 完成内容写入 partDetails → 编译 watch 重跑 → 占位消失）。
+// catch 打日志，禁止静默失败。
+watch(
+  [multipartPage, () => selectedTask.value?.id],
+  () => {
+    const task = selectedTask.value
+    if (!task?.has_parts) return
+    fetchTaskPart(task.id, multipartPage.value).catch((err) => {
+      console.error('Failed to fetch task part:', err)
+    })
+  },
+  { immediate: true },
+)
+
+// 分P列表点击跳转：① 切换 multipartPage（懒拉由上方 watch 统一驱动，不再
+// 显式 fetchTaskPart，避免重复请求）；② 滚动内容区进入视野
+const taskContentAreaRef = ref<InstanceType<typeof TaskContentArea> | null>(null)
+const handlePartJump = (partIndex: number) => {
+  changeMultipartPage(partIndex)
+  taskContentAreaRef.value?.scrollContentIntoView()
+}
 
 // 总结一键成图工作台编排（features/transcription/composables/useSummaryImageWorkbench）
 const {
@@ -782,7 +803,8 @@ const {
 } = useSummaryImageWorkbench({
   selectedTask,
   topic,
-  compiledMarkdown,
+  // 成图导出源：总览段（常驻）编译产物（旧语义 = 未展开时的 compiledMarkdown）
+  compiledMarkdown: overviewCompiledMarkdown,
   summaryImageExporter,
 })
 </script>
@@ -909,20 +931,18 @@ const {
         <!-- 内容滚动区 -->
         <TaskPartsPanel
           :parts="taskParts"
-          :part-details="taskPartDetails"
-          :loading-part-index="loadingPartIndex"
-          :task-id="selectedTask.id"
-          :refresh-key="taskPartsRefreshKey"
-          @expand="(partIndex) => selectedTask && fetchTaskPart(selectedTask.id, partIndex).catch((err) => console.error('Failed to fetch task part:', err))"
+          @jump="handlePartJump"
           @retry="handleRetryFailedParts"
         />
         <TaskContentArea
+          ref="taskContentAreaRef"
           :task="selectedTask"
           :active-tab="activeTab"
-          :compiled-markdown="compiledMarkdown"
-          :show-full-multipart-summary="showFullMultipartSummary"
+          :overview-compiled-markdown="overviewCompiledMarkdown"
+          :page-compiled-markdown="pageCompiledMarkdown"
           :multipart-page="multipartPage"
           :multipart-page-count="multipartPageCount"
+          :multipart-page-part="multipartPagePart"
           :summary-highlight-request="summaryHighlightRequest"
           :heading-jump-request="headingJumpRequest"
           :topic="topic"
@@ -935,8 +955,6 @@ const {
           @update:editing-topic-value="(val) => editingTopicValue = val"
           @update-markdown-headings="handleMarkdownHeadingsUpdate"
           @update-active-heading-id="handleActiveHeadingIdUpdate"
-          @expand-multipart-summary="expandMultipartSummary"
-          @collapse-multipart-summary="collapseMultipartSummary"
           @change-multipart-page="changeMultipartPage"
         />
       </template>
