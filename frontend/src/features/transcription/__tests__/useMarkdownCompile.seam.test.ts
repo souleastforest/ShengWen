@@ -13,6 +13,13 @@
  * 缺陷回归（重构前旧逻辑）：
  * - 旧 getMultipartPages 按每 10 个 P 拼一页 → 页数 ≠ parts 数；
  * - 旧 getMultipartOverview 无 "# 分P总结" 标记时 slice(0, 12000) 截断。
+ *
+ * 真实 API 契约（对抗评审修正）：
+ * - GET /tasks/{id}/parts 列表行不含 summary/transcript（include_text=False
+ *   剥离），分P内容只来自 GET /tasks/{id}/parts/{idx}（partDetails）；
+ * - 主行 summary 存在两种分P格式：一级 "# 分P总结" 标记（标记前为总览），
+ *   或"## Pn：" 二级段落直接跟在总览后（任务 0f13aa14 实测格式）；
+ * - 总览三段式提取：① 一级标记前；② 首个 "## Pn：" 前；③ 都没有 → 整个 summary。
  */
 import { defineComponent, ref } from 'vue'
 import { mount } from '@vue/test-utils'
@@ -130,16 +137,73 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     selectedTask.value = null
   })
 
-  it('多P任务：总览 = "# 分P总结" 标记前部分（常驻编译），当前页 = P1 summary', async () => {
+  it('多P任务：总览 = "# 分P总结" 标记前部分（常驻编译），当前页 = P1 summary（来自 partDetails）', async () => {
     const summary = `总览部分内容\n\n# 分P总结\n\n## P1：第一部分\n内容1\n\n## P2：第二部分\n内容2`
     const { compile, selectedTask } = mountCompile(
       makeTask({ has_parts: true, summary }),
-      [makePart(0, { summary: 'P1的总结' }), makePart(1, { summary: 'P2的总结' })],
+      // 真实契约：parts 列表行无 summary，分P内容只来自 partDetails
+      [makePart(0), makePart(1)],
+      { 0: makePart(0, { summary: 'P1的总结' }) },
     )
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.overviewCompiledMarkdown.value).toContain('总览部分内容')
     expect(compile.overviewCompiledMarkdown.value).not.toContain('分P总结')
     expect(compile.pageCompiledMarkdown.value).toContain('P1的总结')
+    selectedTask.value = null
+  })
+
+  it('总览三段式 ②：无一级标记、首个 "## Pn：" 段落标记（0f13aa14 实测格式）→ 标记前部分', async () => {
+    const summary = [
+      '# 总体概览',
+      '',
+      '{{分P视频标题}}',
+      '',
+      '## 总体概览',
+      '',
+      '正文内容...',
+      '',
+      '## P1：命理学概述 🔮',
+      '### 1. 内容',
+      '',
+      '## P2：命能不能算 🧭',
+      '### 2. 内容',
+    ].join('\n')
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary }),
+      [makePart(0), makePart(1)],
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    const overview = compile.overviewCompiledMarkdown.value
+    // 总览自身段落（含 "## 总体概览" 二级标题）完整保留：不得被误判为分P起点
+    expect(overview).toContain('总体概览')
+    expect(overview).toContain('正文内容')
+    // 分P段落不得泄漏进总览
+    expect(overview).not.toContain('命理学概述')
+    expect(overview).not.toContain('命能不能算')
+    selectedTask.value = null
+  })
+
+  it('总览三段式 ②：半角冒号 "## P1:" 段落标记同样识别', async () => {
+    const summary = '总览正文\n\n## P1: 内容\n### 1. x'
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary }),
+      [makePart(0)],
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    expect(compile.overviewCompiledMarkdown.value).toContain('总览正文')
+    expect(compile.overviewCompiledMarkdown.value).not.toContain('P1:')
+    selectedTask.value = null
+  })
+
+  it('总览三段式 ③：无任何标记（纯文本）→ 整个 summary，不做截断', async () => {
+    const summary = '纯文本总览，无分P段落标题\n\n第二段内容'
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary }),
+      [makePart(0)],
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    expect(compile.overviewCompiledMarkdown.value).toContain('纯文本总览，无分P段落标题')
+    expect(compile.overviewCompiledMarkdown.value).toContain('第二段内容')
     selectedTask.value = null
   })
 
@@ -157,7 +221,7 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
   })
 
   it('回归修复：页数 = parts 数量（一P一页），而非每 10 个 P 拼一页', async () => {
-    const parts = [makePart(0, { summary: 'a' }), makePart(1, { summary: 'b' }), makePart(2, { summary: 'c' })]
+    const parts = [makePart(0), makePart(1), makePart(2)]
     const { compile, selectedTask } = mountCompile(
       makeTask({ has_parts: true, summary: '总览' }),
       parts,
@@ -178,10 +242,10 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
   })
 
   it('翻页后当前页内容切换重新编译（仅 pageCompiledMarkdown 变化）', async () => {
-    const parts = [makePart(0, { summary: 'P1总结' }), makePart(1, { summary: 'P2总结' })]
     const { compile, selectedTask } = mountCompile(
       makeTask({ has_parts: true, summary: '总览' }),
-      parts,
+      [makePart(0), makePart(1)],
+      { 0: makePart(0, { summary: 'P1总结' }), 1: makePart(1, { summary: 'P2总结' }) },
     )
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.pageCompiledMarkdown.value).toContain('P1总结')
@@ -195,20 +259,22 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
     selectedTask.value = null
   })
 
-  it('当前页 summary 优先取 partDetails，回退 parts 列表行', async () => {
-    const parts = [makePart(0, { summary: '列表截断版' })]
+  it('真实契约：parts 列表行无 summary 时不产生页面内容，summary 只来自 partDetails（懒拉驱动）', async () => {
+    const parts = [makePart(0)] // 列表行无 summary（include_text=False 剥离）
     const { compile, selectedTask, partDetails } = mountCompile(
       makeTask({ has_parts: true, summary: '总览' }),
       parts,
     )
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.pageCompiledMarkdown.value).toContain('列表截断版')
+    // parts 行无 summary → 页面无内容（App 由 watch 懒拉 fetchTaskPart 填充 partDetails）
+    expect(compile.pageCompiledMarkdown.value).toBe('')
+    // 占位状态判断仍回退 parts 行（status 可透出）
+    expect(compile.multipartPagePart.value).toStrictEqual(parts[0])
 
-    // partDetails 由 fetchTaskPart 填充后：详情优先并重新编译
+    // partDetails 由 fetchTaskPart 填充后：详情产生内容并重新编译
     partDetails.value = { 0: makePart(0, { summary: '详情完整版' }) }
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.pageCompiledMarkdown.value).toContain('详情完整版')
-    expect(compile.pageCompiledMarkdown.value).not.toContain('列表截断版')
     selectedTask.value = null
   })
 
@@ -240,17 +306,19 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
   it('任务切换：multipartPage 重置为 0，编译产物切换到新任务（防串台）', async () => {
     const taskA = makeTask({ id: 'task-a', has_parts: true, summary: 'A总览' })
     const taskB = makeTask({ id: 'task-b', summary: 'B全部内容' })
-    const { compile, selectedTask, parts } = mountCompile(
+    const { compile, selectedTask, parts, partDetails } = mountCompile(
       taskA,
-      [makePart(0, { summary: 'A的P1' }), makePart(1, { summary: 'A的P2' })],
+      [makePart(0), makePart(1)],
+      { 0: makePart(0, { summary: 'A的P1' }), 1: makePart(1, { summary: 'A的P2' }) },
     )
     await vi.advanceTimersByTimeAsync(120)
     compile.changeMultipartPage(1)
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.pageCompiledMarkdown.value).toContain('A的P2')
 
-    // 切换任务（App 会清空 parts）
+    // 切换任务（App 会清空 parts 与 partDetails）
     parts.value = []
+    partDetails.value = {}
     selectedTask.value = taskB
     await vi.advanceTimersByTimeAsync(120)
     expect(compile.multipartPage.value).toBe(0)
@@ -263,7 +331,7 @@ describe('useMarkdownCompile：多P 一P一页分页', () => {
   it('generation 守卫：120ms 防抖窗口内切换任务，旧任务编译产物不得落地', async () => {
     const taskA = makeTask({ id: 'task-a', has_parts: true, summary: 'AAAA' })
     const taskB = makeTask({ id: 'task-b', summary: 'BBBB' })
-    const { compile, selectedTask, parts } = mountCompile(taskA, [makePart(0, { summary: 'A1' })])
+    const { compile, selectedTask, parts } = mountCompile(taskA, [makePart(0)])
     // 任务 A 编译定时器在途时立即切换任务
     selectedTask.value = taskB
     parts.value = []

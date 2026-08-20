@@ -748,19 +748,30 @@ const {
   partDetails: taskPartDetails,
 })
 
-// 分P列表点击跳转：① 切换 multipartPage 到该 P；② 该 P 详情缺失时懒拉
-// fetchTaskPart（复用 state.ts 的缓存语义与 catch 日志，禁止静默失败）；
-// ③ 滚动内容区进入视野
-const taskContentAreaRef = ref<InstanceType<typeof TaskContentArea> | null>(null)
-const handlePartJump = (partIndex: number) => {
-  const task = selectedTask.value
-  if (!task) return
-  changeMultipartPage(partIndex)
-  if (!taskPartDetails.value[partIndex]) {
-    fetchTaskPart(task.id, partIndex).catch((err) => {
+// 分页器懒拉分P详情（评审阻塞项 1/2 修复）：multipartPage 变化（◀/▶/输入跳转、
+// 分P列表 jump）或任务切换（multipartPage 重置 0 → 新任务打开即拉 P0 详情，
+// 消除"打开任务首屏空白"）时无条件 fetchTaskPart。state.ts 内部有缓存新鲜度
+// 判定（完成且有内容命中缓存不重复请求；处理中/无内容视为过期重新请求），
+// "无条件调用"安全；同时实现处理中占位自愈（TRANSCRIBING 缓存必然过期 →
+// 重新请求 → 完成内容写入 partDetails → 编译 watch 重跑 → 占位消失）。
+// catch 打日志，禁止静默失败。
+watch(
+  [multipartPage, () => selectedTask.value?.id],
+  () => {
+    const task = selectedTask.value
+    if (!task?.has_parts) return
+    fetchTaskPart(task.id, multipartPage.value).catch((err) => {
       console.error('Failed to fetch task part:', err)
     })
-  }
+  },
+  { immediate: true },
+)
+
+// 分P列表点击跳转：① 切换 multipartPage（懒拉由上方 watch 统一驱动，不再
+// 显式 fetchTaskPart，避免重复请求）；② 滚动内容区进入视野
+const taskContentAreaRef = ref<InstanceType<typeof TaskContentArea> | null>(null)
+const handlePartJump = (partIndex: number) => {
+  changeMultipartPage(partIndex)
   taskContentAreaRef.value?.scrollContentIntoView()
 }
 

@@ -84,12 +84,19 @@ export function useMarkdownCompile(options: {
   let markdownCompileGeneration = 0
 
   /**
-   * 总览段：有 "# 分P总结" 标记 → 标记前部分；无标记 → 整个 summary。
-   * （无标记时不再 slice(0, 12000) 截断：截断是旧缺陷，多P 总览可能整段丢失）
+   * 总览段三段式提取（真实数据契约，主行 summary 存在两种分P格式）：
+   * ① 有一级 "# 分P总结" 标记 → 标记前部分；
+   * ② 无一级标记、但分P段落以 "## Pn：" 二级标题直接跟在总览后
+   *    （任务 0f13aa14 实测格式：总览正文后紧跟 "## P1：..." 段落）→
+   *    首个 "## Pn：" 之前；
+   * ③ 都没有 → 整个 summary。
+   * 禁止任何 slice 截断（slice(0, 12000) 是旧缺陷，多P 总览可能整段丢失）。
    */
   const getMultipartOverview = (summary: string) => {
     const marker = summary.search(/^#\s*分P总结.*$/m)
     if (marker >= 0) return summary.slice(0, marker).trim()
+    const partMarker = summary.search(/^##\s+P\d+[:：]/m)
+    if (partMarker >= 0) return summary.slice(0, partMarker).trim()
     return summary.trim()
   }
 
