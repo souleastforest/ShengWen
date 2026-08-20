@@ -5,6 +5,10 @@
 
 ## Change Log
 
+- 2026-08-20: **fix(frontend): 分P页并入 MarkdownContent 统一渲染 + 章节胶囊分P项**（33f90e2/155632a，基于 PR #23）。
+  - **用户校正**：分P页不要"单独放下面"（独立 v-html 容器缺 markdown-theme-container 类 → time-chip 图标尺寸规则不命中，svg 默认大小过大/对不齐），改回 MarkdownContent 统一渲染；章节浮动胶囊目前只剩"总体概览"（旧版从拼接串收集 ## Pn 标题，min 判据截断后总览段无分P标题）→ 补分P章节项。
+  - **改动**：① useMarkdownCompile 新增 compiledMarkdown（总览段 + '\n\n---\n\n' + 当前分P页 summary 一次编译，MarkdownContent 唯一容器渲染；无 summary 时 = 总览段，占位由 multipartPagePart 判断）；② TaskContentArea 删独立容器/小标题，分页器移至内容下方；③ 章节导航 = 总览标题（update-markdown-headings 流）+ 分P章节项（partChapters.ts：'part-' 前缀，P{idx+1} {title}，未命名兜底），点击分P项 → changeMultipartPage + 滚动（与分P面板 jump 同路径），当前页高亮 'part-' + multipartPage；④ 成图导出源 = overviewCompiledMarkdown 不变。
+  - **验证**：TDD 红绿（457 vitest / vue-tsc 0）；playwright e2e 全 PASS——time-chip 17 个 icon 实测 8.06px vs 期望 0.7em=8.064px（偏差 0.004px）且全部在 markdown-theme-container 作用域；章节胶囊 11 分P项 + 点击跳第 5 页 + 高亮；分页器 9 项回归 + 总览零泄漏（172 字符纯总览散文）。历史渲染对比 workflow 确认演进链与差异（面板展开区 time-chip 在 2a69092 起就是裸文本，统一容器渲染为正确修复）。
 - 2026-08-20: **feat(frontend): 多P总结改"一P一页"分页展示**（fix/multipart-pager-redesign → 合并 d83a08c，含 2cd6d5a/ddfbe2c/1179f54）。
   - **需求**（用户定稿，AskUserQuestion）：分P总结一个 P 一页，分页器页数 = P 数，可输入分P号跳转；分P列表点击 = 跳转到渲染器对应页（删除内联预览）；"总体概览 + mermaid" 常驻顶部。
   - **改动**：① useMarkdownCompile 删除旧"硬编码拼接 + 正则切分"展示（MULTIPART_PAGE_SIZE/getMultipartPages/showFullMultipartSummary/expand/collapse），拆为 overviewCompiledMarkdown（常驻总览）+ pageCompiledMarkdown（随 multipartPage 变化，数据源 = partDetails[page].summary）；② TaskContentArea 新分页器（◀ 第 x / N 页 ▶ + 输入框 1-based 分P号回车跳转 + 处理中/无内容占位区分）；③ TaskPartsPanel 删内联预览改 emit jump；④ App.vue watch(multipartPage) 无条件 fetchTaskPart（state.ts 缓存新鲜度：完成命中不重复请求、处理中必然过期 → 占位自愈）。
