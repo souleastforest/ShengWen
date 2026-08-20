@@ -1,15 +1,18 @@
 /**
- * P6 seam 契约测试：features/transcription/useMarkdownCompile.ts
+ * seam 契约测试：features/transcription/useMarkdownCompile.ts
  *
- * App.vue markdown 编译管线下沉（行为逐行等价）：marked 自定义 renderer
+ * App.vue markdown 编译管线（行为逐行等价）：marked 自定义 renderer
  * （mermaid 类名）+ DOMPurify 单点净化 + postProcessCompiledMarkdown +
- * 多P 总结分页（useMultipartSummary 本质）。
+ * 多P 总结一P一页分页状态机。
  * 契约面：
  * - configureMarkdownRenderer() / compileMarkdownText(summary, { videoUrl })
- * - useMarkdownCompile({ selectedTask, fetchTaskFullContent }) →
- *   { compiledMarkdown, showFullMultipartSummary, multipartPage,
- *     multipartPageCount, expandMultipartSummary, collapseMultipartSummary,
- *     changeMultipartPage }
+ * - useMarkdownCompile({ selectedTask, parts, partDetails }) →
+ *   { overviewCompiledMarkdown, pageCompiledMarkdown, multipartPage,
+ *     multipartPageCount, multipartPagePart, changeMultipartPage }
+ *
+ * 缺陷回归（重构前旧逻辑）：
+ * - 旧 getMultipartPages 按每 10 个 P 拼一页 → 页数 ≠ parts 数；
+ * - 旧 getMultipartOverview 无 "# 分P总结" 标记时 slice(0, 12000) 截断。
  */
 import { defineComponent, ref } from 'vue'
 import { mount } from '@vue/test-utils'
@@ -20,7 +23,7 @@ import {
   configureMarkdownRenderer,
   useMarkdownCompile,
 } from '../useMarkdownCompile'
-import type { Task } from '../../../types'
+import type { Task, TaskPart } from '../../../types'
 
 // 与 App.p1Defenses.test.ts 同款 DOMPurify 行为双（happy-dom 与全量算法不兼容）
 vi.mock('dompurify', () => {
@@ -39,6 +42,16 @@ const makeTask = (overrides: Partial<Task>): Task => ({
   status: 'COMPLETED',
   progress: 1.0,
   created_at: '2026-08-08T10:00:00Z',
+  ...overrides,
+})
+
+const makePart = (partIndex: number, overrides: Partial<TaskPart> = {}): TaskPart => ({
+  task_id: 'task-1',
+  part_index: partIndex,
+  status: 'COMPLETED',
+  progress: 1,
+  duration: 60,
+  title: `P${partIndex + 1}`,
   ...overrides,
 })
 
@@ -80,20 +93,26 @@ describe('compileMarkdownText（编译管线纯函数）', () => {
   })
 })
 
-const mountCompile = (task: Task | null, fetchTaskFullContent = vi.fn()) => {
+const mountCompile = (
+  task: Task | null,
+  parts: TaskPart[] = [],
+  partDetails: Record<number, TaskPart> = {},
+) => {
   let compile!: ReturnType<typeof useMarkdownCompile>
   const selectedTask = ref<Task | null>(task)
+  const partsRef = ref<TaskPart[]>(parts)
+  const partDetailsRef = ref<Record<number, TaskPart>>(partDetails)
   const TestComponent = defineComponent({
     setup() {
-      compile = useMarkdownCompile({ selectedTask, fetchTaskFullContent })
+      compile = useMarkdownCompile({ selectedTask, parts: partsRef, partDetails: partDetailsRef })
       return () => null
     },
   })
   const wrapper = mount(TestComponent)
-  return { compile, wrapper, selectedTask, fetchTaskFullContent }
+  return { compile, wrapper, selectedTask, parts: partsRef, partDetails: partDetailsRef }
 }
 
-describe('useMarkdownCompile：多P 总结预览与分页', () => {
+describe('useMarkdownCompile：多P 一P一页分页', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -102,91 +121,155 @@ describe('useMarkdownCompile：多P 总结预览与分页', () => {
     vi.useRealTimers()
   })
 
-  it('分P任务无分P标记时 overview = 前 12000 字符', async () => {
-    const summary = 'x'.repeat(15000)
-    const { compile, selectedTask } = mountCompile(makeTask({ has_parts: true, summary }))
+  it('非多P任务：主行 summary 全量渲染（回归），multipartPageCount=0', async () => {
+    const { compile, selectedTask } = mountCompile(makeTask({ summary: '普通总结全部内容' }))
     await vi.advanceTimersByTimeAsync(120)
-    // marked 会包裹 <p> 等标签，按原始字符计数断言截断生效
-    const xCount = (compile.compiledMarkdown.value.match(/x/g) || []).length
-    expect(xCount).toBe(12000)
+    expect(compile.overviewCompiledMarkdown.value).toContain('普通总结全部内容')
+    expect(compile.multipartPageCount.value).toBe(0)
+    expect(compile.pageCompiledMarkdown.value).toBe('')
     selectedTask.value = null
   })
 
-  it('分P任务默认预览 = 分P总结标记前的 overview，multipartPageCount 正确', async () => {
+  it('多P任务：总览 = "# 分P总结" 标记前部分（常驻编译），当前页 = P1 summary', async () => {
     const summary = `总览部分内容\n\n# 分P总结\n\n## P1：第一部分\n内容1\n\n## P2：第二部分\n内容2`
-    const { compile, selectedTask } = mountCompile(makeTask({ has_parts: true, summary }))
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary }),
+      [makePart(0, { summary: 'P1的总结' }), makePart(1, { summary: 'P2的总结' })],
+    )
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.compiledMarkdown.value).toContain('总览部分内容')
-    expect(compile.compiledMarkdown.value).not.toContain('分P总结')
-    expect(compile.multipartPageCount.value).toBe(1)
+    expect(compile.overviewCompiledMarkdown.value).toContain('总览部分内容')
+    expect(compile.overviewCompiledMarkdown.value).not.toContain('分P总结')
+    expect(compile.pageCompiledMarkdown.value).toContain('P1的总结')
     selectedTask.value = null
   })
 
-  it('展开后按页加载，页码切换重新编译', async () => {
-    const pages = Array.from({ length: 12 }, (_, i) => `## P${i + 1}：第${i + 1}节\n内容${i + 1}`).join('\n\n')
-    const summary = `# 分P总结\n\n${pages}`
-    const { compile, selectedTask } = mountCompile(makeTask({ has_parts: true, summary }))
+  it('回归修复：无 "# 分P总结" 标记时总览 = 整个 summary，不再截断 12000 字符', async () => {
+    const summary = 'x'.repeat(15000)
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary }),
+      [makePart(0)],
+    )
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.multipartPageCount.value).toBe(2) // 12 节 → 每页 10
+    const xCount = (compile.overviewCompiledMarkdown.value.match(/x/g) || []).length
+    expect(xCount).toBeGreaterThan(12000)
+    expect(compile.overviewCompiledMarkdown.value).toContain(summary)
+    selectedTask.value = null
+  })
 
-    compile.showFullMultipartSummary.value = true
+  it('回归修复：页数 = parts 数量（一P一页），而非每 10 个 P 拼一页', async () => {
+    const parts = [makePart(0, { summary: 'a' }), makePart(1, { summary: 'b' }), makePart(2, { summary: 'c' })]
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary: '总览' }),
+      parts,
+    )
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.compiledMarkdown.value).toContain('P1')
-    expect(compile.compiledMarkdown.value).not.toContain('P11')
+    expect(compile.multipartPageCount.value).toBe(3)
+    selectedTask.value = null
+  })
+
+  it('非多P任务即使传入 parts 也保持 multipartPageCount=0', async () => {
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ summary: '普通总结' }),
+      [makePart(0, { summary: 'x' })],
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    expect(compile.multipartPageCount.value).toBe(0)
+    selectedTask.value = null
+  })
+
+  it('翻页后当前页内容切换重新编译（仅 pageCompiledMarkdown 变化）', async () => {
+    const parts = [makePart(0, { summary: 'P1总结' }), makePart(1, { summary: 'P2总结' })]
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary: '总览' }),
+      parts,
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    expect(compile.pageCompiledMarkdown.value).toContain('P1总结')
 
     compile.changeMultipartPage(1)
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.compiledMarkdown.value).toContain('P11')
+    expect(compile.pageCompiledMarkdown.value).toContain('P2总结')
+    expect(compile.pageCompiledMarkdown.value).not.toContain('P1总结')
+    // 总览常驻：翻页不影响总览段
+    expect(compile.overviewCompiledMarkdown.value).toContain('总览')
     selectedTask.value = null
   })
 
-  it('changeMultipartPage 越界夹逼', () => {
-    const pages = Array.from({ length: 3 }, (_, i) => `## P${i + 1}：x${i + 1}\n内容`).join('\n\n')
-    const { compile, selectedTask } = mountCompile(makeTask({ has_parts: true, summary: `# 分P总结\n\n${pages}` }))
-    compile.changeMultipartPage(99)
-    expect(compile.multipartPage.value).toBe(0)
-    compile.showFullMultipartSummary.value = true
-    compile.changeMultipartPage(99)
-    expect(compile.multipartPage.value).toBe(0) // 单页 → 上限 0
-    selectedTask.value = null
-  })
-
-  it('expandMultipartSummary：fetchTaskFullContent 成功且身份一致才展开', async () => {
-    const task = makeTask({ id: 't1', has_parts: true, summary: '截断' })
-    const fetchTaskFullContent = vi.fn().mockResolvedValue(undefined)
-    const { compile, selectedTask } = mountCompile(task, fetchTaskFullContent)
-    await compile.expandMultipartSummary()
-    expect(fetchTaskFullContent).toHaveBeenCalledWith('t1')
-    expect(compile.showFullMultipartSummary.value).toBe(true)
-    selectedTask.value = null
-  })
-
-  it('expandMultipartSummary 身份守卫：等待期间切换任务不展开', async () => {
-    const task = makeTask({ id: 't1', has_parts: true, summary: '截断' })
-    let resolveFetch!: () => void
-    const fetchTaskFullContent = vi.fn().mockReturnValue(new Promise<void>((resolve) => { resolveFetch = resolve }))
-    const { compile, selectedTask } = mountCompile(task, fetchTaskFullContent)
-
-    const pending = compile.expandMultipartSummary()
-    selectedTask.value = makeTask({ id: 't2' })
-    resolveFetch()
-    await pending
-    expect(compile.showFullMultipartSummary.value).toBe(false)
-    selectedTask.value = null
-  })
-
-  it('任务切换重置分页状态（showFullMultipartSummary=false, page=0）', async () => {
-    const summary = `# 分P总结\n\n## P1：x1\n内容1`
-    const { compile, selectedTask } = mountCompile(makeTask({ has_parts: true, summary }))
+  it('当前页 summary 优先取 partDetails，回退 parts 列表行', async () => {
+    const parts = [makePart(0, { summary: '列表截断版' })]
+    const { compile, selectedTask, partDetails } = mountCompile(
+      makeTask({ has_parts: true, summary: '总览' }),
+      parts,
+    )
     await vi.advanceTimersByTimeAsync(120)
-    compile.showFullMultipartSummary.value = true
-    compile.changeMultipartPage(0)
+    expect(compile.pageCompiledMarkdown.value).toContain('列表截断版')
 
-    selectedTask.value = makeTask({ id: 't2', summary: '另一个任务' })
+    // partDetails 由 fetchTaskPart 填充后：详情优先并重新编译
+    partDetails.value = { 0: makePart(0, { summary: '详情完整版' }) }
     await vi.advanceTimersByTimeAsync(120)
-    expect(compile.showFullMultipartSummary.value).toBe(false)
+    expect(compile.pageCompiledMarkdown.value).toContain('详情完整版')
+    expect(compile.pageCompiledMarkdown.value).not.toContain('列表截断版')
+    selectedTask.value = null
+  })
+
+  it('分P summary 缺失（处理中）：pageCompiledMarkdown 为空，multipartPagePart 透出状态供占位判断', async () => {
+    const parts = [makePart(0, { status: 'TRANSCRIBING', summary: undefined })]
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary: '总览' }),
+      parts,
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    expect(compile.pageCompiledMarkdown.value).toBe('')
+    expect(compile.multipartPagePart.value?.status).toBe('TRANSCRIBING')
+    selectedTask.value = null
+  })
+
+  it('changeMultipartPage 越界夹逼到 0..N-1', async () => {
+    const parts = [makePart(0, { summary: 'a' }), makePart(1, { summary: 'b' }), makePart(2, { summary: 'c' })]
+    const { compile, selectedTask } = mountCompile(
+      makeTask({ has_parts: true, summary: '总览' }),
+      parts,
+    )
+    compile.changeMultipartPage(99)
+    expect(compile.multipartPage.value).toBe(2)
+    compile.changeMultipartPage(-1)
     expect(compile.multipartPage.value).toBe(0)
-    expect(compile.compiledMarkdown.value).toContain('另一个任务')
+    selectedTask.value = null
+  })
+
+  it('任务切换：multipartPage 重置为 0，编译产物切换到新任务（防串台）', async () => {
+    const taskA = makeTask({ id: 'task-a', has_parts: true, summary: 'A总览' })
+    const taskB = makeTask({ id: 'task-b', summary: 'B全部内容' })
+    const { compile, selectedTask, parts } = mountCompile(
+      taskA,
+      [makePart(0, { summary: 'A的P1' }), makePart(1, { summary: 'A的P2' })],
+    )
+    await vi.advanceTimersByTimeAsync(120)
+    compile.changeMultipartPage(1)
+    await vi.advanceTimersByTimeAsync(120)
+    expect(compile.pageCompiledMarkdown.value).toContain('A的P2')
+
+    // 切换任务（App 会清空 parts）
+    parts.value = []
+    selectedTask.value = taskB
+    await vi.advanceTimersByTimeAsync(120)
+    expect(compile.multipartPage.value).toBe(0)
+    expect(compile.multipartPageCount.value).toBe(0)
+    expect(compile.overviewCompiledMarkdown.value).toContain('B全部内容')
+    expect(compile.overviewCompiledMarkdown.value).not.toContain('A总览')
+    selectedTask.value = null
+  })
+
+  it('generation 守卫：120ms 防抖窗口内切换任务，旧任务编译产物不得落地', async () => {
+    const taskA = makeTask({ id: 'task-a', has_parts: true, summary: 'AAAA' })
+    const taskB = makeTask({ id: 'task-b', summary: 'BBBB' })
+    const { compile, selectedTask, parts } = mountCompile(taskA, [makePart(0, { summary: 'A1' })])
+    // 任务 A 编译定时器在途时立即切换任务
+    selectedTask.value = taskB
+    parts.value = []
+    await vi.advanceTimersByTimeAsync(120)
+    expect(compile.overviewCompiledMarkdown.value).toContain('BBBB')
+    expect(compile.overviewCompiledMarkdown.value).not.toContain('AAAA')
     selectedTask.value = null
   })
 })

@@ -38,11 +38,9 @@ const {
   selectedTask,
   taskParts,
   taskPartDetails,
-  loadingPartIndex,
   fetchTaskPart,
   retryFailedParts,
   selectTask,
-  fetchTaskFullContent,
   downloadContent,
   copyContent,
   deleteTask,
@@ -108,9 +106,6 @@ const isEditingTopic = ref(false)
 const editingTopicValue = ref('')
 const isTestingLlm = ref(false)
 const isRedownloading = ref(false)
-// 分P内容刷新信号：重试失败分P时递增，TaskPartsPanel 据此收起残留展开
-// （重试后后端置分P content 为 NULL，展开区不得滞留旧值）
-const taskPartsRefreshKey = ref(0)
 const summaryHighlightRequest = ref<{
   taskId: string
   keyword: string
@@ -264,10 +259,9 @@ const handleRetryTask = (task: Task) => {
   handleReTranscribe(task.id)
 }
 
-// 重试失败分P：先发刷新信号收起展开区（后端将清空分P content），再提交重试
+// 重试失败分P：提交重试（state.ts 内会失效分P详情缓存并重新拉取任务/分P）
 const handleRetryFailedParts = async () => {
   if (!selectedTask.value) return
-  taskPartsRefreshKey.value += 1
   await retryFailedParts(selectedTask.value.id)
 }
 
@@ -740,19 +734,35 @@ const topic = computed(() => {
   return ''
 })
 
-// markdown 编译管线 + 多P 总结分页（features/transcription/useMarkdownCompile）
+// markdown 编译管线 + 多P 总结一P一页分页（features/transcription/useMarkdownCompile）
 const {
-  compiledMarkdown,
-  showFullMultipartSummary,
+  overviewCompiledMarkdown,
+  pageCompiledMarkdown,
   multipartPage,
   multipartPageCount,
-  expandMultipartSummary,
-  collapseMultipartSummary,
+  multipartPagePart,
   changeMultipartPage,
 } = useMarkdownCompile({
   selectedTask,
-  fetchTaskFullContent,
+  parts: taskParts,
+  partDetails: taskPartDetails,
 })
+
+// 分P列表点击跳转：① 切换 multipartPage 到该 P；② 该 P 详情缺失时懒拉
+// fetchTaskPart（复用 state.ts 的缓存语义与 catch 日志，禁止静默失败）；
+// ③ 滚动内容区进入视野
+const taskContentAreaRef = ref<InstanceType<typeof TaskContentArea> | null>(null)
+const handlePartJump = (partIndex: number) => {
+  const task = selectedTask.value
+  if (!task) return
+  changeMultipartPage(partIndex)
+  if (!taskPartDetails.value[partIndex]) {
+    fetchTaskPart(task.id, partIndex).catch((err) => {
+      console.error('Failed to fetch task part:', err)
+    })
+  }
+  taskContentAreaRef.value?.scrollContentIntoView()
+}
 
 // 总结一键成图工作台编排（features/transcription/composables/useSummaryImageWorkbench）
 const {
@@ -782,7 +792,8 @@ const {
 } = useSummaryImageWorkbench({
   selectedTask,
   topic,
-  compiledMarkdown,
+  // 成图导出源：总览段（常驻）编译产物（旧语义 = 未展开时的 compiledMarkdown）
+  compiledMarkdown: overviewCompiledMarkdown,
   summaryImageExporter,
 })
 </script>
@@ -909,20 +920,18 @@ const {
         <!-- 内容滚动区 -->
         <TaskPartsPanel
           :parts="taskParts"
-          :part-details="taskPartDetails"
-          :loading-part-index="loadingPartIndex"
-          :task-id="selectedTask.id"
-          :refresh-key="taskPartsRefreshKey"
-          @expand="(partIndex) => selectedTask && fetchTaskPart(selectedTask.id, partIndex).catch((err) => console.error('Failed to fetch task part:', err))"
+          @jump="handlePartJump"
           @retry="handleRetryFailedParts"
         />
         <TaskContentArea
+          ref="taskContentAreaRef"
           :task="selectedTask"
           :active-tab="activeTab"
-          :compiled-markdown="compiledMarkdown"
-          :show-full-multipart-summary="showFullMultipartSummary"
+          :overview-compiled-markdown="overviewCompiledMarkdown"
+          :page-compiled-markdown="pageCompiledMarkdown"
           :multipart-page="multipartPage"
           :multipart-page-count="multipartPageCount"
+          :multipart-page-part="multipartPagePart"
           :summary-highlight-request="summaryHighlightRequest"
           :heading-jump-request="headingJumpRequest"
           :topic="topic"
@@ -935,8 +944,6 @@ const {
           @update:editing-topic-value="(val) => editingTopicValue = val"
           @update-markdown-headings="handleMarkdownHeadingsUpdate"
           @update-active-heading-id="handleActiveHeadingIdUpdate"
-          @expand-multipart-summary="expandMultipartSummary"
-          @collapse-multipart-summary="collapseMultipartSummary"
           @change-multipart-page="changeMultipartPage"
         />
       </template>

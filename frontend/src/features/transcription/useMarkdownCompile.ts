@@ -6,15 +6,15 @@
  * 2. 编译管线出口：stripDoubleBracePlaceholders → marked.parse →
  *    DOMPurify 单点净化（FORBID_ATTR: ['style'] + USE_PROFILES: { html: true }）
  *    → postProcessCompiledMarkdown（时间芯片/代码类名）
- * 3. 多P 总结分页状态机（useMultipartSummary 本质）：overview / 按页加载 /
- *    任务切换重置 / 身份守卫展开
+ * 3. 多P 总结一P一页分页状态机：总览段（常驻）+ 当前分P页（随 multipartPage
+ *    变化）+ 任务切换重置 + generation 守卫（防串台）
  *
  * 供 App.vue（编排）与 MarkdownContent.vue（渲染容器）共用。
  */
 import { computed, ref, watch, type Ref } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import type { Task } from '../../types'
+import type { Task, TaskPart } from '../../types'
 import { stripDoubleBracePlaceholders } from '../../utils/formatters'
 import { postProcessCompiledMarkdown } from '../../utils/markdownPostProcessor'
 
@@ -53,52 +53,55 @@ export function compileMarkdownText(summary: string, options?: { videoUrl?: stri
   return postProcessCompiledMarkdown(html, { videoUrl: options?.videoUrl || '' })
 }
 
-/** 多P 总结每页分 P 数（与拆片前 App.vue 常量一致） */
-const MULTIPART_PAGE_SIZE = 10
+/**
+ * 分P 处理中状态集合（与 features/task/state.ts 的 PROCESSING_STATUSES 对齐）：
+ * 占位文案区分"正在处理中"与"暂无可展示内容"。
+ */
+export const PART_PROCESSING_STATUSES = new Set([
+  'PENDING',
+  'DOWNLOADING',
+  'UPLOADING',
+  'TRANSCRIBING',
+  'SUMMARIZING',
+])
 
 export function useMarkdownCompile(options: {
   selectedTask: Readonly<Ref<Task | null>>
-  fetchTaskFullContent: (taskId: string) => Promise<unknown>
+  /** 分P 列表：task.has_parts 时页数 = parts 数（一P一页） */
+  parts: Readonly<Ref<TaskPart[]>>
+  /** 分P 详情缓存（App 由 fetchTaskPart 填充）；当前页 summary 优先取 partDetails，回退 parts */
+  partDetails: Readonly<Ref<Record<number, TaskPart>>>
 }) {
-  const { selectedTask, fetchTaskFullContent } = options
+  const { selectedTask, parts, partDetails } = options
   configureMarkdownRenderer()
 
-  // Defer large summary compilation so the multipart preview stays interactive.
-  const compiledMarkdown = ref('')
-  const showFullMultipartSummary = ref(false)
+  // 总览段与当前分P页分开编译：翻页只重编当前页，
+  // 总览（章节导航/高亮/mermaid 锚点来源）常驻不受影响。
+  const overviewCompiledMarkdown = ref('')
+  const pageCompiledMarkdown = ref('')
   const multipartPage = ref(0)
   let markdownCompileTimer: ReturnType<typeof setTimeout> | null = null
   let markdownCompileGeneration = 0
 
+  /**
+   * 总览段：有 "# 分P总结" 标记 → 标记前部分；无标记 → 整个 summary。
+   * （无标记时不再 slice(0, 12000) 截断：截断是旧缺陷，多P 总览可能整段丢失）
+   */
   const getMultipartOverview = (summary: string) => {
     const marker = summary.search(/^#\s*分P总结.*$/m)
-    if (marker > 0) return summary.slice(0, marker).trim()
-    return summary.slice(0, 12000).trim()
-  }
-
-  const getMultipartPages = (summary: string) => {
-    const marker = summary.search(/^#\s*分P总结.*$/m)
-    if (marker < 0) return [summary]
-    const body = summary.slice(marker)
-    const matches = Array.from(body.matchAll(/^##\s+P\d+[:：].*$/gm))
-    if (!matches.length) return [body.trim()]
-    const sections = matches.map((match, index) => {
-      const start = match.index ?? 0
-      const nextMatch = matches[index + 1]
-      const end = nextMatch?.index ?? body.length
-      return body.slice(start, end).trim()
-    })
-    const pages: string[] = []
-    for (let index = 0; index < sections.length; index += MULTIPART_PAGE_SIZE) {
-      pages.push(`# 分P总结\\n\\n${sections.slice(index, index + MULTIPART_PAGE_SIZE).join('\\n\\n')}`)
-    }
-    return pages
+    if (marker >= 0) return summary.slice(0, marker).trim()
+    return summary.trim()
   }
 
   const multipartPageCount = computed(() => {
-    const summary = selectedTask.value?.summary
-    if (!summary || !selectedTask.value?.has_parts) return 0
-    return getMultipartPages(summary).length
+    if (!selectedTask.value?.has_parts) return 0
+    return parts.value.length
+  })
+
+  /** 当前分P页解析出的分P（partDetails 优先，回退 parts 列表行），供占位状态判断 */
+  const multipartPagePart = computed(() => {
+    const page = multipartPage.value
+    return partDetails.value[page] || parts.value[page] || null
   })
 
   const scheduleMarkdownCompile = () => {
@@ -109,7 +112,8 @@ export function useMarkdownCompile(options: {
       markdownCompileTimer = null
     }
 
-    compiledMarkdown.value = ''
+    overviewCompiledMarkdown.value = ''
+    pageCompiledMarkdown.value = ''
     const task = selectedTask.value
     if (!task?.summary) return
 
@@ -119,23 +123,33 @@ export function useMarkdownCompile(options: {
 
       const summary = task.summary
       if (!summary) return
-      let previewSummary = summary
-      if (task.has_parts) {
-        if (!showFullMultipartSummary.value) {
-          previewSummary = getMultipartOverview(summary)
-        } else {
-          const pages = getMultipartPages(summary)
-          previewSummary = pages[multipartPage.value] || pages[0] || ''
+
+      overviewCompiledMarkdown.value = compileMarkdownText(
+        task.has_parts ? getMultipartOverview(summary) : summary,
+        { videoUrl: task.video_url || '' },
+      )
+
+      if (task.has_parts && parts.value.length > 0) {
+        const page = Math.min(multipartPage.value, parts.value.length - 1)
+        const part = partDetails.value[page] || parts.value[page]
+        const partSummary = part?.summary
+        if (partSummary) {
+          pageCompiledMarkdown.value = compileMarkdownText(partSummary, {
+            videoUrl: task.video_url || '',
+          })
         }
       }
-      compiledMarkdown.value = compileMarkdownText(previewSummary, {
-        videoUrl: task.video_url || '',
-      })
     }, 120)
   }
 
   watch(
-    [() => selectedTask.value?.id, () => selectedTask.value?.summary, showFullMultipartSummary, multipartPage],
+    [
+      () => selectedTask.value?.id,
+      () => selectedTask.value?.summary,
+      () => parts.value,
+      () => partDetails.value,
+      multipartPage,
+    ],
     scheduleMarkdownCompile,
     { immediate: true },
   )
@@ -143,43 +157,20 @@ export function useMarkdownCompile(options: {
   watch(
     () => selectedTask.value?.id,
     () => {
-      showFullMultipartSummary.value = false
       multipartPage.value = 0
     },
   )
-
-  const expandMultipartSummary = async () => {
-    const task = selectedTask.value
-    if (!task) return
-    multipartPage.value = 0
-    try {
-      await fetchTaskFullContent(task.id)
-    } catch (error) {
-      console.error('Failed to load full multipart summary:', error)
-      return
-    }
-    // 等待期间用户可能已切换任务：任务身份重校验（与 copyContent/downloadContent
-    // 的 selectedTask.id 守卫模式一致），不得展开新任务的完整分P总结
-    if (!selectedTask.value || selectedTask.value.id !== task.id) return
-    showFullMultipartSummary.value = true
-  }
-
-  const collapseMultipartSummary = () => {
-    showFullMultipartSummary.value = false
-    multipartPage.value = 0
-  }
 
   const changeMultipartPage = (page: number) => {
     multipartPage.value = Math.max(0, Math.min(page, Math.max(0, multipartPageCount.value - 1)))
   }
 
   return {
-    compiledMarkdown,
-    showFullMultipartSummary,
+    overviewCompiledMarkdown,
+    pageCompiledMarkdown,
     multipartPage,
     multipartPageCount,
-    expandMultipartSummary,
-    collapseMultipartSummary,
+    multipartPagePart,
     changeMultipartPage,
   }
 }

@@ -1,75 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import type { TaskPart } from '../types'
 import { formatDuration } from '../utils/formatters'
 import { getPartStatusLabel, getPartStatusClass } from '../shared/utils/taskStatus'
-import { compileMarkdownText } from '../features/transcription/useMarkdownCompile'
 
 const props = defineProps<{
   parts: TaskPart[]
-  partDetails?: Record<number, TaskPart>
   loading?: boolean
-  loadingPartIndex?: number | null
-  /** 当前选中任务 id：任务切换时重置展开状态，防止旧任务的展开索引残留到新任务 */
-  taskId?: string | null
-  /** 分P内容刷新信号（如重试失败分P，后端将清空分P content）：变化时收起展开区 */
-  refreshKey?: number
 }>()
 
 const emit = defineEmits<{
   retry: []
-  expand: [partIndex: number]
+  /** 点击分P行：跳转到下方 markdown 渲染器对应页（一P一页） */
+  jump: [partIndex: number]
 }>()
 
-const expandedPart = ref<number | null>(null)
 const panelRef = ref<HTMLElement | null>(null)
-
-// 任务切换（taskId 变化）时重置展开状态：parts 直接替换（面板保持挂载）的场景
-// 下，旧任务的展开索引不得残留到新任务的分P列表
-watch(
-  () => props.taskId,
-  () => {
-    expandedPart.value = null
-  },
-)
-
-// 内容刷新（重试失败分P等）时收起展开区：后端已置分P content 为 NULL，
-// 展开区不得滞留旧值
-watch(
-  () => props.refreshKey,
-  () => {
-    expandedPart.value = null
-  },
-)
 const panelHeight = ref<number | null>(null)
 const isResizing = ref(false)
 const failedParts = computed(() => props.parts.filter((part) => part.status === 'FAILED'))
-
-const getPartDetail = (part: TaskPart) => props.partDetails?.[part.part_index] || part
-
-// 展开区 summary markdown 编译（P0 修复 B）：summary 经 compileMarkdownText
-// 净化管线编译后 v-html 渲染（XSS 防线：v-html 只允许消费该管线产物，禁止
-// 绕过出口直接赋值，契约见 useMarkdownCompile.ts）。只编译当前展开分P的内容，
-// 随 parts/partDetails 变化自动重算。transcript 保持 whitespace-pre-wrap 纯文本
-// （P1-1：marked 无 breaks 配置会折叠单换行，行首 #/-/** 会被误解释，与主内容区
-// 对 transcript 的纯文本处理保持一致）。
-const expandedDetail = computed(() => {
-  const part = props.parts.find((p) => p.part_index === expandedPart.value)
-  if (!part) return null
-  return getPartDetail(part)
-})
-const expandedSummaryHtml = computed(() => {
-  const summary = expandedDetail.value?.summary
-  return summary ? compileMarkdownText(summary) : ''
-})
-
-const togglePart = (partIndex: number) => {
-  const expanding = expandedPart.value !== partIndex
-  expandedPart.value = expanding ? partIndex : null
-  if (expanding) {
-    emit('expand', partIndex)
-  }
-}
 
 const getMaxPanelHeight = () => Math.max(180, Math.round(window.innerHeight * 0.8))
 
@@ -167,7 +116,12 @@ onBeforeUnmount(stopPanelResize)
       :class="{ 'max-h-[40vh]': !panelHeight }"
     >
       <article v-for="part in parts" :key="part.part_index" class="px-4 py-3">
-        <button type="button" class="flex w-full items-center gap-3 text-left" @click="togglePart(part.part_index)">
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 text-left"
+          title="点击跳转到该分P总结"
+          @click="emit('jump', part.part_index)"
+        >
           <span class="w-10 shrink-0 text-xs font-semibold text-slate-500">P{{ part.part_index + 1 }}</span>
           <span class="min-w-0 flex-1 truncate text-sm text-slate-700">{{ part.title || '未命名分P' }}</span>
           <span class="shrink-0 text-xs text-slate-400">{{ formatDuration(part.duration, { format: 'chinese' }) }}</span>
@@ -176,23 +130,6 @@ onBeforeUnmount(stopPanelResize)
         </button>
         <div v-if="part.status === 'FAILED' && part.error_message" class="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
           {{ part.error_message }}
-        </div>
-        <div v-if="expandedPart === part.part_index" class="mt-3 space-y-3 rounded-lg bg-slate-50 p-3 text-sm">
-          <div v-if="loadingPartIndex === part.part_index" class="text-xs text-slate-400">正在加载该分P预览...</div>
-          <template v-else>
-            <div v-if="getPartDetail(part).summary">
-              <div class="mb-1 text-xs font-semibold text-slate-500">单P总结</div>
-              <div
-                class="prose prose-sm prose-slate prose-headings:font-bold prose-a:text-blue-600 hover:prose-a:underline max-w-none text-slate-700 [&_p]:my-0.5 [&_ul]:my-0.5 [&_ol]:my-0.5"
-                v-html="expandedSummaryHtml"
-              ></div>
-            </div>
-            <div v-if="getPartDetail(part).transcript">
-              <div class="mb-1 text-xs font-semibold text-slate-500">转录文本</div>
-              <div class="max-h-48 overflow-auto whitespace-pre-wrap text-xs leading-5 text-slate-600">{{ getPartDetail(part).transcript }}</div>
-            </div>
-            <div v-if="!getPartDetail(part).summary && !getPartDetail(part).transcript" class="text-xs text-slate-400">暂无可展示内容</div>
-          </template>
         </div>
       </article>
     </div>

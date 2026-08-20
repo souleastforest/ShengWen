@@ -9,8 +9,9 @@
  *    前被调用，且其结果流入 v-html 输入）；真实剥离行为在真实浏览器中验证过。
  * 2. [P1-3] 任务切换视图状态全重置：selectTask 后 isEditingTopic=false、
  *    editingTopicValue=''（防任务 A 编辑文本 PATCH 到任务 B）。
- * 3. [P1-3] expandMultipartSummary 在 await fetchTaskFullContent 后做任务身份
- *    重校验（等待期间切换任务不得展开新任务的分P总结）。
+ *
+ * 注：原 expandMultipartSummary 相关用例随一P一页分页重构移除
+ * （多P 总结不再"展开完整分P总结"，见 App.multipartPager.test.ts）。
  */
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -19,7 +20,6 @@ import DOMPurify from 'dompurify'
 import App from '../App.vue'
 import Sidebar from '../components/Sidebar.vue'
 import TaskContentArea from '../components/TaskContentArea.vue'
-import TaskPartsPanel from '../components/TaskPartsPanel.vue'
 import type { Task } from '../types'
 
 vi.mock('axios', () => ({
@@ -155,8 +155,8 @@ describe('P1 防线加固：App.vue 装配层', () => {
         { FORBID_ATTR: ['style'], USE_PROFILES: { html: true } },
       )
 
-      // 渲染输入（compiledMarkdown）不得包含事件处理器与 style 属性
-      const compiled = wrapper.findComponent(TaskContentArea).props('compiledMarkdown') as string
+      // 渲染输入（overviewCompiledMarkdown）不得包含事件处理器与 style 属性
+      const compiled = wrapper.findComponent(TaskContentArea).props('overviewCompiledMarkdown') as string
       expect(compiled).not.toContain('onerror')
       expect(compiled).not.toContain('style=')
       // 正常 markdown 内容保留（链接、标题）
@@ -194,88 +194,6 @@ describe('P1 防线加固：App.vue 装配层', () => {
 
       expect(wrapper.findComponent(TaskContentArea).props('isEditingTopic')).toBe(false)
       expect(wrapper.findComponent(TaskContentArea).props('editingTopicValue')).toBe('')
-
-      wrapper.unmount()
-    })
-
-    it('expandMultipartSummary 身份守卫：等待完整内容期间切换任务，不展开新任务的完整分P总结', async () => {
-      const wrapper = mountApp()
-      const taskA = makeTask('task-a', { has_parts: true, summary: 'A的截断总结' })
-      const taskB = makeTask('task-b', { summary: 'B的总结' })
-
-      let resolveFullA!: (v: { data: Task }) => void
-      const fullAPromise = new Promise<{ data: Task }>((resolve) => {
-        resolveFullA = resolve
-      })
-
-      installDefaultAxios({
-        '/tasks/task-a?include_content=false': { ...taskA, transcript: null, summary: 'A的截断总结' },
-        '/tasks/task-a?include_content=true': fullAPromise,
-        '/tasks/task-b?include_content=false': { ...taskB, transcript: null, summary: 'B的总结' },
-        '/tasks/task-b?include_content=true': { ...taskB, transcript: 'B的转录', summary: 'B的总结' },
-      })
-
-      // 选中任务 A（分P任务）并点击"展开完整分P总结"
-      selectTaskViaSidebar(wrapper, taskA)
-      await sleep(50)
-      wrapper.findComponent(TaskContentArea).vm.$emit('expand-multipart-summary')
-
-      // 完整内容请求在途时切换到任务 B
-      selectTaskViaSidebar(wrapper, taskB)
-      await sleep(50)
-
-      // A 的完整内容返回：任务已切换，不得展开 B 的完整分P总结
-      resolveFullA({ data: { ...taskA, summary: 'A的完整总结', transcript: 'A的完整转录' } })
-      await sleep(50)
-
-      expect(wrapper.findComponent(TaskContentArea).props('showFullMultipartSummary')).toBe(false)
-
-      wrapper.unmount()
-    })
-
-    it('expandMultipartSummary 正常路径：同一任务下完整内容返回后展开', async () => {
-      const wrapper = mountApp()
-      const taskA = makeTask('task-a', { has_parts: true, summary: 'A的截断总结' })
-
-      installDefaultAxios({
-        '/tasks/task-a?include_content=false': { ...taskA, transcript: null, summary: 'A的截断总结' },
-        '/tasks/task-a?include_content=true': { ...taskA, transcript: 'A的转录', summary: 'A的完整总结' },
-      })
-
-      selectTaskViaSidebar(wrapper, taskA)
-      await sleep(50)
-      wrapper.findComponent(TaskContentArea).vm.$emit('expand-multipart-summary')
-      await sleep(50)
-
-      expect(wrapper.findComponent(TaskContentArea).props('showFullMultipartSummary')).toBe(true)
-
-      wrapper.unmount()
-    })
-  })
-
-  describe('[S-4] 重试失败分P后收起残留展开（refreshKey 联动）', () => {
-    it('重试触发后向 TaskPartsPanel 传递递增的 refreshKey', async () => {
-      const wrapper = mountApp()
-      const taskA = makeTask('task-a', { has_parts: true, summary: 'A的总结' })
-
-      installDefaultAxios({
-        '/tasks/task-a?include_content=false': { ...taskA, transcript: null, summary: 'A的总结' },
-        '/tasks/task-a/parts': [
-          { task_id: 'task-a', part_index: 0, status: 'FAILED', progress: 0, title: 'P1' },
-        ],
-      })
-
-      selectTaskViaSidebar(wrapper, taskA)
-      await sleep(50)
-
-      const panel = wrapper.findComponent(TaskPartsPanel)
-      expect(panel.exists()).toBe(true)
-      expect(panel.props('refreshKey')).toBe(0)
-
-      panel.vm.$emit('retry')
-      await sleep(50)
-
-      expect(wrapper.findComponent(TaskPartsPanel).props('refreshKey')).toBe(1)
 
       wrapper.unmount()
     })
