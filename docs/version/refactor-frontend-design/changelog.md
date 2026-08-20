@@ -5,6 +5,11 @@
 
 ## Change Log
 
+- 2026-08-20: **feat(frontend): 多P总结改"一P一页"分页展示**（fix/multipart-pager-redesign → 合并 d83a08c，含 2cd6d5a/ddfbe2c/1179f54）。
+  - **需求**（用户定稿，AskUserQuestion）：分P总结一个 P 一页，分页器页数 = P 数，可输入分P号跳转；分P列表点击 = 跳转到渲染器对应页（删除内联预览）；"总体概览 + mermaid" 常驻顶部。
+  - **改动**：① useMarkdownCompile 删除旧"硬编码拼接 + 正则切分"展示（MULTIPART_PAGE_SIZE/getMultipartPages/showFullMultipartSummary/expand/collapse），拆为 overviewCompiledMarkdown（常驻总览）+ pageCompiledMarkdown（随 multipartPage 变化，数据源 = partDetails[page].summary）；② TaskContentArea 新分页器（◀ 第 x / N 页 ▶ + 输入框 1-based 分P号回车跳转 + 处理中/无内容占位区分）；③ TaskPartsPanel 删内联预览改 emit jump；④ App.vue watch(multipartPage) 无条件 fetchTaskPart（state.ts 缓存新鲜度：完成命中不重复请求、处理中必然过期 → 占位自愈）。
+  - **对抗评审 + e2e 发现的三个缺陷（全部修复）**：a) 分页器导航不懒拉详情（parts 列表行契约上无 summary，include_text=False）→ watch 统一驱动；b) "存在即跳过"守卫绕过缓存新鲜度 → 处理中点击过的分P完成后占位永久卡死 → 无条件 fetchTaskPart 自愈；c) **总览切分对真实双段结构错误**——0f13aa14 任务主行 summary 实测为"总览+mermaid + 11 个完整分P段 + # 分P总结 + 11 个精简段"（一级标记在段后），旧三段式返回 0-10901 把 11 个完整分P段泄进总览区 → 双标记取 min 判据（min(# 分P总结 标记位, 首个 ## Pn 位)）兼容两种真实格式。
+  - **验证**：TDD 红绿；全量 vitest 442 / vue-tsc 0；21001 重启后 playwright e2e 9/9 PASS（分页器 11 页、总览无泄漏（562 字符）、输入 3 跳转、列表点击跳第 5 页、无预览、▶ 翻页）；相邻模式（非多P全量渲染/占位/缓存）单测覆盖。
 - 2026-08-19: **fix: e2e 复核发现的三个回归**（PR #21/#22）。
   - **后端（#21）**：主行泄漏修复（#20）后 multipart 子任务不再写主行 status，但入口无兜底——主行停留在创建时的 PENDING，前端误显示"等待中"数小时。修复：_process_bilibili_multipart 入口统一置主行 DOWNLOADING（同步 db.update_task——异步投递可能落在 finalize 终态之后把任务卡死 DOWNLOADING）。
   - **前端（#22）**：宽屏章节导航面板默认展开（320×541）覆盖内容区顶部——P7 引入分P面板后，分P面板前几行右侧被白色面板遮挡不可点击。修复：宽屏默认收起（与窄屏一致），点击"章节"展开，跳转功能不变。
