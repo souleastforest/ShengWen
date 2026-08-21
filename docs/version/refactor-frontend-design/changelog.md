@@ -5,6 +5,7 @@
 
 ## Change Log
 
+- 2026-08-21: **上线生产 21010**（4f97129 @ refactor/frontend-design）。上线动作：备份检查（bak.1 < 1 天）→ git checkout 4f97129 → npm run build → 重启 prod pane（claude:6.0）→ 健康 200。回滚点：8ad56bc（checkout + build + 重启）。**环境适配**：refactor 分支 pyproject 引入 vibevoice = { path = "../VibeVoice-bilibili-subtitle/VibeVoice" } 相对路径，生产 ../ 无该目录（旧生产 pyproject 无此依赖）→ symlink /home/admin/projects/prod/VibeVoice-bilibili-subtitle → /home/admin/projects/VibeVoice-bilibili-subtitle（生产 venv 已装 vibevoice/torch/bitsandbytes 三件套）。存量多P任务无需补跑（纯展示层改动，新前端对存量数据自动生效）。
 - 2026-08-20: **fix(frontend): 分P页并入 MarkdownContent 统一渲染 + 章节胶囊分P项**（33f90e2/155632a，基于 PR #23）。
   - **用户校正**：分P页不要"单独放下面"（独立 v-html 容器缺 markdown-theme-container 类 → time-chip 图标尺寸规则不命中，svg 默认大小过大/对不齐），改回 MarkdownContent 统一渲染；章节浮动胶囊目前只剩"总体概览"（旧版从拼接串收集 ## Pn 标题，min 判据截断后总览段无分P标题）→ 补分P章节项。
   - **改动**：① useMarkdownCompile 新增 compiledMarkdown（总览段 + '\n\n---\n\n' + 当前分P页 summary 一次编译，MarkdownContent 唯一容器渲染；无 summary 时 = 总览段，占位由 multipartPagePart 判断）；② TaskContentArea 删独立容器/小标题，分页器移至内容下方；③ 章节导航 = 总览标题（update-markdown-headings 流）+ 分P章节项（partChapters.ts：'part-' 前缀，P{idx+1} {title}，未命名兜底），点击分P项 → changeMultipartPage + 滚动（与分P面板 jump 同路径），当前页高亮 'part-' + multipartPage；④ 成图导出源 = overviewCompiledMarkdown 不变。
