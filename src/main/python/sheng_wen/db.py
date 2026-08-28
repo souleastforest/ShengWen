@@ -79,6 +79,9 @@ class TaskModel(Base):
     # 与 summary_chunk_* 对称）。供前端展示"转录分片 done/total"。
     asr_chunk_total = Column(Integer, nullable=True)
     asr_chunk_done = Column(Integer, nullable=True)
+    # 段级转录结果（JSON 数组 TEXT，见 transcriber/type.py Segment）；
+    # None 表示无 segments（存量任务由 HHMMSS 行解析回退）
+    transcript_segments = Column(Text, nullable=True)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -109,6 +112,7 @@ class TaskModel(Base):
             "source_name": self.source_name,
             "asr_chunk_total": self.asr_chunk_total,
             "asr_chunk_done": self.asr_chunk_done,
+            "transcript_segments": self.transcript_segments,
         }
 
 
@@ -154,6 +158,7 @@ class TaskDB:
             has_source_name = "source_name" in columns
             has_asr_chunk_total = "asr_chunk_total" in columns
             has_asr_chunk_done = "asr_chunk_done" in columns
+            has_transcript_segments = "transcript_segments" in columns
             if (
                 has_latest_modified_at
                 and has_author_name
@@ -168,6 +173,7 @@ class TaskDB:
                 and has_source_name
                 and has_asr_chunk_total
                 and has_asr_chunk_done
+                and has_transcript_segments
             ):
                 return
 
@@ -260,6 +266,13 @@ class TaskDB:
                         text("ALTER TABLE tasks ADD COLUMN asr_chunk_done INTEGER")
                     )
                     logger.info("Database schema updated: added tasks.asr_chunk_done")
+                if not has_transcript_segments:
+                    conn.execute(
+                        text("ALTER TABLE tasks ADD COLUMN transcript_segments TEXT")
+                    )
+                    logger.info(
+                        "Database schema updated: added tasks.transcript_segments"
+                    )
         except Exception as e:
             logger.error(f"Failed to ensure database schema: {e}")
 

@@ -51,6 +51,14 @@ const mountTaskState = () => {
   return { task, ws, wrapper }
 }
 
+type WsInstance = {
+  close: () => void
+  onopen: (() => void) | null
+  onmessage: ((event: { data: string }) => void) | null
+  onclose: (() => void) | null
+  onerror: ((err: unknown) => void) | null
+}
+
 describe('task 域 transcript lazy loading（useTaskViewModel 迁移）', () => {
   beforeEach(() => {
     // module 级 per-task 缓存跨测试实例共享，必须重置，否则内容会被上个测试污染
@@ -65,15 +73,19 @@ describe('task 域 transcript lazy loading（useTaskViewModel 迁移）', () => 
       return Boolean(value && typeof value === 'object' && 'isAxiosError' in value)
     })
 
-    const WebSocketMock = vi.fn(function MockWebSocket(this: Record<string, unknown>) {
+    wsInstances = []
+    const WebSocketMock = vi.fn(function MockWebSocket(this: WsInstance) {
       this.close = vi.fn()
       this.onopen = null
       this.onmessage = null
       this.onclose = null
       this.onerror = null
+      wsInstances.push(this)
     })
     vi.stubGlobal('WebSocket', WebSocketMock)
   })
+
+  let wsInstances: WsInstance[] = []
 
   it('selectTask 详情请求使用 include_content=false，transcript 被后端剥离为 null', async () => {
     const { task, wrapper } = mountTaskState()
@@ -386,6 +398,254 @@ describe('task 域 transcript lazy loading（useTaskViewModel 迁移）', () => 
     expect(fullRequests).toHaveLength(1)
     expect(result).toBe(true)
     expect(writeTextMock).toHaveBeenCalledWith('完整转录')
+
+    wrapper.unmount()
+  })
+
+  it('多P finalize 无 WS 广播：轮询合并后 transcript watch 补拉完整内容（含 segments）', async () => {
+    const { task, wrapper } = mountTaskState()
+    const multiTask: Task = {
+      ...completedTask,
+      id: 'task-multi',
+      has_parts: true,
+      latest_modified_at: 'T0',
+    }
+
+    // 阶段一：多P 未 finalize，主行 transcript 为 ''（轻量详情与完整内容均返回空串；
+    // 列表剥离 → null 是阶段二轮询合并的输入）
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url === '/tasks/task-multi?include_content=false') {
+        return Promise.resolve({ data: { ...multiTask, transcript: '', latest_modified_at: 'T0' } })
+      }
+      if (url === '/tasks/task-multi?include_content=true') {
+        return Promise.resolve({ data: { ...multiTask, transcript: '', latest_modified_at: 'T0' } })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(multiTask)
+    await flushPromises()
+    task.activeTab.value = 'transcript'
+    await flushPromises()
+    expect(task.selectedTask.value?.transcript).toBe('')
+    const fullCalls = () =>
+      mockedAxios.get.mock.calls.filter(([url]) => String(url).includes('include_content=true')).length
+    expect(fullCalls()).toBe(1)
+
+    // 阶段二：finalize 写主行（db.update_task 无 WS 广播）；轮询合并：列表剥离
+    // transcript → null、latest_modified_at 变化 → 内容陈旧 → 主行 transcript 置 null。
+    // watch 必须因 transcript 值变化（'' → null）重新补拉完整内容。
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url === '/tasks/') {
+        return Promise.resolve({ data: [{ ...multiTask, transcript: null, latest_modified_at: 'T1' }] })
+      }
+      if (url === '/tasks/task-multi?include_content=true') {
+        return Promise.resolve({
+          data: {
+            ...multiTask,
+            transcript: '多P 聚合转录全文',
+            transcript_segments: [{ start: 0, end: 3, text: '第一段' }],
+            latest_modified_at: 'T1',
+          },
+        })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    await task.fetchTasks() // 模拟 60s 轮询
+    await flushPromises()
+
+    expect(task.selectedTask.value?.transcript).toBe('多P 聚合转录全文')
+    expect(task.selectedTask.value?.transcript_segments).toEqual([{ start: 0, end: 3, text: '第一段' }])
+    expect(fullCalls()).toBe(2) // 初始 + watch 补拉
+
+    wrapper.unmount()
+  })
+
+  it('downloadSubtitle: 转录缺失时先拉完整内容，再 GET /subtitles?format=srt 并下载 Blob（文件名 字幕-<topic>.srt）', async () => {
+    const createObjectURLMock = vi.fn().mockReturnValue('blob:mock')
+    const revokeObjectURLMock = vi.fn()
+    class MockURL {}
+    Object.assign(MockURL, {
+      createObjectURL: createObjectURLMock,
+      revokeObjectURL: revokeObjectURLMock,
+    })
+    vi.stubGlobal('URL', MockURL as unknown as typeof URL)
+
+    // 捕获 anchor 的 download 文件名
+    let lastDownload = ''
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      lastDownload = this.download
+    })
+
+    const { task, wrapper } = mountTaskState()
+    const taskWithTopic = { ...completedTask, id: 'task-1', topic: '测试主题' }
+
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url === '/tasks/task-1?include_content=false') {
+        return Promise.resolve({ data: { ...taskWithTopic, transcript: null } })
+      }
+      if (url === '/tasks/task-1?include_content=true') {
+        return Promise.resolve({ data: { ...taskWithTopic, transcript: '完整转录' } })
+      }
+      if (url === '/tasks/task-1/subtitles') {
+        return Promise.resolve({ data: '1\n00:00:00,000 --> 00:00:01,000\n完整转录\n' })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(taskWithTopic)
+    await flushPromises()
+
+    await task.downloadSubtitle('srt')
+
+    // 转录缺失 → 先按需加载完整内容
+    expect(mockedAxios.get).toHaveBeenCalledWith('/tasks/task-1?include_content=true')
+    // 字幕端点：responseType text + format 参数
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      '/tasks/task-1/subtitles',
+      expect.objectContaining({ params: { format: 'srt' }, responseType: 'text' }),
+    )
+    // Blob 内容 = 后端返回的字幕文本
+    const blob = createObjectURLMock.mock.calls[0]![0] as Blob
+    expect(await blob.text()).toContain('00:00:00,000 --> 00:00:01,000')
+    expect(lastDownload).toBe('字幕-测试主题.srt')
+    expect(clickSpy).toHaveBeenCalled()
+    expect(revokeObjectURLMock).toHaveBeenCalled()
+
+    clickSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('downloadSubtitle: 转录已加载时不重复拉完整内容，vtt 文件名 字幕-<topic>.vtt', async () => {
+    const createObjectURLMock = vi.fn().mockReturnValue('blob:mock')
+    const revokeObjectURLMock = vi.fn()
+    class MockURL {}
+    Object.assign(MockURL, {
+      createObjectURL: createObjectURLMock,
+      revokeObjectURL: revokeObjectURLMock,
+    })
+    vi.stubGlobal('URL', MockURL as unknown as typeof URL)
+
+    let lastDownload = ''
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      lastDownload = this.download
+    })
+
+    const { task, wrapper } = mountTaskState()
+    const taskWithTopic = { ...completedTask, id: 'task-1', topic: '测试主题' }
+
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url === '/tasks/task-1?include_content=false') {
+        return Promise.resolve({ data: { ...taskWithTopic, transcript: null } })
+      }
+      if (url === '/tasks/task-1?include_content=true') {
+        return Promise.resolve({ data: { ...taskWithTopic, transcript: '已加载的完整转录' } })
+      }
+      if (url === '/tasks/task-1/subtitles') {
+        return Promise.resolve({ data: 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n已加载的完整转录\n' })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(taskWithTopic)
+    await flushPromises()
+    task.activeTab.value = 'transcript'
+    await flushPromises()
+
+    const fullCallsBefore = mockedAxios.get.mock.calls.filter(([url]) =>
+      String(url).includes('include_content=true')).length
+
+    await task.downloadSubtitle('vtt')
+
+    const fullCallsAfter = mockedAxios.get.mock.calls.filter(([url]) =>
+      String(url).includes('include_content=true')).length
+    expect(fullCallsAfter).toBe(fullCallsBefore) // 已加载 → 不重复拉取
+
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      '/tasks/task-1/subtitles',
+      expect.objectContaining({ params: { format: 'vtt' }, responseType: 'text' }),
+    )
+    const blob = createObjectURLMock.mock.calls[0]![0] as Blob
+    expect(await blob.text()).toContain('WEBVTT')
+    expect(lastDownload).toBe('字幕-测试主题.vtt')
+
+    clickSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  // ---- transcript_segments 线格式防御（BLOCKER-3：WS 广播可能透传 DB 原始 JSON 字符串）----
+
+  it('WS task_update 广播携带字符串 transcript_segments → 合并后归一化为数组（现状字符串透传 → TranscriptViewer 崩溃）', async () => {
+    const { task, wrapper } = mountTaskState()
+
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url === '/tasks/task-1?include_content=false') {
+        return Promise.resolve({ data: { ...completedTask, transcript: null } })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(completedTask)
+    await flushPromises()
+
+    // 后端漏修场景：WS 广播携带 DB 原始 JSON 字符串（多P finalize 后广播全量行）
+    const rawSegments = JSON.stringify([{ start: 0, end: 3, text: '第一段' }])
+    wsInstances[0]!.onmessage?.({
+      data: JSON.stringify({
+        type: 'task_update',
+        task: { ...completedTask, transcript: '转录全文', transcript_segments: rawSegments },
+      }),
+    })
+    await flushPromises()
+
+    expect(task.selectedTask.value?.transcript_segments).toEqual([{ start: 0, end: 3, text: '第一段' }])
+    expect(typeof task.selectedTask.value?.transcript_segments).not.toBe('string')
+
+    wrapper.unmount()
+  })
+
+  it('WS task_update 广播携带坏 JSON segments → 合并后为 null（与后端 _segments_list 语义一致，不残留字符串）', async () => {
+    const { task, wrapper } = mountTaskState()
+
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url === '/tasks/task-1?include_content=false') {
+        return Promise.resolve({ data: { ...completedTask, transcript: null } })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(completedTask)
+    await flushPromises()
+
+    wsInstances[0]!.onmessage?.({
+      data: JSON.stringify({
+        type: 'task_update',
+        task: { ...completedTask, transcript_segments: '{bad json' },
+      }),
+    })
+    await flushPromises()
+
+    expect(task.selectedTask.value?.transcript_segments).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('hasSegments 语义：字符串 segments 不视为"已加载"内容（merge 时回退 incoming 归一化值，不保留污染字符串）', async () => {
+    const { task, wrapper } = mountTaskState()
+
+    // 场景：selectedTask 已被字符串 segments 污染（模拟旧广播透传），随后轮询
+    // 合并轻量列表项（transcript_segments 为 null）——字符串不得判定为"已加载"，
+    // 否则 null 不会覆盖污染值，TranscriptViewer 仍可能收到字符串。
+    task.selectedTask.value = {
+      ...completedTask,
+      transcript_segments: JSON.stringify([{ start: 0, end: 3, text: '污染' }]),
+    } as unknown as Task
+    mockedAxios.get.mockResolvedValue({ data: [{ ...completedTask, transcript_segments: null }] })
+
+    await task.fetchTasks()
+
+    expect(task.selectedTask.value?.transcript_segments).toBeNull()
 
     wrapper.unmount()
   })

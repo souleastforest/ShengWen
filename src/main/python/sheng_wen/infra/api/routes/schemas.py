@@ -24,6 +24,15 @@ class TaskUpdate(BaseModel):
     topic: Optional[str] = None
 
 
+class SegmentOut(BaseModel):
+    """转录段级结果（transcript_segments 数组元素；speaker_id 可缺省）。"""
+
+    start: float
+    end: float
+    text: str
+    speaker_id: Optional[str] = None
+
+
 class Task(BaseModel):
     id: str
     video_url: str
@@ -34,6 +43,9 @@ class Task(BaseModel):
     title: Optional[str] = None
     topic: Optional[str] = None
     transcript: Optional[str] = None
+    # 段级转录结果（include_content=true 时解析为列表；false/列表端点剥离）。
+    # 加性字段向后兼容：老数据/老客户端为 None。
+    transcript_segments: Optional[list[SegmentOut]] = None
     summary: Optional[str] = None
     error_message: Optional[str] = None
     audio_duration: Optional[float] = None

@@ -10,6 +10,7 @@ from loguru import logger
 
 from ..worker import Worker, TaskCancelledError
 from .transcriber import Transcriber, TranscriptionResult, TranscriptionCancelled
+from .type import segments_to_json
 from ..api import notify_task_update
 from ..utils.ffmpeg_helper import FFmpegHelper
 from ..config import config
@@ -763,6 +764,7 @@ class TranscriberWorker(Worker):
                         "status": "COMPLETED" if skip_summarization else "SUMMARIZING",
                         "progress": 100,
                         "transcript": part_transcript,
+                        "transcript_segments": segments_to_json(result.segments),
                         "audio_duration": result.audio_duration,
                         "transcription_time": result.transcription_time,
                     },
@@ -779,6 +781,7 @@ class TranscriberWorker(Worker):
                     "status": TaskStatus.SUMMARIZING,
                     "progress": 0.0,
                     "transcript": transcript,
+                    "transcript_segments": segments_to_json(result.segments),
                     "transcription_time": result.transcription_time,
                     "audio_duration": result.audio_duration,
                     "summary_chunk_total": None,

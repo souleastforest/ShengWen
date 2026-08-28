@@ -1036,9 +1036,17 @@ class VideoDownloaderWorker(Worker):
             )
             return
 
+        from ..transcriber.subtitles import (
+            normalize_segments,
+            parse_hhmmss_transcript,
+        )
+        from ..transcriber.type import Segment, segments_from_json, segments_to_json
+
         transcript_blocks = []
         summary_blocks = []
         total_duration = 0.0
+        merged_segments: list[Segment] = []
+        cumulative_offset = 0.0
         for part in completed:
             title = part.get("title") or f"P{part['part_index'] + 1}"
             transcript_blocks.append(
@@ -1048,9 +1056,28 @@ class VideoDownloaderWorker(Worker):
                 summary_blocks.append(
                     f"## P{part['part_index'] + 1}：{title}\n\n{part['summary']}"
                 )
-            total_duration += float(
+            part_duration = float(
                 part.get("audio_duration") or part.get("duration") or 0
             )
+            total_duration += part_duration
+            # 段级字幕合并：逐 completed part 读其 segments（无则 HHMMSS 回退
+            # 解析），累加 offset（part.audio_duration or duration）到 start/end
+            # ——分P时间轴各自从 0 开始，合并后按播放顺序错开。finalize 是父
+            # 任务唯一合法写主行点（P1-2 铁律：分P子任务只写 task_parts）。
+            part_segments = segments_from_json(part.get("transcript_segments"))
+            if not part_segments:
+                part_segments = parse_hhmmss_transcript(part.get("transcript") or "")
+            for seg in part_segments:
+                merged_segments.append(
+                    Segment(
+                        start=seg.start + cumulative_offset,
+                        end=seg.end + cumulative_offset,
+                        text=seg.text,
+                        speaker_id=seg.speaker_id,
+                    )
+                )
+            cumulative_offset += part_duration
+        merged_segments = normalize_segments(merged_segments)
 
         failed_labels = ", ".join(f"P{part['part_index'] + 1}" for part in failed)
         transcript_path = os.path.join(self.output_dir, f"{task_id}_multipart.txt")
@@ -1065,6 +1092,7 @@ class VideoDownloaderWorker(Worker):
             task_id,
             {
                 "transcript": "\n\n".join(transcript_blocks),
+                "transcript_segments": segments_to_json(merged_segments),
                 "audio_duration": total_duration,
                 "progress": 95.0,
                 "status": TaskStatus.SUMMARIZING,

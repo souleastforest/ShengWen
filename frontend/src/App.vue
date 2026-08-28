@@ -47,6 +47,7 @@ const {
   retryFailedParts,
   selectTask,
   downloadContent,
+  downloadSubtitle,
   copyContent,
   deleteTask,
   reSummarize,
@@ -291,6 +292,12 @@ const handleDownloadMarkdown = async () => {
 const handleDownloadTxt = async () => {
   success('开始下载转录文本...')
   await downloadContent('transcript')
+}
+
+const handleDownloadSubtitle = async (format: 'srt' | 'vtt') => {
+  success(`开始下载字幕 ${format.toUpperCase()}...`)
+  // downloadSubtitle 为异步：转录缺失时会先按需加载完整内容，再由后端生成字幕文件
+  await downloadSubtitle(format)
 }
 
 const handleTestLlm = async () => {
@@ -955,6 +962,7 @@ const {
           @copyTranscript="handleCopyTranscript"
           @downloadMarkdown="handleDownloadMarkdown"
           @downloadTxt="handleDownloadTxt"
+          @downloadSubtitle="handleDownloadSubtitle"
           @exportSummaryImage="handleExportSummaryImage"
           @openSummaryImageSettings="handleOpenSummaryImageSettings"
           @toggleSidebar="isSidebarOpen = true"

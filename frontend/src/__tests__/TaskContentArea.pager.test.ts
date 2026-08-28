@@ -49,6 +49,7 @@ const makePart = (partIndex: number, overrides: Partial<TaskPart> = {}): TaskPar
 
 const mountArea = (overrides: {
   task?: Task
+  activeTab?: 'summary' | 'transcript'
   compiledMarkdown?: string
   multipartPage?: number
   multipartPageCount?: number
@@ -57,7 +58,7 @@ const mountArea = (overrides: {
   return mount(TaskContentArea, {
     props: {
       task: overrides.task ?? makeTask({ summary: '总览' }),
-      activeTab: 'summary' as const,
+      activeTab: overrides.activeTab ?? 'summary',
       compiledMarkdown: overrides.compiledMarkdown ?? '<p>总览内容</p>',
       multipartPage: overrides.multipartPage ?? 0,
       multipartPageCount: overrides.multipartPageCount ?? 0,
@@ -240,25 +241,75 @@ describe('TaskContentArea：多P 一P一页分页器', () => {
     wrapper.unmount()
   })
 
-  it('转录 tab：分页器在 summary 专属 v-show 容器内（activeTab 切换即隐藏）', () => {
-    const wrapper = mount(TaskContentArea, {
-      props: {
-        task: makeTask({ has_parts: true, summary: '总览' }),
-        activeTab: 'transcript' as const,
-        compiledMarkdown: '<p>总览</p>',
-        multipartPage: 0,
-        multipartPageCount: 2,
-        multipartPagePart: null,
-        topic: '',
-        isEditingTopic: false,
-        editingTopicValue: '',
-      },
+  it('转录 tab：分页器为两 tab 共享（summary 与 transcript 均可见，不在 v-show 隐藏容器内）', () => {
+    const wrapper = mountArea({
+      task: makeTask({ has_parts: true, summary: '总览' }),
+      activeTab: 'transcript',
+      multipartPageCount: 2,
     })
     const pager = wrapper.find('[data-testid="multipart-pager"]')
     expect(pager.exists()).toBe(true)
-    // 分页器位于 v-show="activeTab === 'summary'" 容器内：转录 tab 下容器为
-    // display:none（happy-dom 无法用 isVisible 判断 v-show，改查内联样式）
-    expect(pager.element.closest('[style*="display: none"]')).not.toBeNull()
+    // 分页器已从 summary 专属 v-show 容器移出：转录 tab 下不得位于 display:none 祖先内
+    expect(pager.element.closest('[style*="display: none"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('转录 tab：多P 数据源 = multipartPagePart 的 transcript/segments（TranscriptViewer 渲染）', () => {
+    const wrapper = mountArea({
+      task: makeTask({ has_parts: true, summary: '总览', video_url: 'https://www.bilibili.com/video/BV1xx' }),
+      activeTab: 'transcript',
+      multipartPageCount: 2,
+      multipartPagePart: makePart(1, { transcript: '000012 该分P的转录内容' }),
+    })
+    const viewer = wrapper.find('.ss-transcript-viewer')
+    expect(viewer.exists()).toBe(true)
+    expect(viewer.text()).toContain('该分P的转录内容')
+    // 时间 chip 命中 TranscriptViewer 渲染（[HH:MM:SS] + 可跳转 href）
+    expect(viewer.find('.ss-time-jump-chip').text()).toContain('[00:00:12]')
+    expect(viewer.find('.ss-time-jump-chip').attributes('href')).toContain('t=12')
+    // 多P 任务主行 transcript 不得作为数据源（此处主行有内容也不得渲染）
+    expect(viewer.text()).not.toContain('主行转录')
+    wrapper.unmount()
+  })
+
+  it('转录 tab：多P 数据源 segments 优先（multipartPagePart.transcript_segments）', () => {
+    const wrapper = mountArea({
+      task: makeTask({ has_parts: true, summary: '总览' }),
+      activeTab: 'transcript',
+      multipartPageCount: 1,
+      multipartPagePart: makePart(0, {
+        transcript: '000012 旧式时间戳行',
+        transcript_segments: [{ start: 3, end: 5, text: '段级内容' }],
+      }),
+    })
+    const viewer = wrapper.find('.ss-transcript-viewer')
+    expect(viewer.text()).toContain('段级内容')
+    expect(viewer.text()).toContain('[00:00:03]')
+    expect(viewer.text()).not.toContain('旧式时间戳行')
+    wrapper.unmount()
+  })
+
+  it('转录 tab：单P 任务数据源 = task.transcript/transcript_segments（非分P分支）', () => {
+    const wrapper = mountArea({
+      task: makeTask({ transcript: '000001 单任务转录', transcript_segments: null }),
+      activeTab: 'transcript',
+    })
+    const viewer = wrapper.find('.ss-transcript-viewer')
+    expect(viewer.exists()).toBe(true)
+    expect(viewer.text()).toContain('单任务转录')
+    expect(viewer.text()).toContain('[00:00:01]')
+    wrapper.unmount()
+  })
+
+  it('转录 tab：多P 分P内容未加载时显示"正在加载该分P转录..."占位', () => {
+    const wrapper = mountArea({
+      task: makeTask({ has_parts: true, summary: '总览', transcript: '主行转录' }),
+      activeTab: 'transcript',
+      multipartPageCount: 2,
+      multipartPagePart: null,
+    })
+    expect(wrapper.text()).toContain('正在加载该分P转录...')
+    expect(wrapper.find('.ss-transcript-viewer').exists()).toBe(false)
     wrapper.unmount()
   })
 })

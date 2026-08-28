@@ -13,6 +13,7 @@ import type {
   ReSummarizeRequest,
   ReTranscribeRequest,
   TaskPart,
+  TranscriptSegment,
 } from '../types'
 
 describe('VibeVoice runtime values for typed shapes', () => {
@@ -313,5 +314,40 @@ describe('P4 类型契约：请求与分P形状', () => {
       updated_at: '2026-08-14T00:00:00+00:00',
     }
     expect(part.updated_at).toBe('2026-08-14T00:00:00+00:00')
+  })
+
+  it('TranscriptSegment 结构：start/end 秒数 + text，speaker_id 可选', () => {
+    const seg: TranscriptSegment = { start: 1.5, end: 4.25, text: '第一段', speaker_id: '1' }
+    expect(seg).toEqual({ start: 1.5, end: 4.25, text: '第一段', speaker_id: '1' })
+
+    // speaker_id 缺省合法（fast_whisper 无说话人）
+    const segNoSpeaker: TranscriptSegment = { start: 0, end: 1, text: '无说话人' }
+    expect(segNoSpeaker.speaker_id).toBeUndefined()
+  })
+
+  it('Task / TaskPart 携带可选 transcript_segments（后端 tasks/task_parts 新列）', () => {
+    const segments: TranscriptSegment[] = [
+      { start: 0, end: 2.5, text: '第一段' },
+      { start: 2.5, end: 5, text: '第二段', speaker_id: '1' },
+    ]
+    const task: Task = {
+      id: 'task-1',
+      video_url: 'https://www.bilibili.com/video/BV1xx',
+      status: 'COMPLETED',
+      progress: 1.0,
+      created_at: '2026-08-14T00:00:00Z',
+      transcript: '000000 第一段',
+      transcript_segments: segments,
+    }
+    expect(task.transcript_segments).toEqual(segments)
+
+    const part: TaskPart = {
+      task_id: 'task-1',
+      part_index: 0,
+      status: 'COMPLETED',
+      progress: 1,
+      transcript_segments: null,
+    }
+    expect(part.transcript_segments).toBeNull()
   })
 })

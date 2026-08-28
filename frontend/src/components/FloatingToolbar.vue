@@ -22,6 +22,7 @@ const emit = defineEmits<{
   copyTranscript: []
   downloadMarkdown: []
   downloadTxt: []
+  downloadSubtitle: [format: 'srt' | 'vtt']
   exportSummaryImage: []
   openSummaryImageSettings: []
   toggleSidebar: []
@@ -177,6 +178,20 @@ const emit = defineEmits<{
                 >
                   <PhDownloadSimple :size="14" />
                   下载 TXT
+                </button>
+                <button
+                  @click="emit('downloadSubtitle', 'srt')"
+                  class="w-full text-left flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors"
+                >
+                  <PhDownloadSimple :size="14" />
+                  下载字幕 SRT
+                </button>
+                <button
+                  @click="emit('downloadSubtitle', 'vtt')"
+                  class="w-full text-left flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors"
+                >
+                  <PhDownloadSimple :size="14" />
+                  下载字幕 VTT
                 </button>
               </div>
             </div>
