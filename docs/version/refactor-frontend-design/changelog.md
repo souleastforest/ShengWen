@@ -5,6 +5,13 @@
 
 ## Change Log
 
+- 2026-08-28: **feat(transcriber): 转录字幕化——segments 持久化 + SRT/VTT 端点 + 字幕视图**（feature/transcript-subtitles → 合并 cb51d3b，PR #24）。
+  - **需求**（用户定稿，plan 流程）：原文转录升级专业字幕——渲染 [HH:MM:SS] + 内容（时间可点击跳视频、无时间戳行保持纯文本）；标准打轴文件 SRT + VTT 可下载；一并修复分P任务 transcript tab 刷新缺口。
+  - **后端**：Segment dataclass 契约（to_dict/from_dict 白名单往返）；subtitles.py 生成器（SRT `HH:MM:SS,mmm` / VTT WEBVTT / HHMMSS 回退解析 end=下行 start 近似、末行 +3s / normalize 排序去空）；tasks+task_parts 双表新增 transcript_segments TEXT JSON（**task_parts 老表显式 ALTER 迁移先行**，否则 update_task_part 静默丢键）；worker 落库（HHMMSS txt 格式不变，chunker 零影响）；GET /tasks/{id}/subtitles?format=srt|vtt（Literal 422、无内容 404）；finalize 合并分P segments（offset=part.audio_duration 累加）。
+  - **前端**：TranscriptViewer 字幕渲染（segments 优先、行解析回退；chip 复用 ss-time-jump-chip + buildTimestampJumpUrl 加 p= 参数）；分页器两 tab 共享；**transcript 懒加载 watch 加内容依赖修复刷新缺口**（finalize 用 db.update_task 无 WS 广播 → 轮询合并后 watch 不触发卡"暂无转录内容"）；下载字幕 SRT/VTT（前端 Blob 字幕-<topic>.srt）；"原文"下拉加两项。
+  - **对抗评审 3 同源 blocker（全部实证修复）**：线格式契约不一致——仅 GET include_content=true 解析为数组，其余 8 处 response_model=Task 端点（PATCH/re-summarize/retry/re-download/resolve-author）返回原始 JSON 字符串 → Pydantic 校验 500（已 TestClient 复现）；WS 广播 + parts 详情交付字符串 → 前端 segments.map() TypeError 崩溃（多P核心功能必崩）。修复轮 229a76d：_task_with_segments_parsed 统一 8 处 + websocket 广播解析（拷贝防副作用）+ parts 详情解析 + 前端 normalizeSegments/Array.isArray 双保险。
+  - **验证**：TDD 红绿（pytest 554 通过 / vitest 492 / vue-tsc 0 / ruff 干净）；e2e 13/13（回退渲染 105 chip、SRT 1240 块 end 近似校验 1239/1239、422、前端下载文件名与内容断言、多P分P字幕翻页、复制/下载 TXT 回归、summary 回归）；ASR 新任务 e2e 跳过（测试环境 CUDA 故障 pre-existing，segments 路径单测覆盖）。
+  - **上线生产 21010**（cb51d3b，回滚点 4f97129）：检查通过（无进行中任务、备份 <1 天）→ checkout + build + 重启 → 健康 200；真实任务 SRT/VTT 端点验证通过（回退路径）。存量任务无需补跑（无 segments → 回退渲染/生成）。
 - 2026-08-21: **上线生产 21010**（4f97129 @ refactor/frontend-design）。上线动作：备份检查（bak.1 < 1 天）→ git checkout 4f97129 → npm run build → 重启 prod pane（claude:6.0）→ 健康 200。回滚点：8ad56bc（checkout + build + 重启）。**环境适配**：refactor 分支 pyproject 引入 vibevoice = { path = "../VibeVoice-bilibili-subtitle/VibeVoice" } 相对路径，生产 ../ 无该目录（旧生产 pyproject 无此依赖）→ symlink /home/admin/projects/prod/VibeVoice-bilibili-subtitle → /home/admin/projects/VibeVoice-bilibili-subtitle（生产 venv 已装 vibevoice/torch/bitsandbytes 三件套）。存量多P任务无需补跑（纯展示层改动，新前端对存量数据自动生效）。
 - 2026-08-20: **fix(frontend): 分P页并入 MarkdownContent 统一渲染 + 章节胶囊分P项**（33f90e2/155632a，基于 PR #23）。
   - **用户校正**：分P页不要"单独放下面"（独立 v-html 容器缺 markdown-theme-container 类 → time-chip 图标尺寸规则不命中，svg 默认大小过大/对不齐），改回 MarkdownContent 统一渲染；章节浮动胶囊目前只剩"总体概览"（旧版从拼接串收集 ## Pn 标题，min 判据截断后总览段无分P标题）→ 补分P章节项。
