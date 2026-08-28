@@ -27,6 +27,7 @@ import type {
   SummaryMode,
   ReSummarizeRequest,
   ReTranscribeRequest,
+  TranscriptSegment,
 } from '../../types'
 
 // 传统复制方法（兼容非安全上下文，如局域网 HTTP）——copyContent 降级路径。
@@ -89,10 +90,14 @@ const bumpTaskContentVersion = (taskId: string) => {
 // 同样视为"无内容"，避免把 '' 当"已加载"导致滞留"暂无转录内容"。
 const hasContent = (value?: string | null): boolean => value != null && value !== ''
 
+// segments 内容判定（与 hasContent 同语义）：null/undefined 与空数组均视为"未加载"
+const hasSegments = (value?: TranscriptSegment[] | null): boolean =>
+  value != null && value.length > 0
+
 // 任务内容合并守卫：把新到的任务数据（轻量列表项 / 广播）合并到已选任务时，
 // 保护已加载的完整内容不被截断版 _summary_overview / 空值覆盖。
-// - 默认（preserve）：base 的 transcript/summary 已加载（null 与 '' 均视为
-//   未加载）时保留 base，防止轻量响应覆盖完整版；
+// - 默认（preserve）：base 的 transcript/summary/transcript_segments 已加载
+//   （null 与 '' / 空数组均视为未加载）时保留 base，防止轻量响应覆盖完整版；
 // - preserveContent: false：内容以 incoming 为准（WS task_update 广播为 DB
 //   全量权威行，含 re-transcribe/re-summarize 的 '' 重置必须传播；或内容版本
 //   latest_modified_at 已变化，陈旧内容不得保留——incoming 无该字段时结果为
@@ -103,13 +108,22 @@ const mergeTaskWithPreservedContent = (
   options?: { preserveContent?: boolean },
 ): Task => {
   if (options?.preserveContent === false) {
-    return { ...base, ...incoming, summary: incoming.summary, transcript: incoming.transcript }
+    return {
+      ...base,
+      ...incoming,
+      summary: incoming.summary,
+      transcript: incoming.transcript,
+      transcript_segments: incoming.transcript_segments,
+    }
   }
   return {
     ...base,
     ...incoming,
     summary: hasContent(base.summary) ? base.summary : incoming.summary,
     transcript: hasContent(base.transcript) ? base.transcript : incoming.transcript,
+    transcript_segments: hasSegments(base.transcript_segments)
+      ? base.transcript_segments
+      : incoming.transcript_segments,
   }
 }
 
@@ -158,6 +172,8 @@ export interface TaskState {
   fetchTaskPart(taskId: string, partIndex: number): Promise<TaskPart | undefined>
   retryFailedParts(taskId: string): Promise<void>
   downloadContent(type: 'summary' | 'transcript'): Promise<void>
+  /** 下载标准字幕打轴文件（后端 GET /tasks/{id}/subtitles 生成 SRT/VTT） */
+  downloadSubtitle(format: 'srt' | 'vtt'): Promise<void>
   copyContent(type: 'summary' | 'transcript'): Promise<boolean>
   deleteTask(taskId: string): Promise<boolean>
   reSummarize(taskId: string, mode?: SummaryMode): Promise<void>
@@ -283,12 +299,14 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
             selectedTask.value = { ...selectedTask.value, ...data }
           } else {
             // 版本已变（期间收到过内容/状态广播）：旧响应只合并非内容字段，
-            // transcript/summary 以最新广播为准，防止过期在途响应覆盖新内容。
+            // transcript/summary/transcript_segments 以最新广播为准，防止过期
+            // 在途响应覆盖新内容。
             selectedTask.value = {
               ...selectedTask.value,
               ...data,
               transcript: selectedTask.value.transcript,
               summary: selectedTask.value.summary,
+              transcript_segments: selectedTask.value.transcript_segments,
             }
           }
         }
@@ -389,6 +407,7 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
           ...task,
           transcript: task.transcript ?? cached.transcript,
           summary: task.summary ?? cached.summary,
+          transcript_segments: task.transcript_segments ?? cached.transcript_segments,
         }
       } else {
         if (cached) {
@@ -417,8 +436,12 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
         const data = { ...(response.data as Task) }
         // 1) 保留当前选中任务已加载的完整内容（WS 广播合并等路径可能不经缓存）。
         //    '' 空串（re-transcribe 重置）不视为已加载，避免滞留"暂无转录内容"。
+        //    transcript_segments 随 transcript 同语义保留。
         if (hasContent(selectedTask.value.transcript) && data.transcript == null) {
           data.transcript = selectedTask.value.transcript
+        }
+        if (hasSegments(selectedTask.value.transcript_segments) && data.transcript_segments == null) {
+          data.transcript_segments = selectedTask.value.transcript_segments
         }
         if (hasContent(selectedTask.value.summary)) {
           data.summary = selectedTask.value.summary
@@ -430,6 +453,9 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
         if (cached && isTaskCacheUsable(cached, task)) {
           if (data.transcript == null && hasContent(cached.transcript)) {
             data.transcript = cached.transcript
+          }
+          if (data.transcript_segments == null && hasSegments(cached.transcript_segments)) {
+            data.transcript_segments = cached.transcript_segments
           }
           if (hasContent(cached.summary)) {
             data.summary = cached.summary
@@ -456,14 +482,22 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
   // 用户切换到"原文"tab 或切换任务时（activeTab 保持 'transcript' 不触发
   // 单一 activeTab 依赖的 watch）按需加载完整内容（含转录原文）。
   // hasContent 守卫：null 与 ''（re-transcribe 后端重置）都视为未加载，
-  // 触发一次加载后依赖（[activeTab, id]）不变不会重发；同时防止跨任务
-  // stale 泄漏（新任务的轻量对象 transcript 为 null，旧内容不会被误判为已加载）。
+  // 触发一次加载后依赖不变不会重发；同时防止跨任务 stale 泄漏（新任务的
+  // 轻量对象 transcript 为 null，旧内容不会被误判为已加载）。
+  // [字幕化修复] transcript 内容依赖纳入 watch（镜像 summary watch 模式）：
+  // 多P finalize 用 db.update_task 写主行（无 WS 广播），轮询合并把主行内容
+  // 置 null（'' → null 值变化）后 watch 重新判定并补拉完整内容，修复转录
+  // tab 长期滞留"暂无转录内容"的刷新缺口。
+  // 与 summary watch 一致：进行中任务（内容将变化，广播会携带新内容）不触发
+  // 加载——re-transcribe 的 '' 重置广播后不得立即用陈旧完整内容覆盖重置态。
   watch(
-    [activeTab, () => selectedTask.value?.id],
+    [activeTab, () => selectedTask.value?.id, () => selectedTask.value?.transcript],
     ([tab]) => {
       if (tab !== 'transcript') return
       const task = selectedTask.value
-      if (!task || hasContent(task.transcript)) return
+      if (!task) return
+      if (PROCESSING_STATUSES.has(task.status)) return
+      if (hasContent(task.transcript)) return
       fetchTaskFullContent(task.id).catch((err) => {
         console.error('Failed to load full content for transcript tab:', err)
       })
@@ -549,6 +583,42 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
     a.download = filename
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  // 下载标准字幕打轴文件（SRT/VTT）：后端 GET /tasks/{id}/subtitles?format=...
+  // 生成（segments 优先，HHMMSS 行回退）。转录缺失时先按需加载完整内容
+  // （轻量详情剥离 transcript），再请求字幕端点并以 Blob 下载 字幕-<topic>.<format>。
+  const downloadSubtitle = async (format: 'srt' | 'vtt') => {
+    if (!selectedTask.value) return
+    const taskId = selectedTask.value.id
+
+    if (!hasContent(selectedTask.value.transcript)) {
+      try {
+        await fetchTaskFullContent(taskId)
+      } catch (err) {
+        console.error('Failed to load transcript before subtitle download:', err)
+      }
+    }
+
+    // 等待期间用户可能已切换任务：中止下载
+    if (!selectedTask.value || selectedTask.value.id !== taskId) return
+
+    const topic = selectedTask.value.topic || selectedTask.value.title || new Date().toLocaleString('zh-CN').replace(/[/:]/g, '-')
+    try {
+      const response = await apiClient.get(`/tasks/${taskId}/subtitles`, {
+        params: { format },
+        responseType: 'text',
+      })
+      const blob = new Blob([String(response.data)], { type: format === 'vtt' ? 'text/vtt' : 'application/x-subrip' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `字幕-${topic}.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Failed to download subtitle:', err)
+    }
   }
 
   const copyContent = async (type: 'summary' | 'transcript'): Promise<boolean> => {
@@ -757,7 +827,9 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
       }
       if (PROCESSING_STATUSES.has(updatedTask.status)) {
         taskFullContentCache.delete(updatedTask.id)
-      } else if (updatedTask.transcript != null || updatedTask.summary != null) {
+      } else if (updatedTask.transcript != null
+        || updatedTask.summary != null
+        || updatedTask.transcript_segments != null) {
         const prev = taskFullContentCache.get(updatedTask.id)
         taskFullContentCache.set(updatedTask.id, prev
           ? {
@@ -765,6 +837,7 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
               ...updatedTask,
               transcript: updatedTask.transcript ?? prev.transcript,
               summary: updatedTask.summary ?? prev.summary,
+              transcript_segments: updatedTask.transcript_segments ?? prev.transcript_segments,
             }
           : { ...updatedTask })
         bumpTaskContentVersion(updatedTask.id)
@@ -855,6 +928,7 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
     fetchTaskPart,
     retryFailedParts,
     downloadContent,
+    downloadSubtitle,
     copyContent,
     deleteTask,
     reSummarize,

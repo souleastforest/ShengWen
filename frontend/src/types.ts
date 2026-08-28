@@ -9,6 +9,19 @@ export const TaskStatus = {
   PARTIAL: "PARTIAL"
 } as const;
 
+/**
+ * 转录段级结果（后端 SegmentOut，见 routes/schemas.py:27-34）：
+ * start/end 为秒数（float）；speaker_id 仅带说话人识别的 ASR 有（如 VibeVoice），
+ * fast_whisper 缺省。来自 tasks.transcript_segments / task_parts.transcript_segments
+ * 的 JSON 数组（TEXT NULL）。
+ */
+export interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+  speaker_id?: string;
+}
+
 export interface TaskPart {
   task_id: string;
   part_index: number;
@@ -19,6 +32,8 @@ export interface TaskPart {
   progress: number;
   error_message?: string;
   transcript?: string;
+  // 段级转录结果（include_text=true 时返回，列表剥离为 null）
+  transcript_segments?: TranscriptSegment[] | null;
   summary?: string;
   audio_duration?: number;
   transcription_time?: number;
@@ -65,6 +80,8 @@ export interface Task {
   title?: string;
   topic?: string;
   transcript?: string;
+  // 段级转录结果（include_content=true 时返回，列表/轻量详情剥离为 null）
+  transcript_segments?: TranscriptSegment[] | null;
   // summary 允许 null：后端 include_content=false 时返回 null / _summary_overview
   // 截断版；前端"详情加载失败"标记亦用 null 表示"未加载但详情已结算"
   summary?: string | null;

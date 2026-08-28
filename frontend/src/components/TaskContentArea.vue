@@ -6,6 +6,7 @@ import { TaskStatus } from '../types'
 import TaskMetaCard from './TaskMetaCard.vue'
 import { countWords } from '../utils/formatters'
 import MarkdownContent from '../features/transcription/components/MarkdownContent.vue'
+import TranscriptViewer from '../features/transcription/components/TranscriptViewer.vue'
 import { PART_PROCESSING_STATUSES } from '../features/transcription/useMarkdownCompile'
 
 interface SummaryHighlightRequest {
@@ -61,7 +62,16 @@ const showContent = computed(() => {
   if (props.activeTab === 'summary') {
     return !!props.task.summary
   }
-  return !!props.task.transcript
+  return !!props.task.transcript || (props.task.transcript_segments?.length ?? 0) > 0
+})
+
+// 多P 转录 tab：当前分P页是否有可展示的转录内容（partDetails 优先的 multipartPagePart
+// 的 transcript/segments；未加载（null/空）时显示"正在加载该分P转录..."占位）
+const hasMultipartPartContent = computed(() => {
+  const part = props.multipartPagePart
+  if (!part) return false
+  return (part.transcript != null && part.transcript !== '')
+    || (part.transcript_segments != null && part.transcript_segments.length > 0)
 })
 
 // 分页器：仅多P 任务且 parts 已加载（multipartPageCount = parts 数）时显示
@@ -161,53 +171,68 @@ defineExpose({ scrollContentIntoView })
           >
             {{ multipartPagePlaceholder }}
           </p>
-
-          <!-- 分页器（仅多P 任务一P一页，位于内容下方：◀ 第 x / N 页 ▶ + 输入框跳转） -->
-          <div
-            v-if="showMultipartPager"
-            data-testid="multipart-pager"
-            class="flex flex-wrap items-center gap-3 border-t border-slate-100 px-8 py-3 text-sm"
-          >
-            <button
-              type="button"
-              data-testid="multipart-pager-prev"
-              class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="multipartPage <= 0"
-              @click="emit('change-multipart-page', multipartPage - 1)"
-            >
-              ◀
-            </button>
-            <span class="text-xs text-slate-500">第 {{ multipartPage + 1 }} / {{ multipartPageCount }} 页</span>
-            <button
-              type="button"
-              data-testid="multipart-pager-next"
-              class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="multipartPage >= multipartPageCount - 1"
-              @click="emit('change-multipart-page', multipartPage + 1)"
-            >
-              ▶
-            </button>
-            <input
-              v-model="jumpInput"
-              data-testid="multipart-pager-input"
-              type="text"
-              inputmode="numeric"
-              placeholder="分P号，回车跳转"
-              class="w-32 rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-600"
-              @keydown.enter="handleJumpInput"
-            />
-          </div>
         </div>
 
-        <!-- 转录文本 Tab -->
+        <!-- 转录文本 Tab（字幕化渲染：segments 优先，HHMMSS 行回退） -->
         <div v-show="activeTab === 'transcript'" class="px-8 py-8">
           <div class="flex justify-between items-center mb-6">
             <h3 class="text-lg font-bold text-slate-800">全文转录</h3>
           </div>
-          <div class="space-y-4 text-slate-600 leading-relaxed font-normal">
-            <p v-if="task.transcript" class="whitespace-pre-wrap text-sm leading-relaxed">{{ task.transcript }}</p>
-            <p v-else class="text-gray-400 italic">暂无转录内容</p>
-          </div>
+          <!-- 单P：主行 transcript/segments；多P：当前分P页 multipartPagePart（partDetails
+               优先）的 transcript/segments，未加载时占位"正在加载该分P转录..." -->
+          <TranscriptViewer
+            v-if="!task.has_parts"
+            :transcript="task.transcript"
+            :segments="task.transcript_segments"
+            :video-url="task.video_url"
+          />
+          <template v-else>
+            <TranscriptViewer
+              v-if="hasMultipartPartContent"
+              :transcript="multipartPagePart?.transcript"
+              :segments="multipartPagePart?.transcript_segments"
+              :video-url="task.video_url"
+              :part-index="multipartPage"
+            />
+            <p v-else class="text-gray-400 italic">正在加载该分P转录...</p>
+          </template>
+        </div>
+
+        <!-- 分页器（仅多P 任务一P一页，summary 与 transcript 两 tab 共享：
+             ◀ 第 x / N 页 ▶ + 输入框跳转） -->
+        <div
+          v-if="showMultipartPager"
+          data-testid="multipart-pager"
+          class="flex flex-wrap items-center gap-3 border-t border-slate-100 px-8 py-3 text-sm"
+        >
+          <button
+            type="button"
+            data-testid="multipart-pager-prev"
+            class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="multipartPage <= 0"
+            @click="emit('change-multipart-page', multipartPage - 1)"
+          >
+            ◀
+          </button>
+          <span class="text-xs text-slate-500">第 {{ multipartPage + 1 }} / {{ multipartPageCount }} 页</span>
+          <button
+            type="button"
+            data-testid="multipart-pager-next"
+            class="rounded-lg border border-slate-200 px-3 py-1.5 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="multipartPage >= multipartPageCount - 1"
+            @click="emit('change-multipart-page', multipartPage + 1)"
+          >
+            ▶
+          </button>
+          <input
+            v-model="jumpInput"
+            data-testid="multipart-pager-input"
+            type="text"
+            inputmode="numeric"
+            placeholder="分P号，回车跳转"
+            class="w-32 rounded-lg border border-slate-200 px-2 py-1.5 text-xs text-slate-600"
+            @keydown.enter="handleJumpInput"
+          />
         </div>
       </div>
     </div>

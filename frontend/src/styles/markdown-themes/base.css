@@ -78,8 +78,11 @@
   text-decoration: underline;
 }
 
-/* ========== 时间跳转标签（(见 HH:MM:SS) 自动替换） ========== */
-.markdown-theme-container.prose .ss-time-jump-chip {
+/* ========== 时间跳转标签（(见 HH:MM:SS) 自动替换 / 转录字幕化 chip） ========== */
+/* 单份定义：.ss-transcript-viewer 作用域追加（transcript 分支无
+   markdown-theme-container 容器，直接命中 chip 样式） */
+.markdown-theme-container.prose .ss-time-jump-chip,
+.ss-transcript-viewer .ss-time-jump-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -99,31 +102,36 @@
   transition: all 0.15s ease;
 }
 
-.markdown-theme-container.prose .ss-time-jump-chip:hover {
+.markdown-theme-container.prose .ss-time-jump-chip:hover,
+.ss-transcript-viewer .ss-time-jump-chip:hover {
   background: rgba(142, 142, 147, 0.18);
   color: #1d1d1f;
   text-decoration: none;
   transform: translateY(-0.5px);
 }
 
-.markdown-theme-container.prose .ss-time-jump-chip:focus-visible {
+.markdown-theme-container.prose .ss-time-jump-chip:focus-visible,
+.ss-transcript-viewer .ss-time-jump-chip:focus-visible {
   outline: 2px solid rgba(0, 125, 250, 0.6);
   outline-offset: 2px;
 }
 
-.markdown-theme-container.prose .ss-time-jump-chip--disabled {
+.markdown-theme-container.prose .ss-time-jump-chip--disabled,
+.ss-transcript-viewer .ss-time-jump-chip--disabled {
   cursor: default;
   opacity: 0.4;
   background: rgba(142, 142, 147, 0.08);
   color: #a1a1a6;
 }
 
-.markdown-theme-container.prose .ss-time-jump-chip--disabled:hover {
+.markdown-theme-container.prose .ss-time-jump-chip--disabled:hover,
+.ss-transcript-viewer .ss-time-jump-chip--disabled:hover {
   transform: none;
 }
 
 /* 播放图标样式 */
-.markdown-theme-container.prose .ss-time-chip-icon {
+.markdown-theme-container.prose .ss-time-chip-icon,
+.ss-transcript-viewer .ss-time-chip-icon {
   width: 0.7em;
   height: 0.7em;
   flex-shrink: 0;
