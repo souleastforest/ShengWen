@@ -41,6 +41,7 @@ from src.main.python.sheng_wen.transcriber.subtitles import (
 )
 from src.main.python.sheng_wen.transcriber.type import (
     segments_from_json,
+    segments_to_api_list,
 )
 
 
@@ -169,14 +170,28 @@ def _segments_list(
 
     None / 坏 JSON → None（与"无 segments"同语义）；容错由
     segments_from_json 保证（坏 JSON → []，这里统一为 None 输出）。
+    实现委托 segments_to_api_list（与 WS 广播/其余端点同源，线格式契约统一）。
     """
-    raw = task_data.get("transcript_segments")
-    if raw is None:
+    return segments_to_api_list(task_data.get("transcript_segments"))
+
+
+def _task_with_segments_parsed(
+    task_data: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """端点返回前统一解析 transcript_segments（与 GET include_content=true 同语义）。
+
+    所有 response_model=Task 且返回 DB 原始行的端点（PATCH / re-summarize /
+    retry-failed-parts / re-download / resolve-author）在返回前调用，避免原始
+    JSON 字符串通过 Pydantic Optional[list[SegmentOut]] 校验时 500。
+    None 原样透传（防御性；调用方均已做存在性校验）。
+    """
+    if task_data is None:
         return None
-    segments = segments_from_json(raw)
-    if not segments:
-        return None
-    return [seg.to_dict() for seg in segments]
+    result = dict(task_data)
+    result["transcript_segments"] = segments_to_api_list(
+        result.get("transcript_segments")
+    )
+    return result
 
 
 @router.post("/", response_model=Task, status_code=201)
@@ -463,7 +478,13 @@ async def get_task_part_route(task_id: str, part_index: int):
     part = get_task_part(task_id, part_index)
     if not part:
         raise HTTPException(status_code=404, detail="Task part not found")
-    return part
+    # 线格式统一：DB 存储的 transcript_segments 为 JSON 字符串，返回前解析为
+    # 数组（与 GET 主行 include_content=true 同语义），否则前端 segments.map() 崩溃。
+    result = dict(part)
+    result["transcript_segments"] = segments_to_api_list(
+        result.get("transcript_segments")
+    )
+    return result
 
 
 @router.post("/{task_id}/retry-failed-parts", response_model=Task)
@@ -508,7 +529,7 @@ async def retry_failed_parts(
             "multipart_batch": True,
         }
     )
-    return _with_part_stats(db.get_task(task_id))
+    return _task_with_segments_parsed(_with_part_stats(db.get_task(task_id)))
 
 
 @router.patch("/{task_id}", response_model=Task)
@@ -522,9 +543,9 @@ async def update_task(task_id: str, task_update: TaskUpdate):
         from src.main.python.sheng_wen.task_updater import update_and_notify
 
         updated_task = await update_and_notify(task_id, updates)
-        return updated_task
+        return _task_with_segments_parsed(updated_task)
 
-    return task
+    return _task_with_segments_parsed(task)
 
 
 @router.post("/{task_id}/re-summarize", response_model=Task)
@@ -579,7 +600,7 @@ async def re_summarize_task(
                 "multipart_resummarize": True,
             }
         )
-        return _with_part_stats(db.get_task(task_id))
+        return _task_with_segments_parsed(_with_part_stats(db.get_task(task_id)))
 
     from src.main.python.sheng_wen.config.settings import config
 
@@ -598,7 +619,7 @@ async def re_summarize_task(
         }
     )
 
-    return db.get_task(task_id)
+    return _task_with_segments_parsed(db.get_task(task_id))
 
 
 @router.post("/{task_id}/resolve-author", response_model=Task)
@@ -613,13 +634,13 @@ async def resolve_task_author(task_id: str):
         or video_url.startswith("file://")
         or not deps._is_bilibili_video_url(video_url)
     ):
-        return task
+        return _task_with_segments_parsed(task)
 
     if task.get("author_name") and task.get("author_url"):
-        return task
+        return _task_with_segments_parsed(task)
 
     await deps._try_resolve_and_persist_author(task_id, video_url)
-    return db.get_task(task_id)
+    return _task_with_segments_parsed(db.get_task(task_id))
 
 
 @router.post("/resolve-author/backfill")
@@ -861,7 +882,7 @@ async def re_download_task(task_id: str, request: Request):
                     "bilibili_parts": {"mode": "merge", "indices": [part_index]},
                 }
             )
-        return db.get_task(task_id)
+        return _task_with_segments_parsed(db.get_task(task_id))
 
     await downloader_w.add_task(
         {
@@ -873,7 +894,7 @@ async def re_download_task(task_id: str, request: Request):
             "restore_status": prev_status,
         }
     )
-    return db.get_task(task_id)
+    return _task_with_segments_parsed(db.get_task(task_id))
 
 
 @router.delete("/{task_id}", status_code=204)

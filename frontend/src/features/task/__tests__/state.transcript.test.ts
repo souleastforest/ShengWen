@@ -51,6 +51,14 @@ const mountTaskState = () => {
   return { task, ws, wrapper }
 }
 
+type WsInstance = {
+  close: () => void
+  onopen: (() => void) | null
+  onmessage: ((event: { data: string }) => void) | null
+  onclose: (() => void) | null
+  onerror: ((err: unknown) => void) | null
+}
+
 describe('task 域 transcript lazy loading（useTaskViewModel 迁移）', () => {
   beforeEach(() => {
     // module 级 per-task 缓存跨测试实例共享，必须重置，否则内容会被上个测试污染
@@ -65,15 +73,19 @@ describe('task 域 transcript lazy loading（useTaskViewModel 迁移）', () => 
       return Boolean(value && typeof value === 'object' && 'isAxiosError' in value)
     })
 
-    const WebSocketMock = vi.fn(function MockWebSocket(this: Record<string, unknown>) {
+    wsInstances = []
+    const WebSocketMock = vi.fn(function MockWebSocket(this: WsInstance) {
       this.close = vi.fn()
       this.onopen = null
       this.onmessage = null
       this.onclose = null
       this.onerror = null
+      wsInstances.push(this)
     })
     vi.stubGlobal('WebSocket', WebSocketMock)
   })
+
+  let wsInstances: WsInstance[] = []
 
   it('selectTask 详情请求使用 include_content=false，transcript 被后端剥离为 null', async () => {
     const { task, wrapper } = mountTaskState()
@@ -559,6 +571,82 @@ describe('task 域 transcript lazy loading（useTaskViewModel 迁移）', () => 
     expect(lastDownload).toBe('字幕-测试主题.vtt')
 
     clickSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  // ---- transcript_segments 线格式防御（BLOCKER-3：WS 广播可能透传 DB 原始 JSON 字符串）----
+
+  it('WS task_update 广播携带字符串 transcript_segments → 合并后归一化为数组（现状字符串透传 → TranscriptViewer 崩溃）', async () => {
+    const { task, wrapper } = mountTaskState()
+
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url === '/tasks/task-1?include_content=false') {
+        return Promise.resolve({ data: { ...completedTask, transcript: null } })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(completedTask)
+    await flushPromises()
+
+    // 后端漏修场景：WS 广播携带 DB 原始 JSON 字符串（多P finalize 后广播全量行）
+    const rawSegments = JSON.stringify([{ start: 0, end: 3, text: '第一段' }])
+    wsInstances[0]!.onmessage?.({
+      data: JSON.stringify({
+        type: 'task_update',
+        task: { ...completedTask, transcript: '转录全文', transcript_segments: rawSegments },
+      }),
+    })
+    await flushPromises()
+
+    expect(task.selectedTask.value?.transcript_segments).toEqual([{ start: 0, end: 3, text: '第一段' }])
+    expect(typeof task.selectedTask.value?.transcript_segments).not.toBe('string')
+
+    wrapper.unmount()
+  })
+
+  it('WS task_update 广播携带坏 JSON segments → 合并后为 null（与后端 _segments_list 语义一致，不残留字符串）', async () => {
+    const { task, wrapper } = mountTaskState()
+
+    mockedAxios.get.mockImplementation((url: string) => {
+      if (url === '/tasks/task-1?include_content=false') {
+        return Promise.resolve({ data: { ...completedTask, transcript: null } })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    task.selectTask(completedTask)
+    await flushPromises()
+
+    wsInstances[0]!.onmessage?.({
+      data: JSON.stringify({
+        type: 'task_update',
+        task: { ...completedTask, transcript_segments: '{bad json' },
+      }),
+    })
+    await flushPromises()
+
+    expect(task.selectedTask.value?.transcript_segments).toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('hasSegments 语义：字符串 segments 不视为"已加载"内容（merge 时回退 incoming 归一化值，不保留污染字符串）', async () => {
+    const { task, wrapper } = mountTaskState()
+
+    // 场景：selectedTask 已被字符串 segments 污染（模拟旧广播透传），随后轮询
+    // 合并轻量列表项（transcript_segments 为 null）——字符串不得判定为"已加载"，
+    // 否则 null 不会覆盖污染值，TranscriptViewer 仍可能收到字符串。
+    task.selectedTask.value = {
+      ...completedTask,
+      transcript_segments: JSON.stringify([{ start: 0, end: 3, text: '污染' }]),
+    } as unknown as Task
+    mockedAxios.get.mockResolvedValue({ data: [{ ...completedTask, transcript_segments: null }] })
+
+    await task.fetchTasks()
+
+    expect(task.selectedTask.value?.transcript_segments).toBeNull()
+
     wrapper.unmount()
   })
 })

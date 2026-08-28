@@ -8,6 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
 from src.main.python.sheng_wen.db import db
+from src.main.python.sheng_wen.transcriber.type import segments_to_api_list
 
 router = APIRouter()
 
@@ -104,12 +105,23 @@ async def notify_task_update(task_id: str, task_data: dict = None):
         task_data = db.get_task(task_id)
 
     if task_data:
+        # 广播 payload 为序列化边界：拷贝后再转换，避免就地修改调用方对象
+        # （update_and_notify 会把同一 dict 返回给路由端点做 response）。
+        task_data = dict(task_data)
         if isinstance(task_data.get("created_at"), datetime):
             task_data["created_at"] = task_data["created_at"].isoformat()
         if isinstance(task_data.get("latest_modified_at"), datetime):
             task_data["latest_modified_at"] = task_data[
                 "latest_modified_at"
             ].isoformat()
+
+        # 线格式统一：DB 存储的 transcript_segments 为 JSON 字符串，广播前解析
+        # 为数组（与 GET include_content=true 同语义；None/坏 JSON → None），
+        # 否则前端把字符串写入 selectedTask 后 segments.map() 崩溃。
+        if isinstance(task_data.get("transcript_segments"), str):
+            task_data["transcript_segments"] = segments_to_api_list(
+                task_data["transcript_segments"]
+            )
 
         # 附带 4 个 worker 的队列快照（向后兼容：旧客户端忽略多余字段）。
         queues = []

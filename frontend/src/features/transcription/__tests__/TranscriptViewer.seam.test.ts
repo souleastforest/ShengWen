@@ -100,4 +100,35 @@ describe('TranscriptViewer', () => {
     expect(wrapper.text()).toContain('暂无转录内容')
     wrapper.unmount()
   })
+
+  // ---- 线格式防御（BLOCKER-3）：后端漏修时 WS/parts 详情可能透传 DB 原始 JSON 字符串 ----
+
+  it('segments prop 为字符串（后端漏修场景）不崩溃：回退 transcript 行解析', () => {
+    const wrapper = mount(TranscriptViewer, {
+      props: {
+        transcript: '000012 你好世界',
+        segments: JSON.stringify([{ start: 0, end: 3, text: '第一段' }]),
+        videoUrl: '',
+      },
+    })
+    // 无 TypeError；字符串不被当作 segments 渲染，回退 HHMMSS 行解析
+    const lines = wrapper.findAll('.ss-transcript-line')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]!.text()).toContain('[00:00:12]')
+    expect(lines[0]!.text()).toContain('你好世界')
+    expect(lines[0]!.text()).not.toContain('第一段')
+    wrapper.unmount()
+  })
+
+  it('segments prop 为字符串且无 transcript：渲染占位而非崩溃', () => {
+    const wrapper = mount(TranscriptViewer, {
+      props: {
+        transcript: null,
+        segments: JSON.stringify([{ start: 0, end: 3, text: '第一段' }]),
+        videoUrl: '',
+      },
+    })
+    expect(wrapper.text()).toContain('暂无转录内容')
+    wrapper.unmount()
+  })
 })

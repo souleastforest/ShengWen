@@ -13,8 +13,12 @@ import { buildTimestampJumpUrl } from '../../../utils/videoTimeJump'
 
 interface Props {
   transcript?: string | null
-  /** 段级转录结果（优先渲染；null/空数组 → 回退行解析） */
-  segments?: TranscriptSegment[] | null
+  /**
+   * 段级转录结果（优先渲染；null/空数组 → 回退行解析）。
+   * 线格式防御（BLOCKER-3）：允许字符串——后端漏修时 WS/parts 详情可能透传
+   * DB 原始 JSON 字符串，字符串一律视为"无 segments"回退行解析，绝不 map() 崩溃。
+   */
+  segments?: TranscriptSegment[] | string | null
   videoUrl?: string
   /** 0-based 分P序号：跳转 URL 追加 p={partIndex+1}（仅 bilibili.com） */
   partIndex?: number
@@ -30,8 +34,10 @@ interface ViewerRow {
   url: string | null
 }
 
+// 仅真实数组视为有 segments；字符串（后端漏修透传的原始 JSON）/ null / 空数组
+// 一律回退 transcript 行解析，杜绝 segments.map() TypeError。
 const hasSegments = computed(
-  () => props.segments != null && props.segments.length > 0,
+  () => Array.isArray(props.segments) && props.segments.length > 0,
 )
 
 const jumpUrl = (seconds: number): string | null =>
@@ -39,7 +45,7 @@ const jumpUrl = (seconds: number): string | null =>
 
 const rows = computed<ViewerRow[]>(() => {
   if (hasSegments.value) {
-    return props.segments!.map((seg) => ({
+    return (props.segments as TranscriptSegment[]).map((seg) => ({
       seconds: seg.start,
       text: seg.text,
       isPlain: false,

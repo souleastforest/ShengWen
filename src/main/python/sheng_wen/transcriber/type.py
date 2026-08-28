@@ -92,3 +92,27 @@ def segments_from_json(raw: Optional[str]) -> list[Segment]:
     if not isinstance(data, list):
         return []
     return [Segment.from_dict(item) for item in data if isinstance(item, dict)]
+
+
+def segments_to_api_list(raw: Any) -> Optional[list[dict[str, Any]]]:
+    """DB 存储的 transcript_segments → API 线格式（列表或 None）。
+
+    与 GET /tasks/{id}?include_content=true 的解析语义一致（线格式契约统一，
+    消除"部分端点/WS 广播透传原始 JSON 字符串"导致的 Pydantic 校验失败与
+    前端 segments.map() 崩溃）：
+    - None / 坏 JSON / 非字符串 → None（与"无 segments"同语义）；
+    - 空数组 / 全部为非法条目 → None；
+    - 合法 JSON 数组 → 逐条白名单 to_dict 列表；
+    - 已解析列表（幂等，防止双重包装）→ 原样白名单清洗返回。
+    """
+    if isinstance(raw, list):
+        items = [
+            Segment.from_dict(item).to_dict() for item in raw if isinstance(item, dict)
+        ]
+        return items or None
+    if not isinstance(raw, str) or not raw:
+        return None
+    segments = segments_from_json(raw)
+    if not segments:
+        return None
+    return [seg.to_dict() for seg in segments]

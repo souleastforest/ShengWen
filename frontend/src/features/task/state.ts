@@ -90,9 +90,28 @@ const bumpTaskContentVersion = (taskId: string) => {
 // 同样视为"无内容"，避免把 '' 当"已加载"导致滞留"暂无转录内容"。
 const hasContent = (value?: string | null): boolean => value != null && value !== ''
 
-// segments 内容判定（与 hasContent 同语义）：null/undefined 与空数组均视为"未加载"
-const hasSegments = (value?: TranscriptSegment[] | null): boolean =>
-  value != null && value.length > 0
+// segments 归一化（线格式防御，BLOCKER-3）：后端部分端点/WS 广播曾透传 DB 原始
+// JSON 字符串（仅 GET include_content=true 解析为数组）。任何从 WS 广播/API
+// 进入状态的 segments 都先归一化：字符串 → JSON.parse 为数组；坏 JSON / 空数组 /
+// 非字符串非数组 → null（与后端 _segments_list 语义对齐）。
+const normalizeSegments = (
+  value?: TranscriptSegment[] | string | null,
+): TranscriptSegment[] | null => {
+  if (Array.isArray(value)) return value
+  if (typeof value !== 'string') return null
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed) ? (parsed as TranscriptSegment[]) : null
+  } catch {
+    return null
+  }
+}
+
+// segments 内容判定（与 hasContent 同语义）：null/undefined/空数组/字符串均视为
+// "未加载"。字符串（后端漏修透传的原始 JSON）不得判定为已加载——否则 merge 守卫
+// 会把字符串当作有效内容保留，TranscriptViewer segments.map() 崩溃。
+const hasSegments = (value?: TranscriptSegment[] | string | null): boolean =>
+  Array.isArray(value) && value.length > 0
 
 // 任务内容合并守卫：把新到的任务数据（轻量列表项 / 广播）合并到已选任务时，
 // 保护已加载的完整内容不被截断版 _summary_overview / 空值覆盖。
@@ -113,7 +132,7 @@ const mergeTaskWithPreservedContent = (
       ...incoming,
       summary: incoming.summary,
       transcript: incoming.transcript,
-      transcript_segments: incoming.transcript_segments,
+      transcript_segments: normalizeSegments(incoming.transcript_segments),
     }
   }
   return {
@@ -123,7 +142,7 @@ const mergeTaskWithPreservedContent = (
     transcript: hasContent(base.transcript) ? base.transcript : incoming.transcript,
     transcript_segments: hasSegments(base.transcript_segments)
       ? base.transcript_segments
-      : incoming.transcript_segments,
+      : normalizeSegments(incoming.transcript_segments),
   }
 }
 
@@ -290,13 +309,18 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
       try {
         const response = await apiClient.get(`/tasks/${taskId}?include_content=true`)
         const data = response.data as Task
+        // 线格式防御：API 响应进入状态前归一化 segments（后端已解析，此处幂等）
+        const normalizedData = {
+          ...data,
+          transcript_segments: normalizeSegments(data.transcript_segments),
+        }
         if ((taskContentVersion.get(taskId) ?? 0) === version) {
           // 拷贝后入缓存：避免与响应对象共享引用（响应对象可能在别处被合并修改）
-          taskFullContentCache.set(taskId, { ...data })
+          taskFullContentCache.set(taskId, { ...normalizedData })
         }
         if (selectedTask.value?.id === taskId) {
           if ((taskContentVersion.get(taskId) ?? 0) === version) {
-            selectedTask.value = { ...selectedTask.value, ...data }
+            selectedTask.value = { ...selectedTask.value, ...normalizedData }
           } else {
             // 版本已变（期间收到过内容/状态广播）：旧响应只合并非内容字段，
             // transcript/summary/transcript_segments 以最新广播为准，防止过期
@@ -407,7 +431,8 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
           ...task,
           transcript: task.transcript ?? cached.transcript,
           summary: task.summary ?? cached.summary,
-          transcript_segments: task.transcript_segments ?? cached.transcript_segments,
+          transcript_segments: normalizeSegments(task.transcript_segments)
+            ?? normalizeSegments(cached.transcript_segments),
         }
       } else {
         if (cached) {
@@ -795,10 +820,14 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
       // 删除墓碑（P2-D）：已删任务的在途广播不得复活（合并/unshift 均忽略）
       if (isTaskDeleted(updatedTask.id)) return
       const index = tasks.value.findIndex(t => t.id === updatedTask.id)
+      const normalizedTask = {
+        ...updatedTask,
+        transcript_segments: normalizeSegments(updatedTask.transcript_segments),
+      }
       if (index !== -1) {
-        tasks.value[index] = { ...tasks.value[index], ...updatedTask }
+        tasks.value[index] = { ...tasks.value[index], ...normalizedTask }
       } else {
-        tasks.value.unshift(updatedTask)
+        tasks.value.unshift(normalizedTask)
       }
 
       const currentSelected = selectedTask.value
@@ -831,15 +860,16 @@ export function useTaskState(_options?: { api?: TaskApiAdapter }): TaskState {
         || updatedTask.summary != null
         || updatedTask.transcript_segments != null) {
         const prev = taskFullContentCache.get(updatedTask.id)
+        const normalizedSegments = normalizeSegments(updatedTask.transcript_segments)
         taskFullContentCache.set(updatedTask.id, prev
           ? {
               ...prev,
               ...updatedTask,
               transcript: updatedTask.transcript ?? prev.transcript,
               summary: updatedTask.summary ?? prev.summary,
-              transcript_segments: updatedTask.transcript_segments ?? prev.transcript_segments,
+              transcript_segments: normalizedSegments ?? prev.transcript_segments,
             }
-          : { ...updatedTask })
+          : { ...updatedTask, transcript_segments: normalizedSegments })
         bumpTaskContentVersion(updatedTask.id)
       }
 
