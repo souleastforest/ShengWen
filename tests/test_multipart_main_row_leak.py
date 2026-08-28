@@ -1146,3 +1146,152 @@ async def test_multipart_entry_sets_main_row_downloading(
     assert statuses.index(TaskStatus.DOWNLOADING.value) < len(statuses) - 1, (
         f"DOWNLOADING 不得是最后一次写入（否则卡死），实际序列: {statuses}"
     )
+
+
+# ---- transcript-segments: finalize 合并分P segments + offset 写主行 ------------
+
+
+def _completed_part_with_segments(
+    task_id: str,
+    index: int,
+    transcript: str,
+    segments: list[dict],
+    audio_duration: float,
+) -> None:
+    """把分P置为 COMPLETED 并写入 transcript + transcript_segments（直接 sqlite，
+    避免依赖 update_task_part 的 allowed 集合——本测试验证的是 finalize 行为）。"""
+    from src.main.python.sheng_wen.task_parts import update_task_part
+    from src.main.python.sheng_wen.transcriber.type import segments_to_json
+
+    update_task_part(
+        task_id,
+        index,
+        {
+            "status": "COMPLETED",
+            "progress": 100,
+            "transcript": transcript,
+            "audio_duration": audio_duration,
+            "transcript_segments": segments_to_json(segments),
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_multipart_finalize_merges_part_segments_with_offsets(
+    tmp_path, isolated_task_parts
+):
+    """红：finalize 逐 completed part 读 segments，累加 offset（audio_duration
+    or duration）写主行 transcript_segments——修前主行无该字段（分P字幕时间轴
+    各自从 0 开始，合并后必须错开）。"""
+    from src.main.python.sheng_wen.transcriber.type import segments_from_json
+
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.SUMMARIZING)
+    init_task_parts(
+        task_id,
+        [
+            {"index": 0, "cid": 1001, "title": "P1", "duration": 60},
+            {"index": 1, "cid": 1002, "title": "P2", "duration": 60},
+        ],
+    )
+    # P1 时长 60s（audio_duration 优先于 duration），segments 从 0 开始；
+    # P2 时长 30s，segments 也从 0 开始——合并后 P2 应偏移 60s。
+    _completed_part_with_segments(
+        task_id,
+        0,
+        "000000P1第一句\n000010P1第二句",
+        [
+            {"start": 0.0, "end": 5.0, "text": "P1第一句"},
+            {"start": 5.0, "end": 10.0, "text": "P1第二句", "speaker_id": "A"},
+        ],
+        60.0,
+    )
+    _completed_part_with_segments(
+        task_id,
+        1,
+        "000000P2第一句",
+        [{"start": 0.0, "end": 8.0, "text": "P2第一句"}],
+        30.0,
+    )
+
+    downloader = VideoDownloaderWorker("test", summary_worker=None)
+    downloader.output_dir = str(tmp_path)
+    downloader.process_task = lambda payload: None  # type: ignore[method-assign]
+
+    downloader._process_bilibili_multipart(
+        {
+            "task_id": task_id,
+            "bilibili_parts": {"mode": "merge", "indices": [0, 1]},
+            "summary_mode": "none",
+        }
+    )
+
+    task = db.get_task(task_id)
+    assert task["transcript_segments"], (
+        "finalize 未合并分P segments 写主行 transcript_segments（红）"
+    )
+    merged = segments_from_json(task["transcript_segments"])
+    assert [s.text for s in merged] == ["P1第一句", "P1第二句", "P2第一句"]
+    assert merged[0].start == 0.0
+    assert merged[1].start == 5.0
+    assert merged[1].speaker_id == "A"
+    # P2 偏移 = P1 audio_duration = 60s
+    assert merged[2].start == 60.0
+    assert merged[2].end == 68.0
+    assert task["status"] == TaskStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_multipart_finalize_falls_back_to_hhmmss_for_parts_without_segments(
+    tmp_path, isolated_task_parts
+):
+    """存量分P无 segments → parse_hhmmss_transcript 回退解析，offset 同样累加。"""
+    from src.main.python.sheng_wen.task_parts import update_task_part
+    from src.main.python.sheng_wen.transcriber.type import segments_from_json
+
+    task_id = str(uuid.uuid4())
+    _save_task(task_id, status=TaskStatus.SUMMARIZING)
+    init_task_parts(
+        task_id,
+        [
+            {"index": 0, "cid": 1001, "title": "P1", "duration": 60},
+            {"index": 1, "cid": 1002, "title": "P2", "duration": 60},
+        ],
+    )
+    for index, transcript, duration in [
+        (0, "000000P1第一句\n000010P1第二句", 60.0),
+        (1, "000000P2第一句", 30.0),
+    ]:
+        update_task_part(
+            task_id,
+            index,
+            {
+                "status": "COMPLETED",
+                "progress": 100,
+                "transcript": transcript,
+                "audio_duration": duration,
+            },
+        )
+
+    downloader = VideoDownloaderWorker("test", summary_worker=None)
+    downloader.output_dir = str(tmp_path)
+    downloader.process_task = lambda payload: None  # type: ignore[method-assign]
+
+    downloader._process_bilibili_multipart(
+        {
+            "task_id": task_id,
+            "bilibili_parts": {"mode": "merge", "indices": [0, 1]},
+            "summary_mode": "none",
+        }
+    )
+
+    task = db.get_task(task_id)
+    merged = segments_from_json(task["transcript_segments"])
+    assert [s.text for s in merged] == ["P1第一句", "P1第二句", "P2第一句"]
+    # HHMMSS 回退：P1 首句 0-10s；P1 第二句 10-60+? 末行 end=start+3
+    assert merged[0].start == 0.0
+    assert merged[0].end == 10.0
+    assert merged[1].start == 10.0
+    assert merged[1].end == 13.0  # 末行 +3（在 P1 段内）
+    assert merged[2].start == 60.0  # P2 offset = 60s
+    assert merged[2].end == 63.0  # P2 末行 +3

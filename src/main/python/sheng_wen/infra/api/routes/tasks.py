@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
 
+from typing import Any, Literal
+
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from loguru import logger
 
 from src.main.python.sheng_wen.db import TaskStatus, db
@@ -30,6 +33,14 @@ from src.main.python.sheng_wen.task_parts import (
     get_task_part_stats,
     init_task_parts,
     reset_failed_parts,
+)
+from src.main.python.sheng_wen.transcriber.subtitles import (
+    parse_hhmmss_transcript,
+    segments_to_srt,
+    segments_to_vtt,
+)
+from src.main.python.sheng_wen.transcriber.type import (
+    segments_from_json,
 )
 
 
@@ -149,6 +160,23 @@ def _with_part_stats(task_data: dict):
         task_data = dict(task_data)
         task_data.update(stats)
     return task_data
+
+
+def _segments_list(
+    task_data: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """将 DB 存储的 transcript_segments（JSON 字符串）解析为 API 列表。
+
+    None / 坏 JSON → None（与"无 segments"同语义）；容错由
+    segments_from_json 保证（坏 JSON → []，这里统一为 None 输出）。
+    """
+    raw = task_data.get("transcript_segments")
+    if raw is None:
+        return None
+    segments = segments_from_json(raw)
+    if not segments:
+        return None
+    return [seg.to_dict() for seg in segments]
 
 
 @router.post("/", response_model=Task, status_code=201)
@@ -345,6 +373,7 @@ async def list_tasks():
         item = dict(_with_part_stats(task))
         # 侧栏只需要状态和摘要元数据；正文在选中任务后由 GET /tasks/{id} 按需加载。
         item.pop("transcript", None)
+        item.pop("transcript_segments", None)
         item.pop("summary", None)
         item.pop("summary_meta", None)
         lightweight_tasks.append(item)
@@ -384,8 +413,37 @@ async def get_task(task_id: str, include_content: bool = True):
         if result.get("summary"):
             result["summary"] = _summary_overview(str(result["summary"]))
         result.pop("transcript", None)
+        result.pop("transcript_segments", None)
         result.pop("summary_meta", None)
+    else:
+        result["transcript_segments"] = _segments_list(result)
     return result
+
+
+@router.get("/{task_id}/subtitles")
+async def get_task_subtitles(task_id: str, format: Literal["srt", "vtt"] = "srt"):
+    """生成标准打轴字幕文件（SRT/VTT），供前端下载。
+
+    优先级：transcript_segments（如有）> parse_hhmmss_transcript 回退（存量
+    任务只有 HHMMSS 行文本）。无 transcript 且无 segments → 404。
+    format 用 Literal 校验：非法值由 FastAPI 自动 422。
+    """
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    segments = segments_from_json(task.get("transcript_segments"))
+    transcript = str(task.get("transcript") or "")
+    if not segments and not transcript.strip():
+        raise HTTPException(status_code=404, detail="任务没有可用的字幕内容。")
+    if not segments:
+        segments = parse_hhmmss_transcript(transcript)
+
+    if format == "vtt":
+        content = segments_to_vtt(segments)
+    else:
+        content = segments_to_srt(segments)
+    return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
 
 
 @router.get("/{task_id}/parts")
@@ -668,6 +726,8 @@ async def re_transcribe_task(
         # ASR 分片字段重转录时清空：非分片路径不再写回，避免残留陈旧计数
         "asr_chunk_total": None,
         "asr_chunk_done": None,
+        # 段级字幕重转录时清空（转录完成后由 worker 重新写入）
+        "transcript_segments": None,
     }
     from src.main.python.sheng_wen.task_updater import update_and_notify
 
